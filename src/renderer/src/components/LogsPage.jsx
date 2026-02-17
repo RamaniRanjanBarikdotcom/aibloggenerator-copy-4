@@ -1,0 +1,117 @@
+import React, { useEffect, useState } from 'react';
+
+function LogsPage({ t }) {
+  const [logs, setLogs] = useState([]);
+  const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
+  const [level, setLevel] = useState('');
+  const [category, setCategory] = useState('');
+
+  const loadLogs = async () => {
+    const result = await window.electronAPI.getLogs({ level: level || null, category: category || null });
+    if (result.success) {
+      setLogs(result.logs || []);
+    }
+  };
+
+  const loadStats = async () => {
+    const result = await window.electronAPI.getLogsStats();
+    if (result.success) {
+      setStats(result.stats || stats);
+    }
+  };
+
+  useEffect(() => {
+    loadLogs();
+    loadStats();
+  }, [level, category]);
+
+  const handleClear = async () => {
+    const result = await window.electronAPI.clearLogs();
+    if (result.success) {
+      loadLogs();
+      loadStats();
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <div>
+        <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.logsTitle}</h2>
+        <p className="text-slate-600">{t.logsSubtitle}</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="rounded-lg bg-white p-4 border border-slate-200">
+          <p className="text-xs text-slate-500">{t.logsTotal}</p>
+          <p className="text-lg font-semibold text-slate-800">{stats.total}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 border border-slate-200">
+          <p className="text-xs text-slate-500">{t.logsErrors}</p>
+          <p className="text-lg font-semibold text-slate-800">{stats.errors}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 border border-slate-200">
+          <p className="text-xs text-slate-500">{t.logsTokens}</p>
+          <p className="text-lg font-semibold text-slate-800">{stats.totalTokens}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 border border-slate-200">
+          <p className="text-xs text-slate-500">{t.logsCost}</p>
+          <p className="text-lg font-semibold text-slate-800">${(stats.totalCost || 0).toFixed(2)}</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm p-6 space-y-4">
+        <div className="flex flex-wrap items-center gap-4">
+          <select
+            value={level}
+            onChange={(event) => setLevel(event.target.value)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+          >
+            <option value="">{t.logsAllLevels}</option>
+            <option value="info">Info</option>
+            <option value="error">Error</option>
+          </select>
+          <input
+            type="text"
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            placeholder={t.logsCategoryPlaceholder}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+          />
+          <button
+            onClick={loadLogs}
+            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm"
+          >
+            {t.logsRefresh}
+          </button>
+          <button
+            onClick={handleClear}
+            className="px-4 py-2 rounded-lg border border-slate-200 text-sm"
+          >
+            {t.logsClear}
+          </button>
+        </div>
+
+        <div className="divide-y divide-slate-200">
+          {logs.length === 0 ? (
+            <p className="text-sm text-slate-500 py-6">{t.logsEmpty}</p>
+          ) : (
+            logs.map((log) => (
+              <div key={log.id} className="py-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <p className="font-semibold text-slate-800">[{log.level}] {log.category}</p>
+                  <p className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</p>
+                </div>
+                <p className="text-slate-600">{log.message}</p>
+                {log.details && (
+                  <pre className="mt-2 text-xs text-slate-500 whitespace-pre-wrap">{log.details}</pre>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default LogsPage;

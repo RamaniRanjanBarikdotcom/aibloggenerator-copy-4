@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(npm install:*)",
+      "Bash(node test-db-mongo.js:*)",
+      "Bash(node -e:*)",
+      "Bash(npx vite build:*)",
+      "Bash(node -c:*)",
+      "Bash(php -l:*)",
+      "Bash(/usr/local/bin/php:*)",
+      "Bash(/opt/homebrew/bin/php:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm cache clean:*)",
+      "Bash(npm run build:win:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

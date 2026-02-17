@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jtlshopplugin>
+  <Name>Blog Draft Receiver</Name>
+  <Description>Receives blog drafts from external apps and stores them for review.</Description>
+  <Author>AI Blog Generator</Author>
+  <URL>https://example.com</URL>
+  <XMLVersion>102</XMLVersion>
+  <Version>1.0.0</Version>
+  <CreateDate>2025-01-01</CreateDate>
+  <ShopVersion>500</ShopVersion>
+  <PluginID>blogdraftreceiver</PluginID>
+  <Install>
+    <Settings>
+      <Section name="API">
+        <Setting>
+          <Type>text</Type>
+          <Name>API Token</Name>
+          <Description>Shared secret for draft API requests.</Description>
+          <ValueName>jtl_draft_token</ValueName>
+          <InitValue></InitValue>
+          <Sort>1</Sort>
+          <Conf>Y</Conf>
+        </Setting>
+      </Section>
+    </Settings>
+    <Adminmenu>
+      <Customlink sort="1">
+        <Name>Blog Drafts</Name>
+        <Filename>drafts.php</Filename>
+      </Customlink>
+    </Adminmenu>
+    <FrontendLink>
+      <Link>
+        <Filename>draft_api.php</Filename>
+        <Name>Blog Draft API</Name>
+        <FullscreenTemplate>draft_api.tpl</FullscreenTemplate>
+        <VisibleAfterLogin>N</VisibleAfterLogin>
+        <PrintButton>N</PrintButton>
+        <SSL>2</SSL>
+        <LinkLanguage iso="ENG">
+          <Seo>draft-api</Seo>
+          <Name>Draft API</Name>
+          <Title>Draft API</Title>
+          <MetaTitle>Draft API</MetaTitle>
+          <MetaKeywords>draft,api</MetaKeywords>
+          <MetaDescription>Draft API endpoint</MetaDescription>
+        </LinkLanguage>
+      </Link>
+    </FrontendLink>
+  </Install>
+</jtlshopplugin>
