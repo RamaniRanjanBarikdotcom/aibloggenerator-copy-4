@@ -332,6 +332,12 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [providerCatalogStatus, setProviderCatalogStatus] = useState({});
   const [providerCatalogError, setProviderCatalogError] = useState({});
   const [publishDestinations, setPublishDestinations] = useState([]);
+  const [shopifyOauthClients, setShopifyOauthClients] = useState([]);
+  const [shopifyOauthRedirectUrl, setShopifyOauthRedirectUrl] = useState('');
+  const [shopifyOauthModalOpen, setShopifyOauthModalOpen] = useState(false);
+  const [shopifyOauthName, setShopifyOauthName] = useState('');
+  const [shopifyOauthClientId, setShopifyOauthClientId] = useState('');
+  const [shopifyOauthClientSecret, setShopifyOauthClientSecret] = useState('');
   const [shopifyBlogs, setShopifyBlogs] = useState([]);
   const [shopifyBlogsLoading, setShopifyBlogsLoading] = useState(false);
   const [shopifyBlogsError, setShopifyBlogsError] = useState('');
@@ -354,6 +360,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     accessToken: '',
     blogId: '',
     apiVersion: '2024-01',
+    oauthClientId: '',
     endpointUrl: '',
     authHeaderName: '',
     authHeaderValue: '',
@@ -430,9 +437,17 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setShopifyOAuthError('Shop domain is required.');
       return;
     }
+    if (shopifyOauthClients.length > 0 && !newDestination.oauthClientId) {
+      setShopifyOAuthError(t.shopifyOauthSelectRequired || 'Select a Shopify OAuth app.');
+      return;
+    }
     setShopifyOAuthLoading(true);
     try {
-      const result = await window.electronAPI.startShopifyOAuth({ shopDomain, apiVersion });
+      const result = await window.electronAPI.startShopifyOAuth({
+        shopDomain,
+        apiVersion,
+        oauthClientId: newDestination.oauthClientId || undefined,
+      });
       if (!result?.success) {
         throw new Error(result?.error || 'Shopify OAuth failed.');
       }
@@ -454,6 +469,45 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     } finally {
       setShopifyOAuthLoading(false);
     }
+  };
+
+  const openShopifyOauthModal = () => {
+    setShopifyOauthName('');
+    setShopifyOauthClientId('');
+    setShopifyOauthClientSecret('');
+    setShopifyOauthModalOpen(true);
+  };
+
+  const closeShopifyOauthModal = () => {
+    setShopifyOauthModalOpen(false);
+  };
+
+  const handleAddShopifyOauthClient = () => {
+    if (!shopifyOauthClientId.trim() || !shopifyOauthClientSecret.trim()) {
+      alert('Client ID and client secret are required.');
+      return;
+    }
+    const name = shopifyOauthName.trim() || `Shopify App ${shopifyOauthClients.length + 1}`;
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name,
+      clientId: shopifyOauthClientId.trim(),
+      clientSecret: shopifyOauthClientSecret.trim(),
+    };
+    setShopifyOauthClients((prev) => [...prev, entry]);
+    setNewDestination((prev) => ({
+      ...prev,
+      oauthClientId: prev.oauthClientId || entry.id,
+    }));
+    closeShopifyOauthModal();
+  };
+
+  const handleRemoveShopifyOauthClient = (clientId) => {
+    setShopifyOauthClients((prev) => prev.filter((client) => client.id !== clientId));
+    setNewDestination((prev) => ({
+      ...prev,
+      oauthClientId: prev.oauthClientId === clientId ? '' : prev.oauthClientId,
+    }));
   };
 
   const buildSettingsPayload = () => {
@@ -478,6 +532,14 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     };
     upsertKey('tavily', tavilyKey, 'Tavily Key');
     upsertKey('perplexity', perplexityKey, 'Perplexity Key');
+    const oauthClientsPayload = Array.isArray(shopifyOauthClients)
+      ? shopifyOauthClients.map((client) => ({
+          id: client.id,
+          name: client.name || '',
+          clientId: client.clientId || '',
+          clientSecret: client.clientSecret || '',
+        }))
+      : [];
     const payload = {
       aiProvider,
       imageProvider,
@@ -494,6 +556,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       apiKeys: nextApiKeys,
       promptTemplates,
       publishDestinations,
+      shopifyOauthClients: oauthClientsPayload,
       imageStorage: {
         enabled: imageStorageEnabled,
         endpointUrl: imageStorageEndpoint.trim(),
@@ -585,15 +648,24 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       const storedKeys = Array.isArray(settings.apiKeys) ? settings.apiKeys : [];
       setTavilyKey(storedKeys.find((item) => item.provider === 'tavily')?.key || '');
       setPerplexityKey(storedKeys.find((item) => item.provider === 'perplexity')?.key || '');
-      setPromptTemplates({ ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) });
-      setPublishDestinations(
-        Array.isArray(settings.publishDestinations) ? settings.publishDestinations : []
-      );
-      const storage = settings.imageStorage || {};
-      setImageStorageEnabled(storage.enabled === true);
-      setImageStorageEndpoint(storage.endpointUrl || '');
-      setImageStorageToken(storage.authToken || '');
-      const payloadForFingerprint = {
+        setPromptTemplates({ ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) });
+        setPublishDestinations(
+          Array.isArray(settings.publishDestinations) ? settings.publishDestinations : []
+        );
+        const oauthClients = Array.isArray(settings.shopifyOauthClients)
+          ? settings.shopifyOauthClients
+          : [];
+        setShopifyOauthClients(oauthClients);
+        setShopifyOauthRedirectUrl(settings.shopifyOauthRedirectUrl || '');
+        setNewDestination((prev) => ({
+          ...prev,
+          oauthClientId: prev.oauthClientId || oauthClients[0]?.id || '',
+        }));
+        const storage = settings.imageStorage || {};
+        setImageStorageEnabled(storage.enabled === true);
+        setImageStorageEndpoint(storage.endpointUrl || '');
+        setImageStorageToken(storage.authToken || '');
+        const payloadForFingerprint = {
         aiProvider: settings.aiProvider || 'openai',
         imageProvider: settings.imageProvider || settings.aiProvider || 'openai',
         aiModel: settings.aiModel || 'gpt-4o',
@@ -610,13 +682,14 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         linkPreviewApiKey: settings.linkPreviewApiKey || '',
         autoSave: settings.autoSave !== false,
         apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
-        promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
-        publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
-        imageStorage: {
-          enabled: storage.enabled === true,
-          endpointUrl: storage.endpointUrl || '',
-          authToken: storage.authToken || '',
-        },
+          promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
+          publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
+          shopifyOauthClients: oauthClients,
+          imageStorage: {
+            enabled: storage.enabled === true,
+            endpointUrl: storage.endpointUrl || '',
+            authToken: storage.authToken || '',
+          },
       };
       setSavedFingerprint(JSON.stringify(payloadForFingerprint));
       onUnsavedChange?.(false);
@@ -731,6 +804,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       accessToken: '',
       blogId: '',
       apiVersion: '2024-01',
+      oauthClientId: '',
       endpointUrl: '',
       authHeaderName: '',
       authHeaderValue: '',
@@ -777,25 +851,26 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
 
     setPublishDestinations((prev) => [
       ...prev,
-      {
-        ...newDestination,
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        name: trimmedName,
-        platform: newDestination.platform === 'wordpress-token' ? 'wordpress' : newDestination.platform,
-        baseUrl: newDestination.baseUrl.trim(),
-        authMethod: newDestination.authMethod || 'token',
-        apiToken: newDestination.apiToken.trim(),
-        username: newDestination.username.trim(),
-        appPassword: newDestination.appPassword.trim(),
-        shopDomain: newDestination.shopDomain.trim(),
-        accessToken: newDestination.accessToken.trim(),
-        blogId: newDestination.blogId.trim(),
-        apiVersion: newDestination.apiVersion.trim() || '2024-01',
-        endpointUrl: newDestination.endpointUrl.trim(),
-        authHeaderName: newDestination.authHeaderName.trim(),
-        authHeaderValue: newDestination.authHeaderValue.trim(),
-        extraPayloadJson: newDestination.extraPayloadJson.trim(),
-      },
+        {
+          ...newDestination,
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name: trimmedName,
+          platform: newDestination.platform === 'wordpress-token' ? 'wordpress' : newDestination.platform,
+          baseUrl: newDestination.baseUrl.trim(),
+          authMethod: newDestination.authMethod || 'token',
+          apiToken: newDestination.apiToken.trim(),
+          username: newDestination.username.trim(),
+          appPassword: newDestination.appPassword.trim(),
+          shopDomain: newDestination.shopDomain.trim(),
+          accessToken: newDestination.accessToken.trim(),
+          blogId: newDestination.blogId.trim(),
+          apiVersion: newDestination.apiVersion.trim() || '2024-01',
+          oauthClientId: newDestination.oauthClientId || '',
+          endpointUrl: newDestination.endpointUrl.trim(),
+          authHeaderName: newDestination.authHeaderName.trim(),
+          authHeaderValue: newDestination.authHeaderValue.trim(),
+          extraPayloadJson: newDestination.extraPayloadJson.trim(),
+        },
     ]);
     resetNewDestination();
   };
@@ -829,8 +904,35 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     const result = await window.electronAPI.saveSettings(payload);
     if (result.success) {
       setApiKeys(nextApiKeys);
-      setSavedFingerprint(JSON.stringify(payload));
       onUnsavedChange?.(false);
+      setShopifyOauthClients((prev) =>
+        prev.map((client) => {
+          if (client.clientSecret) {
+            return {
+              ...client,
+              clientSecret: '',
+              clientSecretMasked: '********',
+              hasSecret: true,
+            };
+          }
+          if (client.clientSecretMasked || client.hasSecret) {
+            return {
+              ...client,
+              clientSecret: '',
+              clientSecretMasked: client.clientSecretMasked || '********',
+              hasSecret: true,
+            };
+          }
+          return { ...client, clientSecret: '' };
+        })
+      );
+      const scrubbedPayload = {
+        ...payload,
+        shopifyOauthClients: Array.isArray(payload.shopifyOauthClients)
+          ? payload.shopifyOauthClients.map((client) => ({ ...client, clientSecret: '' }))
+          : [],
+      };
+      setSavedFingerprint(JSON.stringify(scrubbedPayload));
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
       return true;
@@ -896,11 +998,12 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     linkPreviewApiKey,
     autoSave,
     apiKeys,
-    promptTemplates,
-    publishDestinations,
-    tavilyKey,
-    perplexityKey,
-    imageStorageEnabled,
+      promptTemplates,
+      publishDestinations,
+      shopifyOauthClients,
+      tavilyKey,
+      perplexityKey,
+      imageStorageEnabled,
     imageStorageEndpoint,
     imageStorageToken,
   ]);
@@ -1420,23 +1523,81 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
               <p className="mt-2 text-xs text-slate-600">{t.jtlSectionHint}</p>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
-                <p className="font-semibold text-slate-900">{t.jtlPluginSetupTitle}</p>
-                <p className="mt-1">{t.jtlPluginSetupBody}</p>
-                <p className="mt-2 text-xs text-slate-600">{t.jtlPluginSetupHint}</p>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">{t.jtlPluginSetupTitle}</p>
+                  <p className="mt-1">{t.jtlPluginSetupBody}</p>
+                  <p className="mt-2 text-xs text-slate-600">{t.jtlPluginSetupHint}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">{t.jtlPhpSetupTitle}</p>
+                  <p className="mt-1">{t.jtlPhpSetupBody}</p>
+                  <p className="mt-2 text-xs text-slate-600">{t.jtlPhpSetupHint}</p>
+                </div>
               </div>
-              <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
-                <p className="font-semibold text-slate-900">{t.jtlPhpSetupTitle}</p>
-                <p className="mt-1">{t.jtlPhpSetupBody}</p>
-                <p className="mt-2 text-xs text-slate-600">{t.jtlPhpSetupHint}</p>
-              </div>
-            </div>
 
-            <div className="space-y-3">
-              {publishDestinations.length === 0 && (
-                <p className="text-sm text-slate-500">{t.destinationsEmpty}</p>
-              )}
+              <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 space-y-3">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-900">
+                      {t.shopifyOauthSectionTitle || 'Shopify OAuth apps'}
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      {t.shopifyOauthSectionBody ||
+                        'Store Shopify OAuth credentials for each partner app you manage.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openShopifyOauthModal}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:border-slate-300"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>{t.shopifyOauthAddLabel || 'Add OAuth app'}</span>
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500">
+                  {(t.shopifyOauthRedirectLabel || 'Redirect URL') + ': '}
+                  <span className="font-mono">{shopifyOauthRedirectUrl || '-'}</span>
+                </p>
+                {shopifyOauthClients.length === 0 ? (
+                  <p className="text-xs text-slate-500">
+                    {t.shopifyOauthEmpty || 'No Shopify OAuth apps saved yet.'}
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {shopifyOauthClients.map((client) => (
+                      <div
+                        key={client.id}
+                        className="flex flex-col gap-2 rounded-lg border border-slate-200 px-3 py-2 md:flex-row md:items-center md:justify-between"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">
+                            {client.name || client.clientId}
+                          </p>
+                          <p className="text-xs text-slate-500">Client ID: {client.clientId}</p>
+                          {(client.hasSecret || client.clientSecret || client.clientSecretMasked) && (
+                            <p className="text-xs text-slate-500">Secret: ********</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveShopifyOauthClient(client.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-red-200 hover:text-red-600"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          <span>{t.removeLabel || 'Remove'}</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                {publishDestinations.length === 0 && (
+                  <p className="text-sm text-slate-500">{t.destinationsEmpty}</p>
+                )}
               {publishDestinations.map((destination) => (
                 <div
                   key={destination.id}
@@ -1654,6 +1815,44 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
 
               {newDestination.platform === 'shopify' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                      {t.shopifyOauthSelectLabel || 'Shopify OAuth app'}
+                    </label>
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                      <select
+                        value={newDestination.oauthClientId}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({
+                            ...prev,
+                            oauthClientId: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      >
+                        <option value="">
+                          {t.shopifyOauthSelectPlaceholder || 'Select an OAuth app'}
+                        </option>
+                        {shopifyOauthClients.map((client) => (
+                          <option key={client.id} value={client.id}>
+                            {client.name || client.clientId}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={openShopifyOauthModal}
+                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:border-slate-300"
+                      >
+                        <Plus className="h-3 w-3" />
+                        <span>{t.shopifyOauthAddLabel || 'Add OAuth app'}</span>
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      {(t.shopifyOauthRedirectLabel || 'Redirect URL') + ': '}
+                      <span className="font-mono">{shopifyOauthRedirectUrl || '-'}</span>
+                    </p>
+                  </div>
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-slate-700 mb-2">
                       {t.shopifyShopDomainLabel}
@@ -2175,6 +2374,85 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
           </div>
         )}
       </div>
+
+      {shopifyOauthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h4 className="text-lg font-semibold text-slate-900">
+                  {t.shopifyOauthModalTitle || 'Add Shopify OAuth app'}
+                </h4>
+                <p className="text-xs text-slate-500">
+                  {(t.shopifyOauthRedirectLabel || 'Redirect URL') + ': '}
+                  <span className="font-mono">{shopifyOauthRedirectUrl || '-'}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeShopifyOauthModal}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t.shopifyOauthClientNameLabel || 'App name'}
+                </label>
+                <input
+                  type="text"
+                  value={shopifyOauthName}
+                  onChange={(event) => setShopifyOauthName(event.target.value)}
+                  placeholder="My Shopify App"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t.shopifyOauthClientIdLabel || 'Client ID'}
+                </label>
+                <input
+                  type="text"
+                  value={shopifyOauthClientId}
+                  onChange={(event) => setShopifyOauthClientId(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t.shopifyOauthClientSecretLabel || 'Client secret'}
+                </label>
+                <input
+                  type="password"
+                  value={shopifyOauthClientSecret}
+                  onChange={(event) => setShopifyOauthClientSecret(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeShopifyOauthModal}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:border-slate-300"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={handleAddShopifyOauthClient}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                {t.shopifyOauthAddLabel || 'Add OAuth app'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

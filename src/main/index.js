@@ -147,6 +147,88 @@ function normalizeShopDomain(value) {
     .replace(/\/.*$/, '');
 }
 
+const SHOPIFY_SECRET_MASK = '********';
+
+function getShopifyOauthRedirectUrl() {
+  const port = Number(process.env.SHOPIFY_OAUTH_PORT || 4319);
+  return `http://localhost:${port}/shopify/callback`;
+}
+
+function getEncryptionKey() {
+  const seed =
+    process.env.APP_ENCRYPTION_KEY ||
+    process.env.SHOPIFY_OAUTH_STORE_KEY ||
+    process.env.ELECTRON_STORE_KEY ||
+    app.getPath('userData');
+  return crypto.createHash('sha256').update(String(seed)).digest();
+}
+
+function encryptSecret(secret) {
+  if (!secret) return '';
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(String(secret), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptSecret(payload) {
+  if (!payload || typeof payload !== 'string' || !payload.startsWith('enc:')) {
+    return payload || '';
+  }
+  const parts = payload.split(':');
+  if (parts.length !== 4) return '';
+  const [, ivHex, tagHex, dataHex] = parts;
+  try {
+    const key = getEncryptionKey();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch (error) {
+    console.warn('[OAuth] Failed to decrypt secret:', error.message);
+    return '';
+  }
+}
+
+function sanitizeShopifyOauthClientsForUi(list = []) {
+  return list.map((client) => ({
+    id: client.id,
+    name: client.name || '',
+    clientId: client.clientId || '',
+    hasSecret: Boolean(client.clientSecretEnc),
+    clientSecretMasked: client.clientSecretEnc ? SHOPIFY_SECRET_MASK : '',
+    createdAt: client.createdAt || null,
+    updatedAt: client.updatedAt || null,
+  }));
+}
+
+function normalizeShopifyOauthClients(incoming = [], existing = []) {
+  const existingMap = new Map(existing.map((item) => [item.id, item]));
+  return incoming
+    .filter((client) => client && client.clientId)
+    .map((client) => {
+      const existingClient = existingMap.get(client.id);
+      const next = {
+        id: client.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        name: client.name || existingClient?.name || '',
+        clientId: client.clientId || existingClient?.clientId || '',
+        createdAt: existingClient?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const incomingSecret = String(client.clientSecret || '').trim();
+      if (incomingSecret && incomingSecret !== SHOPIFY_SECRET_MASK) {
+        next.clientSecretEnc = encryptSecret(incomingSecret);
+      } else if (existingClient?.clientSecretEnc) {
+        next.clientSecretEnc = existingClient.clientSecretEnc;
+      } else {
+        next.clientSecretEnc = '';
+      }
+      return next;
+    });
+}
+
 function buildShopifyHmacMessage(params) {
   const pairs = Object.keys(params)
     .filter((key) => key !== 'hmac' && key !== 'signature')
@@ -1126,7 +1208,26 @@ ipcMain.handle('save-settings', async (event, settings) => {
       throw new Error('Not authenticated');
     }
 
-    const settingsJson = JSON.stringify(settings || {});
+    const rawExisting = await getSetting({
+      userId: currentUser.id,
+      key: `user_settings_${currentUser.id}`,
+    });
+    const existingSettings = rawExisting ? JSON.parse(rawExisting) : {};
+    const existingOauthClients = Array.isArray(existingSettings.shopifyOauthClients)
+      ? existingSettings.shopifyOauthClients
+      : [];
+    const incomingOauthClients = Array.isArray(settings?.shopifyOauthClients)
+      ? settings.shopifyOauthClients
+      : null;
+    const normalizedOauthClients = incomingOauthClients
+      ? normalizeShopifyOauthClients(incomingOauthClients, existingOauthClients)
+      : existingOauthClients;
+    const settingsToStore = {
+      ...(settings || {}),
+      shopifyOauthClients: normalizedOauthClients,
+    };
+
+    const settingsJson = JSON.stringify(settingsToStore);
     console.log('[IPC] save-settings payload size:', settingsJson.length, 'publishDestinations count:', settings?.publishDestinations?.length);
 
     await setSetting({
@@ -1160,6 +1261,9 @@ ipcMain.handle('get-settings', async () => {
       key: `user_settings_${currentUser.id}`,
     });
     const parsed = raw ? JSON.parse(raw) : {};
+    const oauthClients = Array.isArray(parsed.shopifyOauthClients) ? parsed.shopifyOauthClients : [];
+    parsed.shopifyOauthClients = sanitizeShopifyOauthClientsForUi(oauthClients);
+    parsed.shopifyOauthRedirectUrl = getShopifyOauthRedirectUrl();
     console.log('[IPC] get-settings loaded, publishDestinations count:', parsed?.publishDestinations?.length);
     return { success: true, settings: parsed };
   } catch (error) {
@@ -1258,6 +1362,15 @@ ipcMain.handle('update-settings', async (event, updates) => {
     });
     const existing = raw ? JSON.parse(raw) : {};
     const next = { ...existing, ...(updates || {}) };
+    const existingOauthClients = Array.isArray(existing.shopifyOauthClients)
+      ? existing.shopifyOauthClients
+      : [];
+    if (Array.isArray(updates?.shopifyOauthClients)) {
+      next.shopifyOauthClients = normalizeShopifyOauthClients(
+        updates.shopifyOauthClients,
+        existingOauthClients
+      );
+    }
     await setSetting({
       userId: currentUser.id,
       key: `user_settings_${currentUser.id}`,
@@ -2093,7 +2206,7 @@ ipcMain.handle('export-bulk', async (event, { blogIds, format }) => {
 
 let activeShopifyOAuth = null;
 
-ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion } = {}) => {
+ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion, oauthClientId } = {}) => {
   try {
     requirePermission('settings');
     if (!currentUser) {
@@ -2104,12 +2217,31 @@ ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion } =
       throw new Error('Shopify OAuth is already in progress');
     }
 
-    const clientId = ensureValue('Shopify client ID', process.env.SHOPIFY_CLIENT_ID);
-    const clientSecret = ensureValue('Shopify client secret', process.env.SHOPIFY_CLIENT_SECRET);
+    const settings = await getUserSettings(currentUser.id);
+    const oauthClients = Array.isArray(settings.shopifyOauthClients) ? settings.shopifyOauthClients : [];
+    let selectedClient = null;
+    if (oauthClientId) {
+      selectedClient = oauthClients.find((client) => client.id === oauthClientId) || null;
+      if (!selectedClient) {
+        throw new Error('Selected Shopify OAuth app was not found.');
+      }
+    } else if (oauthClients.length === 1) {
+      selectedClient = oauthClients[0];
+    }
+
+    const clientId = ensureValue(
+      'Shopify client ID',
+      selectedClient?.clientId || process.env.SHOPIFY_CLIENT_ID
+    );
+    const clientSecret = ensureValue(
+      'Shopify client secret',
+      (selectedClient?.clientSecretEnc ? decryptSecret(selectedClient.clientSecretEnc) : '') ||
+        process.env.SHOPIFY_CLIENT_SECRET
+    );
     const shop = normalizeShopDomain(ensureValue('Shopify shop domain', shopDomain));
     const version = (apiVersion || '2024-01').trim();
     const port = Number(process.env.SHOPIFY_OAUTH_PORT || 4319);
-    const redirectUri = `http://localhost:${port}/shopify/callback`;
+    const redirectUri = getShopifyOauthRedirectUrl();
     const scope = 'read_content,write_content,write_files';
     const state = crypto.randomBytes(16).toString('hex');
 
@@ -4310,3 +4442,4 @@ ipcMain.handle('get-realtime-analytics', async (event, payload) => {
     return { success: false, error: error.message };
   }
 });
+
