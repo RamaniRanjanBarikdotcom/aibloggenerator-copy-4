@@ -63,6 +63,12 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ],
     "files": [
       "src/main/**/*",
       "src/renderer/dist/**/*",
@@ -81,6 +87,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AI Blog Generator",

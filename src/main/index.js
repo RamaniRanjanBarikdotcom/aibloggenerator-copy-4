@@ -1,11 +1,14 @@
-// Load environment variables
-require('dotenv').config();
-
 const { app, BrowserWindow, ipcMain, shell, Menu, clipboard } = require('electron');
 const crypto = require('crypto');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+
+// Load environment variables (packaged build reads from resources/.env)
+const envPath = app?.isPackaged
+  ? path.join(process.resourcesPath, '.env')
+  : path.join(process.cwd(), '.env');
+require('dotenv').config({ path: envPath });
 const Store = require('electron-store');
 const FormData = require('form-data');
 const mime = require('mime-types');
