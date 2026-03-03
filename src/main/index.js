@@ -3,6 +3,7 @@ require('dotenv').config();
 
 const { app, BrowserWindow, ipcMain, shell, Menu, clipboard } = require('electron');
 const crypto = require('crypto');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const Store = require('electron-store');
@@ -105,6 +106,32 @@ function ensureValue(label, value) {
     throw new Error(`${label} is required`);
   }
   return String(value).trim();
+}
+
+function normalizeShopDomain(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '');
+}
+
+function buildShopifyHmacMessage(params) {
+  const pairs = Object.keys(params)
+    .filter((key) => key !== 'hmac' && key !== 'signature')
+    .sort()
+    .map((key) => `${key}=${params[key]}`);
+  return pairs.join('&');
+}
+
+function verifyShopifyHmac(params, secret) {
+  const hmac = params.hmac || '';
+  if (!hmac) return false;
+  const message = buildShopifyHmacMessage(params);
+  const digest = crypto.createHmac('sha256', secret).update(message).digest('hex');
+  const digestBuf = Buffer.from(digest);
+  const hmacBuf = Buffer.from(hmac);
+  if (digestBuf.length !== hmacBuf.length) return false;
+  return crypto.timingSafeEqual(digestBuf, hmacBuf);
 }
 
 async function loadImageBuffer({ imageUrl, localImagePath }) {
@@ -1819,6 +1846,31 @@ ipcMain.handle('test-publish-destination', async (event, { destination }) => {
   }
 });
 
+ipcMain.handle('list-shopify-blogs', async (event, { shopDomain, accessToken, apiVersion } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const domain = ensureValue('Shopify shop domain', shopDomain);
+    const token = ensureValue('Shopify access token', accessToken);
+    const version = (apiVersion || '2024-01').trim();
+
+    const response = await axios.get(
+      `https://${domain}/admin/api/${version}/blogs.json`,
+      {
+        timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+        headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': token },
+      }
+    );
+    const blogs = Array.isArray(response.data?.blogs) ? response.data.blogs : [];
+    return { success: true, blogs };
+  } catch (error) {
+    console.error('[Shopify] list-blogs error:', error?.response?.status, error?.response?.data || error.message);
+    return { success: false, error: extractPublishError(error) };
+  }
+});
+
 ipcMain.handle('export-bulk', async (event, { blogIds, format }) => {
   try {
     requirePermission('bulkExport');
@@ -1857,6 +1909,118 @@ ipcMain.handle('export-bulk', async (event, { blogIds, format }) => {
     return { success: true, files };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+});
+
+let activeShopifyOAuth = null;
+
+ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+
+    if (activeShopifyOAuth) {
+      throw new Error('Shopify OAuth is already in progress');
+    }
+
+    const clientId = ensureValue('Shopify client ID', process.env.SHOPIFY_CLIENT_ID);
+    const clientSecret = ensureValue('Shopify client secret', process.env.SHOPIFY_CLIENT_SECRET);
+    const shop = normalizeShopDomain(ensureValue('Shopify shop domain', shopDomain));
+    const version = (apiVersion || '2024-01').trim();
+    const port = Number(process.env.SHOPIFY_OAUTH_PORT || 4319);
+    const redirectUri = `http://localhost:${port}/shopify/callback`;
+    const scope = 'read_content,write_content';
+    const state = crypto.randomBytes(16).toString('hex');
+
+    activeShopifyOAuth = new Promise((resolve, reject) => {
+      const server = http.createServer(async (req, res) => {
+        try {
+          const requestUrl = new URL(req.url, `http://localhost:${port}`);
+          if (requestUrl.pathname !== '/shopify/callback') {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Not found');
+            return;
+          }
+
+          const params = Object.fromEntries(requestUrl.searchParams.entries());
+          const code = params.code;
+          const returnedShop = normalizeShopDomain(params.shop);
+          const returnedState = params.state;
+
+          if (!code || !returnedShop) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Missing shop or code.');
+            return;
+          }
+          if (returnedState !== state) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Invalid state.');
+            return;
+          }
+          if (returnedShop !== shop) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Shop mismatch.');
+            return;
+          }
+          if (!verifyShopifyHmac(params, clientSecret)) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('HMAC verification failed.');
+            return;
+          }
+
+          const tokenResponse = await axios.post(
+            `https://${returnedShop}/admin/oauth/access_token`,
+            {
+              client_id: clientId,
+              client_secret: clientSecret,
+              code,
+            },
+            { timeout: PUBLISH_AXIOS_DEFAULTS.timeout }
+          );
+
+          const accessToken = tokenResponse.data?.access_token;
+          if (!accessToken) {
+            throw new Error('No access token returned from Shopify.');
+          }
+
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<p>Shopify connected. You can close this window.</p>');
+          resolve({
+            success: true,
+            shopDomain: returnedShop,
+            accessToken,
+            apiVersion: version,
+            scope: tokenResponse.data?.scope,
+          });
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('OAuth failed. Check the app logs.');
+          reject(err);
+        } finally {
+          server.close();
+        }
+      });
+
+      server.on('error', reject);
+      server.listen(port, '127.0.0.1', () => {
+        const authUrl =
+          `https://${shop}/admin/oauth/authorize` +
+          `?client_id=${encodeURIComponent(clientId)}` +
+          `&scope=${encodeURIComponent(scope)}` +
+          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+          `&state=${encodeURIComponent(state)}`;
+        shell.openExternal(authUrl);
+      });
+    });
+
+    const result = await activeShopifyOAuth;
+    return result;
+  } catch (error) {
+    return { success: false, error: error.message || 'Shopify OAuth failed' };
+  } finally {
+    activeShopifyOAuth = null;
   }
 });
 

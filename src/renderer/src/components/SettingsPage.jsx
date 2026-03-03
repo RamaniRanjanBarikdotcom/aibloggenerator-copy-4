@@ -332,6 +332,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [providerCatalogStatus, setProviderCatalogStatus] = useState({});
   const [providerCatalogError, setProviderCatalogError] = useState({});
   const [publishDestinations, setPublishDestinations] = useState([]);
+  const [shopifyBlogs, setShopifyBlogs] = useState([]);
+  const [shopifyBlogsLoading, setShopifyBlogsLoading] = useState(false);
+  const [shopifyBlogsError, setShopifyBlogsError] = useState('');
+  const [shopifyOAuthLoading, setShopifyOAuthLoading] = useState(false);
+  const [shopifyOAuthError, setShopifyOAuthError] = useState('');
   const [newDestination, setNewDestination] = useState({
     name: '',
     platform: 'wordpress',
@@ -357,6 +362,72 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [savedFingerprint, setSavedFingerprint] = useState('');
 
   const isAdmin = currentUser?.role === 'admin';
+
+  const fetchShopifyBlogs = async (overrides = {}) => {
+    setShopifyBlogsError('');
+    const shopDomain = String(overrides.shopDomain ?? newDestination.shopDomain).trim();
+    const accessToken = String(overrides.accessToken ?? newDestination.accessToken).trim();
+    const apiVersion = String(overrides.apiVersion ?? newDestination.apiVersion).trim() || '2024-01';
+    if (!shopDomain || !accessToken) {
+      setShopifyBlogsError('Shop domain and access token are required.');
+      return;
+    }
+    setShopifyBlogsLoading(true);
+    try {
+      const result = await window.electronAPI.listShopifyBlogs({
+        shopDomain,
+        accessToken,
+        apiVersion,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to fetch Shopify blogs.');
+      }
+      const blogs = Array.isArray(result.blogs) ? result.blogs : [];
+      setShopifyBlogs(blogs);
+      if (!newDestination.blogId && blogs.length === 1) {
+        setNewDestination((prev) => ({ ...prev, blogId: String(blogs[0].id) }));
+      }
+    } catch (error) {
+      setShopifyBlogs([]);
+      setShopifyBlogsError(error?.message || 'Failed to fetch Shopify blogs.');
+    } finally {
+      setShopifyBlogsLoading(false);
+    }
+  };
+
+  const handleShopifyOAuth = async () => {
+    setShopifyOAuthError('');
+    const shopDomain = newDestination.shopDomain.trim();
+    const apiVersion = newDestination.apiVersion.trim() || '2024-01';
+    if (!shopDomain) {
+      setShopifyOAuthError('Shop domain is required.');
+      return;
+    }
+    setShopifyOAuthLoading(true);
+    try {
+      const result = await window.electronAPI.startShopifyOAuth({ shopDomain, apiVersion });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Shopify OAuth failed.');
+      }
+      setNewDestination((prev) => ({
+        ...prev,
+        shopDomain: result.shopDomain || prev.shopDomain,
+        accessToken: result.accessToken || prev.accessToken,
+        apiVersion: result.apiVersion || prev.apiVersion,
+      }));
+      if (result.accessToken) {
+        await fetchShopifyBlogs({
+          shopDomain: result.shopDomain || shopDomain,
+          accessToken: result.accessToken,
+          apiVersion: result.apiVersion || apiVersion,
+        });
+      }
+    } catch (error) {
+      setShopifyOAuthError(error?.message || 'Shopify OAuth failed.');
+    } finally {
+      setShopifyOAuthLoading(false);
+    }
+  };
 
   const buildSettingsPayload = () => {
     const nextApiKeys = Array.isArray(apiKeys) ? [...apiKeys] : [];
@@ -1551,6 +1622,19 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                       placeholder="your-shop.myshopify.com"
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     />
+                    <div className="mt-2 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleShopifyOAuth}
+                        className="text-xs text-blue-600 hover:text-blue-700"
+                        disabled={shopifyOAuthLoading}
+                      >
+                        {shopifyOAuthLoading ? 'Connecting...' : 'Connect Shopify (OAuth)'}
+                      </button>
+                      {shopifyOAuthError && (
+                        <span className="text-xs text-rose-600">{shopifyOAuthError}</span>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -1566,9 +1650,19 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.shopifyBlogIdLabel}
-                    </label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
+                        {t.shopifyBlogIdLabel}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={fetchShopifyBlogs}
+                        className="text-xs text-blue-600 hover:text-blue-700"
+                        disabled={shopifyBlogsLoading}
+                      >
+                        {shopifyBlogsLoading ? 'Loading...' : 'Fetch blogs'}
+                      </button>
+                    </div>
                     <input
                       type="text"
                       value={newDestination.blogId}
@@ -1577,6 +1671,25 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                       }
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     />
+                    {shopifyBlogsError && (
+                      <p className="mt-1 text-xs text-rose-600">{shopifyBlogsError}</p>
+                    )}
+                    {shopifyBlogs.length > 0 && (
+                      <select
+                        value={newDestination.blogId}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({ ...prev, blogId: event.target.value }))
+                        }
+                        className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      >
+                        <option value="">Select a blog</option>
+                        {shopifyBlogs.map((blog) => (
+                          <option key={blog.id} value={String(blog.id)}>
+                            {blog.title || blog.handle || blog.id}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-slate-700 mb-2">
