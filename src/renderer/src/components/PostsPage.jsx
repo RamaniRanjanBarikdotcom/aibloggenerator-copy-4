@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { RefreshCw, ExternalLink, Globe, TrendingUp, FileText, Eye, Calendar, BarChart3, AlertCircle, CheckCircle, XCircle, Clock } from 'lucide-react';
 import {
   LineChart,
@@ -34,6 +34,8 @@ function PostsPage({ t }) {
   const [syncMessage, setSyncMessage] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
   const [autoSynced, setAutoSynced] = useState(false);
+  const autoSyncInFlight = useRef(false);
+  const lastAutoSyncAt = useRef(0);
 
   const loadPosts = async () => {
     setLoading(true);
@@ -59,10 +61,25 @@ function PostsPage({ t }) {
       const hasData =
         (result.analytics?.topTopics?.length || 0) > 0 ||
         (result.analytics?.topPosts?.length || 0) > 0;
-      if (!hasData && destinationId && !autoSynced) {
+      const destination = destinations.find((dest) => dest.id === destinationId) || null;
+      const now = Date.now();
+      if (
+        !hasData &&
+        destinationId &&
+        !autoSynced &&
+        !syncing &&
+        !autoSyncInFlight.current &&
+        now - lastAutoSyncAt.current > 60000
+      ) {
         // attempt one automatic sync to pull data for charts
-        await handleSync();
-        setAutoSynced(true);
+        autoSyncInFlight.current = true;
+        try {
+          await handleSync();
+        } finally {
+          setAutoSynced(true);
+          lastAutoSyncAt.current = Date.now();
+          autoSyncInFlight.current = false;
+        }
       }
     }
   };
@@ -84,7 +101,9 @@ function PostsPage({ t }) {
     if (settingsResult.success) {
       const dests = Array.isArray(settingsResult.settings?.publishDestinations)
         ? settingsResult.settings.publishDestinations.filter((d) =>
-            d.platform === 'wordpress' || d.platform === 'wordpress-token'
+            d.platform === 'wordpress' ||
+            d.platform === 'wordpress-token' ||
+            d.platform === 'shopify'
           )
         : [];
       setDestinations(dests);
@@ -95,10 +114,13 @@ function PostsPage({ t }) {
   };
 
   const handleSync = async () => {
+    if (syncing) return;
     if (!destinationId) {
-      setError(t.publishDestinationRequired || 'Select a WordPress destination first.');
+      setError(t.publishDestinationRequired || 'Select a destination first.');
       return;
     }
+    const selected = destinations.find((dest) => dest.id === destinationId);
+    const platformLabel = selected?.platform || 'destination';
     setSyncing(true);
     setSyncMessage('');
     setTestResult(null);
@@ -107,7 +129,7 @@ function PostsPage({ t }) {
       setError(result.error || 'Sync failed');
     } else {
       setError('');
-      setSyncMessage(t.syncSuccess || `Synced ${result.count || 0} posts.`);
+      setSyncMessage(t.syncSuccess || `Synced ${result.count || 0} posts from ${platformLabel}.`);
     }
     setSyncing(false);
     await Promise.all([loadPosts(), loadAnalytics(), loadPublishHistory()]);
@@ -115,7 +137,7 @@ function PostsPage({ t }) {
 
   const handleTestConnection = async () => {
     if (!destinationId) {
-      setError(t.publishDestinationRequired || 'Select a WordPress destination first.');
+      setError(t.publishDestinationRequired || 'Select a destination first.');
       return;
     }
     setTesting(true);
@@ -133,6 +155,11 @@ function PostsPage({ t }) {
     loadAnalytics();
     loadPublishHistory();
   }, [statusFilter, platformFilter, destinationId]);
+
+  useEffect(() => {
+    setAutoSynced(false);
+    lastAutoSyncAt.current = 0;
+  }, [destinationId]);
 
   // Lightweight polling for near-real-time updates
   useEffect(() => {
@@ -737,7 +764,9 @@ function PostsPage({ t }) {
           {loading ? (
             <div className="p-6 text-center text-slate-500">{t.loading || 'Loading...'}</div>
           ) : posts.length === 0 ? (
-            <div className="p-6 text-center text-slate-500">{t.emptyPosts || 'No posts yet. Click Sync to fetch posts from WordPress.'}</div>
+            <div className="p-6 text-center text-slate-500">
+              {t.emptyPosts || 'No posts yet. Click Sync to fetch posts from your destination.'}
+            </div>
           ) : (
             posts.map((post) => (
               <div

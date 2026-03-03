@@ -337,6 +337,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [shopifyBlogsError, setShopifyBlogsError] = useState('');
   const [shopifyOAuthLoading, setShopifyOAuthLoading] = useState(false);
   const [shopifyOAuthError, setShopifyOAuthError] = useState('');
+  const [imageStorageEnabled, setImageStorageEnabled] = useState(false);
+  const [imageStorageEndpoint, setImageStorageEndpoint] = useState('');
+  const [imageStorageToken, setImageStorageToken] = useState('');
+  const [imageStorageTestStatus, setImageStorageTestStatus] = useState('');
+  const [imageStorageTestMessage, setImageStorageTestMessage] = useState('');
   const [newDestination, setNewDestination] = useState({
     name: '',
     platform: 'wordpress',
@@ -392,6 +397,28 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setShopifyBlogsError(error?.message || 'Failed to fetch Shopify blogs.');
     } finally {
       setShopifyBlogsLoading(false);
+    }
+  };
+
+  const handleTestImageStorage = async () => {
+    setImageStorageTestStatus('loading');
+    setImageStorageTestMessage('');
+    try {
+      const result = await window.electronAPI.testImageStorage({
+        imageStorage: {
+          enabled: imageStorageEnabled,
+          endpointUrl: imageStorageEndpoint.trim(),
+          authToken: imageStorageToken.trim(),
+        },
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Image storage test failed.');
+      }
+      setImageStorageTestStatus('success');
+      setImageStorageTestMessage(result.url || '');
+    } catch (error) {
+      setImageStorageTestStatus('error');
+      setImageStorageTestMessage(error?.message || 'Image storage test failed.');
     }
   };
 
@@ -467,6 +494,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       apiKeys: nextApiKeys,
       promptTemplates,
       publishDestinations,
+      imageStorage: {
+        enabled: imageStorageEnabled,
+        endpointUrl: imageStorageEndpoint.trim(),
+        authToken: imageStorageToken.trim(),
+      },
     };
     return { payload, nextApiKeys };
   };
@@ -557,6 +589,10 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setPublishDestinations(
         Array.isArray(settings.publishDestinations) ? settings.publishDestinations : []
       );
+      const storage = settings.imageStorage || {};
+      setImageStorageEnabled(storage.enabled === true);
+      setImageStorageEndpoint(storage.endpointUrl || '');
+      setImageStorageToken(storage.authToken || '');
       const payloadForFingerprint = {
         aiProvider: settings.aiProvider || 'openai',
         imageProvider: settings.imageProvider || settings.aiProvider || 'openai',
@@ -576,6 +612,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
         promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
         publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
+        imageStorage: {
+          enabled: storage.enabled === true,
+          endpointUrl: storage.endpointUrl || '',
+          authToken: storage.authToken || '',
+        },
       };
       setSavedFingerprint(JSON.stringify(payloadForFingerprint));
       onUnsavedChange?.(false);
@@ -859,6 +900,9 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     publishDestinations,
     tavilyKey,
     perplexityKey,
+    imageStorageEnabled,
+    imageStorageEndpoint,
+    imageStorageToken,
   ]);
 
   useEffect(() => {
@@ -970,6 +1014,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     { id: 'research', label: t.settingsTabResearch || 'Research' },
     { id: 'keys', label: t.settingsTabKeys || 'API Keys' },
     { id: 'publishing', label: t.settingsTabPublishing || 'Publishing' },
+    { id: 'storage', label: t.settingsTabStorage || 'Storage' },
     { id: 'prompts', label: t.settingsTabPrompts || 'Prompts' },
     { id: 'usage', label: t.settingsTabUsage || 'Usage' },
   ];
@@ -1809,6 +1854,94 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                   <span>{t.resetLabel || 'Reset'}</span>
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'storage' && (
+          <div className="bg-white rounded-xl shadow-sm p-8 space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-900">
+                {t.imageStorageTitle || 'Image storage (optional)'}
+              </h3>
+              <p className="text-sm text-slate-600">
+                {t.imageStorageSubtitle ||
+                  'Upload generated images to your own server and use those URLs when publishing.'}
+              </p>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={imageStorageEnabled}
+                onChange={(event) => setImageStorageEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600"
+              />
+              {t.imageStorageEnableLabel || 'Enable image storage'}
+            </label>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t.imageStorageEndpointLabel || 'Upload endpoint URL'}
+                </label>
+                <input
+                  type="url"
+                  value={imageStorageEndpoint}
+                  onChange={(event) => setImageStorageEndpoint(event.target.value)}
+                  placeholder="https://your-server.com/api/blog-image-upload.php"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t.imageStorageTokenLabel || 'API token'}
+                </label>
+                <input
+                  type="password"
+                  value={imageStorageToken}
+                  onChange={(event) => setImageStorageToken(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="md:col-span-2 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleTestImageStorage}
+                  className="text-xs text-blue-600 hover:text-blue-700"
+                  disabled={!imageStorageEnabled || !imageStorageEndpoint.trim()}
+                >
+                  {imageStorageTestStatus === 'loading'
+                    ? (t.testingLabel || 'Testing...')
+                    : (t.imageStorageTestLabel || 'Test upload')}
+                </button>
+                {imageStorageTestStatus === 'success' && (
+                  <span className="text-xs text-emerald-600">
+                    {t.imageStorageTestSuccess || 'Uploaded'} {imageStorageTestMessage ? `- ${imageStorageTestMessage}` : ''}
+                  </span>
+                )}
+                {imageStorageTestStatus === 'error' && (
+                  <span className="text-xs text-rose-600">
+                    {imageStorageTestMessage || t.imageStorageTestFailed || 'Test failed'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              {t.imageStorageHint ||
+                'Images will be stored under blog-bild/<blog-id-or-slug>/ on your server.'}
+            </p>
+
+            <div>
+              <button
+                type="button"
+                onClick={handleSaveSettings}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                <Save className="h-4 w-4" />
+                <span>{t.saveSettings}</span>
+              </button>
             </div>
           </div>
         )}

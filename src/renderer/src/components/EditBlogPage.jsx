@@ -28,6 +28,29 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   const [categories, setCategories] = useState(normalizedCategories.join(', '));
   const [plainContent, setPlainContent] = useState(blog.content || '');
   const [htmlContent, setHtmlContent] = useState('');
+  const normalizeImageGallery = (galleryValue, imageUrl) => {
+    if (Array.isArray(galleryValue)) {
+      const list = galleryValue.filter(Boolean);
+      if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+      return list;
+    }
+    if (typeof galleryValue === 'string' && galleryValue.trim()) {
+      try {
+        const parsed = JSON.parse(galleryValue);
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter(Boolean);
+          if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+          return list;
+        }
+      } catch (error) {
+        // ignore parse error
+      }
+    }
+    return imageUrl ? [imageUrl] : [];
+  };
+  const [imageGallery, setImageGallery] = useState(() =>
+    normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl)
+  );
   const [featuredImage, setFeaturedImage] = useState(blog.imageUrl || '');
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [showUnsavedImageWarning, setShowUnsavedImageWarning] = useState(false);
@@ -140,7 +163,9 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     setCategories(nextCategories);
     setPlainContent(nextPlain);
     setHtmlContent(nextHtml);
-    setFeaturedImage(blog.imageUrl || '');
+    const nextGallery = normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl);
+    setImageGallery(nextGallery);
+    setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
     setLocalImagePath('');
 
     savedDraftRef.current = {
@@ -339,6 +364,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         .filter(Boolean),
       content: contentToSave,
       imageUrl: featuredImage || null,
+      imageGallery,
     });
   };
 
@@ -356,7 +382,12 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     });
 
     if (result.success) {
-      setFeaturedImage(result.imageUrl || '');
+      const nextGallery = normalizeImageGallery(
+        result.imageGallery || imageGallery,
+        result.imageUrl || featuredImage
+      );
+      setImageGallery(nextGallery);
+      setFeaturedImage(result.imageUrl || nextGallery[0] || '');
       if (result.localPath) setLocalImagePath(result.localPath);
     } else {
       alert(result.error || 'Image generation failed');
@@ -393,6 +424,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           .filter(Boolean),
         content: contentToSave,
         imageUrl: featuredImage || null,
+        imageGallery,
       };
       const result = await window.electronAPI.updateBlog({ blog: payload });
       if (!result.success) {
@@ -421,6 +453,21 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     await generateImageNow();
   };
 
+  const handleSelectImage = async (url) => {
+    if (!url || url === featuredImage) return;
+    const nextGallery = normalizeImageGallery(imageGallery, url);
+    setFeaturedImage(url);
+    setImageGallery(nextGallery);
+    if (blog.id) {
+      const result = await window.electronAPI.updateBlog({
+        blog: { ...blog, imageUrl: url, imageGallery: nextGallery },
+      });
+      if (!result.success) {
+        alert(result.error || 'Failed to update featured image');
+      }
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-6">
       <div>
@@ -445,7 +492,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           </div>
           {featuredImage ? (
             <img
-              src={localImagePath || featuredImage}
+              src={featuredImage}
               alt={title || 'Featured'}
               className="max-h-64 w-full rounded-lg object-cover"
             />
@@ -453,6 +500,28 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
             <p className="text-xs text-slate-500">{t.noImageLabel}</p>
           )}
           {localImagePath && <p className="text-xs text-slate-500 break-all">Saved locally: {localImagePath}</p>}
+          {imageGallery.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-600">
+                {t.generatedImagesLabel || 'Generated images'}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {imageGallery.map((url) => (
+                  <button
+                    key={url}
+                    type="button"
+                    onClick={() => handleSelectImage(url)}
+                    className={`h-16 w-20 overflow-hidden rounded-md border ${
+                      url === featuredImage ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+                    }`}
+                    title={t.selectImageLabel || 'Use as featured image'}
+                  >
+                    <img src={url} alt="Generated" className="h-full w-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div>

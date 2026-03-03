@@ -8,6 +8,24 @@ let db;
 let dbPath;
 let dbReadyPromise;
 
+const safeParseJson = (value, fallback = []) => {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : fallback;
+  } catch (error) {
+    return fallback;
+  }
+};
+
+const buildImageGallery = (gallery, imageUrl) => {
+  const list = Array.isArray(gallery) ? gallery.filter(Boolean) : [];
+  if (imageUrl && !list.includes(imageUrl)) {
+    return [imageUrl, ...list];
+  }
+  return list;
+};
+
 async function initDb() {
   if (dbReadyPromise) {
     return dbReadyPromise;
@@ -34,6 +52,7 @@ async function initDb() {
         keywords TEXT,
         categories TEXT,
         image_url TEXT,
+        image_gallery TEXT,
         local_image_path TEXT,
         word_count INTEGER,
         seo_score INTEGER,
@@ -176,6 +195,9 @@ async function initDb() {
     if (!columnNames.has('cost')) {
       db.run('ALTER TABLE blogs ADD COLUMN cost REAL');
     }
+    if (!columnNames.has('image_gallery')) {
+      db.run('ALTER TABLE blogs ADD COLUMN image_gallery TEXT');
+    }
 
     const remoteColumns = db.exec('PRAGMA table_info(remote_posts)');
     const remoteNames = new Set((remoteColumns[0]?.values || []).map((row) => row[1]));
@@ -224,13 +246,14 @@ async function saveBlog(blog, userId) {
         keywords,
         categories,
         image_url,
+        image_gallery,
         local_image_path,
         word_count,
         seo_score,
         language,
         created_at,
         cost
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         userId || null,
         blog.title,
@@ -239,6 +262,7 @@ async function saveBlog(blog, userId) {
         JSON.stringify(blog.keywords || []),
         JSON.stringify(blog.categories || []),
         blog.imageUrl || null,
+        JSON.stringify(buildImageGallery(blog.imageGallery, blog.imageUrl)),
         blog.localImagePath || null,
         blog.wordCount || 0,
         blog.seoScore || null,
@@ -260,7 +284,7 @@ async function listBlogs({ limit = 50, userId = null, isAdmin = false } = {}) {
     return [];
   }
 
-  let query = `SELECT id, title, image_url, local_image_path, word_count, seo_score, language, created_at, cost
+  let query = `SELECT id, title, image_url, image_gallery, local_image_path, word_count, seo_score, language, created_at, cost
      FROM blogs`;
   const params = [];
   if (!isAdmin || userId) {
@@ -283,6 +307,7 @@ async function listBlogs({ limit = 50, userId = null, isAdmin = false } = {}) {
     id: row.id,
     title: row.title,
     imageUrl: row.image_url,
+    imageGallery: safeParseJson(row.image_gallery, []),
     localImagePath: row.local_image_path,
     wordCount: row.word_count,
     seoScore: row.seo_score,
@@ -300,7 +325,7 @@ async function getBlogById(id, { userId = null, isAdmin = false } = {}) {
   }
 
   let query = `SELECT id, title, content, meta_description, keywords, categories, image_url,
-            word_count, seo_score, language, created_at, cost
+            image_gallery, word_count, seo_score, language, created_at, cost
      FROM blogs WHERE id = ?`;
   const params = [id];
   if (!isAdmin || userId) {
@@ -328,6 +353,7 @@ async function getBlogById(id, { userId = null, isAdmin = false } = {}) {
     keywords: JSON.parse(row.keywords || '[]'),
     categories: JSON.parse(row.categories || '[]'),
     imageUrl: row.image_url,
+    imageGallery: safeParseJson(row.image_gallery, []),
     localImagePath: row.local_image_path,
     wordCount: row.word_count,
     seoScore: row.seo_score,
@@ -349,7 +375,7 @@ async function getBlogsByIds(ids, { userId = null, isAdmin = false } = {}) {
 
   const placeholders = ids.map(() => '?').join(', ');
 let query = `SELECT id, title, content, meta_description, keywords, categories, image_url,
-            local_image_path, word_count, seo_score, language, created_at, cost
+            image_gallery, local_image_path, word_count, seo_score, language, created_at, cost
      FROM blogs WHERE id IN (${placeholders})`;
   const params = [...ids];
   if (!isAdmin || userId) {
@@ -374,6 +400,7 @@ let query = `SELECT id, title, content, meta_description, keywords, categories, 
     keywords: JSON.parse(row.keywords || '[]'),
     categories: JSON.parse(row.categories || '[]'),
     imageUrl: row.image_url,
+    imageGallery: safeParseJson(row.image_gallery, []),
     localImagePath: row.local_image_path,
     wordCount: row.word_count,
     seoScore: row.seo_score,
@@ -413,6 +440,18 @@ async function getHistorySummary({ userId = null, isAdmin = false } = {}) {
 
 async function updateBlog({ blog, userId, isAdmin }) {
   await initDb();
+  let imageGalleryValue = null;
+  if (blog.imageGallery !== undefined) {
+    imageGalleryValue = JSON.stringify(buildImageGallery(blog.imageGallery, blog.imageUrl));
+  } else {
+    const existing = await getBlogById(blog.id, { userId, isAdmin });
+    imageGalleryValue = JSON.stringify(
+      buildImageGallery(
+        existing?.imageGallery || existing?.image_gallery || [],
+        blog.imageUrl || existing?.imageUrl || existing?.image_url || null
+      )
+    );
+  }
   const now = new Date().toISOString();
   const params = [
     blog.title,
@@ -421,6 +460,7 @@ async function updateBlog({ blog, userId, isAdmin }) {
     JSON.stringify(blog.keywords || []),
     JSON.stringify(blog.categories || []),
     blog.imageUrl || null,
+    imageGalleryValue,
     blog.localImagePath || null,
     blog.wordCount || 0,
     blog.seoScore || null,
@@ -437,6 +477,7 @@ let query = `UPDATE blogs SET
     keywords = ?,
     categories = ?,
     image_url = ?,
+    image_gallery = ?,
     local_image_path = ?,
     word_count = ?,
     seo_score = ?,
@@ -1193,10 +1234,15 @@ async function getPublishAnalytics({ userId, dateFrom, dateTo, destinationId = n
   const remotePosts = await listRemotePosts({ limit: 1000, destinationId });
   const remotePostsMap = new Map(remotePosts.map((p) => [p.id, p]));
   const totalTimeSpent = remotePosts.reduce((acc, p) => acc + (p.timeSpent || 0), 0);
+  const useRemoteStats = remotePosts.length > 0;
 
   // Calculate summary stats
-  const totalPublished = historyRows.filter((h) => h.status === 'publish').length;
-  const totalDrafts = historyRows.filter((h) => h.status === 'draft').length;
+  const totalPublished = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'publish').length
+    : historyRows.filter((h) => h.status === 'publish').length;
+  const totalDrafts = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'draft').length
+    : historyRows.filter((h) => h.status === 'draft').length;
   let totalViews = 0;
   remotePosts.forEach((p) => {
     totalViews += p.views || 0;
@@ -1204,33 +1250,57 @@ async function getPublishAnalytics({ userId, dateFrom, dateTo, destinationId = n
 
   // Group by month
   const publishedByMonth = {};
-  historyRows.forEach((row) => {
-    if (row.published_at) {
-      const month = row.published_at.substring(0, 7); // YYYY-MM
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const dateValue = post.publishedAt || post.createdAt || post.updatedAt;
+      if (!dateValue) return;
+      const month = new Date(dateValue).toISOString().substring(0, 7);
       if (!publishedByMonth[month]) {
         publishedByMonth[month] = { month, count: 0, views: 0 };
       }
       publishedByMonth[month].count++;
-      const remotePost = remotePostsMap.get(row.remote_post_id);
-      if (remotePost) {
-        publishedByMonth[month].views += remotePost.views || 0;
+      publishedByMonth[month].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      if (row.published_at) {
+        const month = row.published_at.substring(0, 7); // YYYY-MM
+        if (!publishedByMonth[month]) {
+          publishedByMonth[month] = { month, count: 0, views: 0 };
+        }
+        publishedByMonth[month].count++;
+        const remotePost = remotePostsMap.get(row.remote_post_id);
+        if (remotePost) {
+          publishedByMonth[month].views += remotePost.views || 0;
+        }
       }
-    }
-  });
+    });
+  }
 
   // Group by platform
   const byPlatform = {};
-  historyRows.forEach((row) => {
-    const platform = row.platform || 'unknown';
-    if (!byPlatform[platform]) {
-      byPlatform[platform] = { platform, count: 0, views: 0 };
-    }
-    byPlatform[platform].count++;
-    const remotePost = remotePostsMap.get(row.remote_post_id);
-    if (remotePost) {
-      byPlatform[platform].views += remotePost.views || 0;
-    }
-  });
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const platform = post.provider || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      byPlatform[platform].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      const platform = row.platform || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      const remotePost = remotePostsMap.get(row.remote_post_id);
+      if (remotePost) {
+        byPlatform[platform].views += remotePost.views || 0;
+      }
+    });
+  }
 
   // Top topics from remote posts
   const topicViews = {};

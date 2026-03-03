@@ -3,6 +3,25 @@ const mysql = require('mysql2/promise');
 let pool;
 let isInitialized = false;
 
+const safeParseJson = (value, fallback = []) => {
+  if (!value) return fallback;
+  if (Array.isArray(value)) return value.filter(Boolean);
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : fallback;
+  } catch (error) {
+    return fallback;
+  }
+};
+
+const buildImageGallery = (gallery, imageUrl) => {
+  const list = Array.isArray(gallery) ? gallery.filter(Boolean) : safeParseJson(gallery, []);
+  if (imageUrl && !list.includes(imageUrl)) {
+    return [imageUrl, ...list];
+  }
+  return list;
+};
+
 /**
  * Initialize MySQL connection pool
  * Set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in environment variables or config
@@ -69,6 +88,7 @@ async function createTables() {
         keywords TEXT,
         categories TEXT,
         image_url TEXT,
+        image_gallery LONGTEXT,
         word_count INT,
         seo_score INT,
         language VARCHAR(10),
@@ -82,6 +102,7 @@ async function createTables() {
 
     // Backfill new columns for existing installs
     await connection.query(`ALTER TABLE blogs ADD COLUMN IF NOT EXISTS categories TEXT`);
+    await connection.query(`ALTER TABLE blogs ADD COLUMN IF NOT EXISTS image_gallery LONGTEXT`);
 
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -249,8 +270,8 @@ async function saveBlog(blog, userId) {
   const sql = `
     INSERT INTO blogs (
       user_id, title, content, meta_description, keywords, categories,
-      image_url, word_count, seo_score, language, cost
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      image_url, image_gallery, word_count, seo_score, language, cost
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const params = [
@@ -261,6 +282,7 @@ async function saveBlog(blog, userId) {
     JSON.stringify(blog.keywords || []),
     JSON.stringify(blog.categories || []),
     blog.imageUrl || '',
+    JSON.stringify(buildImageGallery(blog.imageGallery, blog.imageUrl)),
     blog.wordCount || 0,
     blog.seoScore || 0,
     blog.language || 'en',
@@ -308,6 +330,7 @@ async function getBlogs({ userId = null, limit = 50, offset = 0, search = '', da
     ...row,
     keywords: safeParseJson(row.keywords),
     categories: safeParseJson(row.categories),
+    imageGallery: buildImageGallery(safeParseJson(row.image_gallery), row.image_url),
   }));
 }
 
@@ -323,6 +346,7 @@ async function getBlogById(id) {
     ...row,
     keywords: safeParseJson(row.keywords),
     categories: safeParseJson(row.categories),
+    imageGallery: buildImageGallery(safeParseJson(row.image_gallery), row.image_url),
   };
 }
 
@@ -358,6 +382,10 @@ async function updateBlog(id, updates) {
   if (updates.imageUrl !== undefined) {
     fields.push('image_url = ?');
     params.push(updates.imageUrl);
+  }
+  if (updates.imageGallery !== undefined) {
+    fields.push('image_gallery = ?');
+    params.push(JSON.stringify(buildImageGallery(updates.imageGallery, updates.imageUrl)));
   }
 
   if (fields.length === 0) {
@@ -732,37 +760,151 @@ async function getPublishHistory({ userId = null, limit = 100, offset = 0, dateF
 async function getPublishAnalytics({ userId = null, dateFrom, dateTo, destinationId = null }) {
   await initDb();
 
-  let sql = `
-    SELECT
-      COUNT(*) as totalPublished,
-      COUNT(CASE WHEN status = 'published' THEN 1 END) as successCount,
-      COUNT(CASE WHEN status = 'draft' THEN 1 END) as draftCount,
-      platform,
-      DATE(published_at) as date
-    FROM publish_history
-    WHERE 1=1
-  `;
-
-  const params = [];
+  let historySql = 'SELECT * FROM publish_history WHERE 1=1';
+  const historyParams = [];
 
   if (userId) {
-    sql += ' AND user_id = ?';
-    params.push(userId);
+    historySql += ' AND user_id = ?';
+    historyParams.push(userId);
   }
-
   if (dateFrom) {
-    sql += ' AND published_at >= ?';
-    params.push(dateFrom);
+    historySql += ' AND published_at >= ?';
+    historyParams.push(dateFrom);
   }
-
   if (dateTo) {
-    sql += ' AND published_at <= ?';
-    params.push(dateTo);
+    historySql += ' AND published_at <= ?';
+    historyParams.push(dateTo);
+  }
+  if (destinationId) {
+    historySql += ' AND destination_id = ?';
+    historyParams.push(destinationId);
   }
 
-  sql += ' GROUP BY platform, DATE(published_at) ORDER BY date DESC';
+  const historyRows = await query(historySql, historyParams);
 
-  return await query(sql, params);
+  const remotePosts = await listRemotePosts({ limit: 1000, destinationId });
+  const remotePostsMap = new Map(remotePosts.map((p) => [p.id, p]));
+  const totalTimeSpent = remotePosts.reduce((acc, p) => acc + (p.timeSpent || 0), 0);
+  const useRemoteStats = remotePosts.length > 0;
+
+  const totalPublished = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'publish').length
+    : historyRows.filter((h) => h.status === 'publish').length;
+  const totalDrafts = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'draft').length
+    : historyRows.filter((h) => h.status === 'draft').length;
+  const totalViews = remotePosts.reduce((acc, p) => acc + (p.views || 0), 0);
+
+  const publishedByMonth = {};
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const dateValue = post.published_at || post.created_at || post.updated_at;
+      if (!dateValue) return;
+      const month = new Date(dateValue).toISOString().substring(0, 7);
+      if (!publishedByMonth[month]) {
+        publishedByMonth[month] = { month, count: 0, views: 0 };
+      }
+      publishedByMonth[month].count++;
+      publishedByMonth[month].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      if (row.published_at) {
+        const month = row.published_at.substring(0, 7);
+        if (!publishedByMonth[month]) {
+          publishedByMonth[month] = { month, count: 0, views: 0 };
+        }
+        publishedByMonth[month].count++;
+        const remotePost = remotePostsMap.get(row.remote_post_id);
+        if (remotePost) {
+          publishedByMonth[month].views += remotePost.views || 0;
+        }
+      }
+    });
+  }
+
+  const byPlatform = {};
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const platform = post.provider || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      byPlatform[platform].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      const platform = row.platform || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      const remotePost = remotePostsMap.get(row.remote_post_id);
+      if (remotePost) {
+        byPlatform[platform].views += remotePost.views || 0;
+      }
+    });
+  }
+
+  const topicViews = {};
+  const topicCounts = {};
+  remotePosts.forEach((post) => {
+    (post.topics || []).forEach((topic) => {
+      const key = topic.toLowerCase();
+      topicViews[key] = (topicViews[key] || 0) + (post.views || 0);
+      topicCounts[key] = (topicCounts[key] || 0) + 1;
+    });
+  });
+
+  const topTopics = Object.entries(topicViews)
+    .map(([topic, totalViews]) => ({
+      topic,
+      totalViews,
+      postCount: topicCounts[topic] || 0,
+      avgViews: topicCounts[topic] ? Math.round(totalViews / topicCounts[topic]) : 0,
+    }))
+    .sort((a, b) => b.totalViews - a.totalViews)
+    .slice(0, 10);
+
+  const topPosts = [...remotePosts]
+    .filter((p) => typeof p.views === 'number')
+    .sort((a, b) => (b.views || 0) - (a.views || 0))
+    .slice(0, 10)
+    .map((p) => ({
+      id: p.id,
+      title: p.title,
+      views: p.views,
+      publishedAt: p.published_at,
+      url: p.url,
+      status: p.status,
+    }));
+
+  const recentPublishes = historyRows.slice(0, 10).map((row) => ({
+    id: row.id,
+    blogId: row.blog_id,
+    destinationName: row.destination_name,
+    platform: row.platform,
+    status: row.status,
+    publishedAt: row.published_at,
+    publishedUrl: row.published_url,
+  }));
+
+  return {
+    summary: {
+      totalPublished,
+      totalDrafts,
+      totalViews,
+      avgViewsPerPost: remotePosts.length ? Math.round(totalViews / remotePosts.length) : 0,
+      totalTimeSpentSeconds: totalTimeSpent,
+      avgTimePerPostSeconds: remotePosts.length ? Math.round(totalTimeSpent / remotePosts.length) : 0,
+    },
+    publishedByMonth: Object.values(publishedByMonth).sort((a, b) => a.month.localeCompare(b.month)),
+    byPlatform: Object.values(byPlatform).sort((a, b) => b.count - a.count),
+    topTopics,
+    topPosts,
+    recentPublishes,
+  };
 }
 
 /**

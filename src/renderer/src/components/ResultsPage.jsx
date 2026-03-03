@@ -18,6 +18,30 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
   const [selectedCategories, setSelectedCategories] = useState(blog.categories || []);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [newCategory, setNewCategory] = useState('');
+  const normalizeImageGallery = (galleryValue, imageUrl) => {
+    if (Array.isArray(galleryValue)) {
+      const list = galleryValue.filter(Boolean);
+      if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+      return list;
+    }
+    if (typeof galleryValue === 'string' && galleryValue.trim()) {
+      try {
+        const parsed = JSON.parse(galleryValue);
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter(Boolean);
+          if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+          return list;
+        }
+      } catch (error) {
+        // ignore parse error
+      }
+    }
+    return imageUrl ? [imageUrl] : [];
+  };
+  const [imageGallery, setImageGallery] = useState(() =>
+    normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl)
+  );
+  const [featuredImage, setFeaturedImage] = useState(blog.imageUrl || '');
   const rawContent = blog.content || '';
   const looksLikeHtml = /<\w+[^>]*>/.test(rawContent);
   const hasH1 = /<h1\b[^>]*>/i.test(rawContent);
@@ -33,6 +57,29 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
     return words;
   }, [blog?.wordCount, rawContent]);
   const readingMinutes = Math.max(1, Math.ceil(computedWordCount / 200));
+
+  useEffect(() => {
+    const nextGallery = normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl);
+    setImageGallery(nextGallery);
+    setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
+  }, [blog]);
+
+  const handleSelectImage = async (url) => {
+    if (!url || url === featuredImage) return;
+    const nextGallery = normalizeImageGallery(imageGallery, url);
+    setFeaturedImage(url);
+    setImageGallery(nextGallery);
+    blog.imageUrl = url;
+    blog.imageGallery = nextGallery;
+    if (blog.id) {
+      const result = await window.electronAPI.updateBlog({
+        blog: { ...blog, imageUrl: url, imageGallery: nextGallery },
+      });
+      if (!result.success) {
+        alert(result.error || 'Failed to update featured image');
+      }
+    }
+  };
 
   const legacyToHtml = (text) => {
     const lines = (text || '').split(/\r?\n/);
@@ -168,7 +215,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
 
   const handleDownloadImage = async () => {
     const result = await window.electronAPI.downloadImage({
-      url: blog.imageUrl,
+      url: featuredImage || blog.imageUrl,
       title: blog.title,
     });
     if (!result.success) {
@@ -256,7 +303,12 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
     setPublishStatus({ state: 'loading', message: publishMode === 'publish' ? 'Publishing...' : 'Creating draft...', url: null });
     const result = await window.electronAPI.publishBlog({
       destination,
-      blog: { ...blog, categories: selectedCategories },
+      blog: {
+        ...blog,
+        imageUrl: featuredImage || blog.imageUrl,
+        imageGallery,
+        categories: selectedCategories,
+      },
       status: publishMode,
     });
     if (result.success) {
@@ -291,7 +343,14 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
       blog.imageUrl = result.imageUrl;
       blog.localImagePath = result.localPath || '';
       blog.local_image_path = result.localPath || '';
-      alert('Image generated and saved locally.');
+      const nextGallery = normalizeImageGallery(
+        result.imageGallery || imageGallery,
+        result.imageUrl || blog.imageUrl
+      );
+      setImageGallery(nextGallery);
+      setFeaturedImage(result.imageUrl || nextGallery[0] || '');
+      blog.imageGallery = nextGallery;
+      alert(result.localPath ? 'Image generated and saved locally.' : 'Image generated.');
     } else {
       alert(result.error || 'Image generation failed');
     }
@@ -352,9 +411,9 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
             </div>
           )}
 
-          {blog.imageUrl && (
+          {featuredImage && (
             <div className="rounded-lg overflow-hidden space-y-2">
-              <img src={blog.imageUrl} alt={blog.title} className="w-full h-auto" />
+              <img src={featuredImage} alt={blog.title} className="w-full h-auto" />
               <button
                 onClick={handleDownloadImage}
                 className="inline-flex items-center space-x-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs"
@@ -362,6 +421,29 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                 <Download className="w-4 h-4" />
                 <span>{t.downloadImage}</span>
               </button>
+            </div>
+          )}
+
+          {imageGallery.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-600">
+                {t.generatedImagesLabel || 'Generated images'}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {imageGallery.map((url) => (
+                  <button
+                    key={url}
+                    type="button"
+                    onClick={() => handleSelectImage(url)}
+                    className={`h-16 w-20 overflow-hidden rounded-md border ${
+                      url === featuredImage ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+                    }`}
+                    title={t.selectImageLabel || 'Use as featured image'}
+                  >
+                    <img src={url} alt="Generated" className="h-full w-full object-cover" />
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

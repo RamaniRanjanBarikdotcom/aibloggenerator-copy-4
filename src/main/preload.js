@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startShopifyOAuth: (payload) => ipcRenderer.invoke('start-shopify-oauth', payload),
   listShopifyBlogs: (payload) => ipcRenderer.invoke('list-shopify-blogs', payload),
   downloadImage: (payload) => ipcRenderer.invoke('download-image', payload),
+  uploadImageToStorage: (payload) => ipcRenderer.invoke('upload-image-storage', payload),
+  testImageStorage: (payload) => ipcRenderer.invoke('test-image-storage', payload),
   generateBlogImage: (payload) => ipcRenderer.invoke('generate-blog-image', payload),
   getUserApiKey: (payload) => ipcRenderer.invoke('get-user-api-key', payload),
   saveUserApiKey: (payload) => ipcRenderer.invoke('save-user-api-key', payload),

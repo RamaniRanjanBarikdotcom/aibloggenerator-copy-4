@@ -5,6 +5,25 @@ let db;
 let isInitialized = false;
 let storeInstance = null;
 
+const safeParseJson = (value, fallback = []) => {
+  if (!value) return fallback;
+  if (Array.isArray(value)) return value.filter(Boolean);
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : fallback;
+  } catch (error) {
+    return fallback;
+  }
+};
+
+const buildImageGallery = (gallery, imageUrl) => {
+  const list = Array.isArray(gallery) ? gallery.filter(Boolean) : safeParseJson(gallery, []);
+  if (imageUrl && !list.includes(imageUrl)) {
+    return [imageUrl, ...list];
+  }
+  return list;
+};
+
 function normalizeDocId(id) {
   if (id instanceof ObjectId) {
     return id;
@@ -226,6 +245,7 @@ async function saveBlog(blog, userId) {
     meta_description: blog.metaDescription || '',
     keywords: blog.keywords || '',
     image_url: blog.imageUrl || '',
+    image_gallery: buildImageGallery(blog.imageGallery, blog.imageUrl),
     local_image_path: blog.localImagePath || blog.local_image_path || '',
     word_count: blog.wordCount || 0,
     seo_score: blog.seoScore || 0,
@@ -285,15 +305,18 @@ async function getBlogs({ userId = null, isAdmin = false, limit = 50, offset = 0
     user_id: doc.user_id,
     title: doc.title,
     content: doc.content,
-    meta_description: doc.meta_description,
+    metaDescription: doc.meta_description,
     keywords: doc.keywords,
-    image_url: doc.image_url,
-    word_count: doc.word_count,
-    seo_score: doc.seo_score,
+    categories: safeParseJson(doc.categories, []),
+    imageUrl: doc.image_url,
+    imageGallery: buildImageGallery(doc.image_gallery, doc.image_url),
+    localImagePath: doc.local_image_path,
+    wordCount: doc.word_count,
+    seoScore: doc.seo_score,
     language: doc.language,
     cost: doc.cost,
-    created_at: doc.created_at?.toISOString(),
-    updated_at: doc.updated_at?.toISOString(),
+    generatedAt: doc.created_at?.toISOString(),
+    updatedAt: doc.updated_at?.toISOString(),
   }));
 }
 
@@ -317,16 +340,18 @@ async function getBlogById(id, { userId = null, isAdmin = false } = {}) {
     user_id: doc.user_id,
     title: doc.title,
     content: doc.content,
-    meta_description: doc.meta_description,
+    metaDescription: doc.meta_description,
     keywords: doc.keywords,
-    image_url: doc.image_url,
-    local_image_path: doc.local_image_path,
-    word_count: doc.word_count,
-    seo_score: doc.seo_score,
+    categories: safeParseJson(doc.categories, []),
+    imageUrl: doc.image_url,
+    imageGallery: buildImageGallery(doc.image_gallery, doc.image_url),
+    localImagePath: doc.local_image_path,
+    wordCount: doc.word_count,
+    seoScore: doc.seo_score,
     language: doc.language,
     cost: doc.cost,
-    created_at: doc.created_at?.toISOString(),
-    updated_at: doc.updated_at?.toISOString(),
+    generatedAt: doc.created_at?.toISOString(),
+    updatedAt: doc.updated_at?.toISOString(),
   };
 }
 
@@ -348,7 +373,11 @@ async function updateBlog({ blog, userId, isAdmin }) {
   if (blog.content !== undefined) updateDoc.$set.content = blog.content;
   if (blog.metaDescription !== undefined) updateDoc.$set.meta_description = blog.metaDescription;
   if (blog.keywords !== undefined) updateDoc.$set.keywords = JSON.stringify(blog.keywords || []);
+  if (blog.categories !== undefined) updateDoc.$set.categories = JSON.stringify(blog.categories || []);
   if (blog.imageUrl !== undefined) updateDoc.$set.image_url = blog.imageUrl;
+  if (blog.imageGallery !== undefined) {
+    updateDoc.$set.image_gallery = buildImageGallery(blog.imageGallery, blog.imageUrl);
+  }
   if (blog.localImagePath !== undefined) updateDoc.$set.local_image_path = blog.localImagePath;
   if (blog.wordCount !== undefined) updateDoc.$set.word_count = blog.wordCount;
   if (blog.seoScore !== undefined) updateDoc.$set.seo_score = blog.seoScore;
@@ -879,10 +908,15 @@ async function getPublishAnalytics({ userId = null, dateFrom, dateTo, destinatio
   const remotePosts = await listRemotePosts({ limit: 1000, destinationId });
   const remotePostsMap = new Map(remotePosts.map((p) => [p.id, p]));
   const totalTimeSpent = remotePosts.reduce((acc, p) => acc + (p.timeSpent || 0), 0);
+  const useRemoteStats = remotePosts.length > 0;
 
   // Calculate summary stats
-  const totalPublished = historyRows.filter((h) => h.status === 'publish').length;
-  const totalDrafts = historyRows.filter((h) => h.status === 'draft').length;
+  const totalPublished = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'publish').length
+    : historyRows.filter((h) => h.status === 'publish').length;
+  const totalDrafts = useRemoteStats
+    ? remotePosts.filter((p) => p.status === 'draft').length
+    : historyRows.filter((h) => h.status === 'draft').length;
   let totalViews = 0;
   remotePosts.forEach((p) => {
     totalViews += p.views || 0;
@@ -890,34 +924,59 @@ async function getPublishAnalytics({ userId = null, dateFrom, dateTo, destinatio
 
   // Group by month
   const publishedByMonth = {};
-  historyRows.forEach((row) => {
-    if (row.published_at) {
-      const date = row.published_at instanceof Date ? row.published_at : new Date(row.published_at);
-      const month = date.toISOString().substring(0, 7); // YYYY-MM
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const dateValue = post.publishedAt || post.createdAt || post.updatedAt;
+      if (!dateValue) return;
+      const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+      const month = date.toISOString().substring(0, 7);
       if (!publishedByMonth[month]) {
         publishedByMonth[month] = { month, count: 0, views: 0 };
       }
       publishedByMonth[month].count++;
-      const remotePost = remotePostsMap.get(row.remote_post_id);
-      if (remotePost) {
-        publishedByMonth[month].views += remotePost.views || 0;
+      publishedByMonth[month].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      if (row.published_at) {
+        const date = row.published_at instanceof Date ? row.published_at : new Date(row.published_at);
+        const month = date.toISOString().substring(0, 7); // YYYY-MM
+        if (!publishedByMonth[month]) {
+          publishedByMonth[month] = { month, count: 0, views: 0 };
+        }
+        publishedByMonth[month].count++;
+        const remotePost = remotePostsMap.get(row.remote_post_id);
+        if (remotePost) {
+          publishedByMonth[month].views += remotePost.views || 0;
+        }
       }
-    }
-  });
+    });
+  }
 
   // Group by platform
   const byPlatform = {};
-  historyRows.forEach((row) => {
-    const platform = row.platform || 'unknown';
-    if (!byPlatform[platform]) {
-      byPlatform[platform] = { platform, count: 0, views: 0 };
-    }
-    byPlatform[platform].count++;
-    const remotePost = remotePostsMap.get(row.remote_post_id);
-    if (remotePost) {
-      byPlatform[platform].views += remotePost.views || 0;
-    }
-  });
+  if (useRemoteStats) {
+    remotePosts.forEach((post) => {
+      const platform = post.provider || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      byPlatform[platform].views += post.views || 0;
+    });
+  } else {
+    historyRows.forEach((row) => {
+      const platform = row.platform || 'unknown';
+      if (!byPlatform[platform]) {
+        byPlatform[platform] = { platform, count: 0, views: 0 };
+      }
+      byPlatform[platform].count++;
+      const remotePost = remotePostsMap.get(row.remote_post_id);
+      if (remotePost) {
+        byPlatform[platform].views += remotePost.views || 0;
+      }
+    });
+  }
 
   // Top topics from remote posts
   const topicViews = {};
@@ -1045,7 +1104,10 @@ async function getBlogsByIds(ids, { userId = null, isAdmin = false } = {}) {
     content: doc.content,
     metaDescription: doc.meta_description,
     keywords: doc.keywords || '',
+    categories: safeParseJson(doc.categories, []),
     imageUrl: doc.image_url,
+    imageGallery: buildImageGallery(doc.image_gallery, doc.image_url),
+    localImagePath: doc.local_image_path,
     wordCount: doc.word_count,
     seoScore: doc.seo_score,
     language: doc.language,

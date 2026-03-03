@@ -108,6 +108,38 @@ function ensureValue(label, value) {
   return String(value).trim();
 }
 
+function isPublicHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function normalizeImageGallery(gallery, imageUrl = null) {
+  let list = [];
+  if (Array.isArray(gallery)) {
+    list = gallery.filter(Boolean);
+  } else if (typeof gallery === 'string') {
+    try {
+      const parsed = JSON.parse(gallery);
+      if (Array.isArray(parsed)) {
+        list = parsed.filter(Boolean);
+      }
+    } catch (error) {
+      list = [];
+    }
+  }
+  if (imageUrl && !list.includes(imageUrl)) {
+    list.unshift(imageUrl);
+  }
+  return list;
+}
+
+function appendImageToGallery(gallery, imageUrl) {
+  const list = normalizeImageGallery(gallery);
+  if (imageUrl && !list.includes(imageUrl)) {
+    list.unshift(imageUrl);
+  }
+  return list;
+}
+
 function normalizeShopDomain(value) {
   return String(value || '')
     .trim()
@@ -200,6 +232,44 @@ const PUBLISH_AXIOS_DEFAULTS = {
     'User-Agent': 'AIBlogGenerator/1.0',
   },
 };
+
+async function uploadImageToStorage({ blog, imageUrl, localImagePath, storage }) {
+  if (!storage?.enabled) return null;
+  const endpointUrl = ensureValue('Image storage endpoint', storage.endpointUrl);
+  const token = String(storage.authToken || '').trim();
+  const img = await loadImageBuffer({ imageUrl, localImagePath });
+  const form = new FormData();
+  form.append('file', img.buffer, {
+    filename: img.filename || 'blog-image.jpg',
+    contentType: img.mimeType || 'image/jpeg',
+  });
+  if (blog?.id) form.append('blog_id', String(blog.id));
+  if (blog?.title) form.append('title', String(blog.title));
+  form.append('base_folder', 'blog-bild');
+  if (token) {
+    form.append('token', token);
+  }
+
+  const headers = { ...PUBLISH_AXIOS_DEFAULTS.headers, ...form.getHeaders() };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await axios.post(endpointUrl, form, {
+    headers,
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+  });
+
+  const url =
+    response.data?.url ||
+    response.data?.file?.url ||
+    response.data?.data?.url ||
+    '';
+  if (!url) {
+    throw new Error('Image storage did not return a URL.');
+  }
+  return url;
+}
 
 const WP_STATS_CACHE_MS = 60 * 1000; // 1 minute cache for status counters
 let wpStatsCache = new Map(); // key: destinationId|baseUrl, value: { ts, data }
@@ -1521,7 +1591,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
           .split(',')
           .map((item) => item.trim())
           .filter(Boolean);
-  const categories =
+    const categories =
       Array.isArray(blog.categories) && blog.categories.length
         ? blog.categories
         : String(blog.categories || '')
@@ -1529,7 +1599,32 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
             .map((item) => item.trim())
             .filter(Boolean);
 
-  let result = null;
+    let result = null;
+    let imageStorageUsed = false;
+
+    try {
+      const rawSettings = await getSetting({
+        userId: currentUser.id,
+        key: `user_settings_${currentUser.id}`,
+      });
+      const userSettings = rawSettings ? JSON.parse(rawSettings) : {};
+      if (userSettings.imageStorage?.enabled && (imageUrl || localImagePath)) {
+        const uploadedUrl = await uploadImageToStorage({
+          blog,
+          imageUrl,
+          localImagePath,
+          storage: userSettings.imageStorage,
+        });
+        if (uploadedUrl) {
+          imageUrl = uploadedUrl;
+          localImagePath = null;
+          imageStorageUsed = true;
+          console.log('[Publish] Image uploaded to external storage:', uploadedUrl);
+        }
+      }
+    } catch (err) {
+      console.warn('[Publish] External image storage failed:', err.message);
+    }
 
     // Helper function to insert image into content
     const insertImageIntoContent = (imgSrc, imgAlt, htmlContent) => {
@@ -1543,6 +1638,67 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       }
       // Otherwise insert at the beginning
       return imageHtml + htmlContent;
+    };
+
+    const stripLeadingTitleFromContent = (htmlContent, pageTitle) => {
+      if (!htmlContent || !pageTitle) return htmlContent;
+      const normalizeText = (value) =>
+        String(value || '')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&amp;/gi, '&')
+          .replace(/&quot;/gi, '"')
+          .replace(/&#39;|&apos;/gi, "'")
+          .replace(/&lt;/gi, '<')
+          .replace(/&gt;/gi, '>')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+
+      const normalizedTitle = normalizeText(pageTitle);
+      if (!normalizedTitle) return htmlContent;
+
+      const h1Match = htmlContent.match(/^\s*<h1[^>]*>([\s\S]*?)<\/h1>\s*/i);
+      if (h1Match) {
+        const h1Text = normalizeText(h1Match[1]);
+        if (h1Text === normalizedTitle) {
+          return htmlContent.slice(h1Match[0].length);
+        }
+      }
+
+      const mdMatch = htmlContent.match(/^\s*#\s+(.+?)(\r?\n)+/);
+      if (mdMatch) {
+        const mdText = normalizeText(mdMatch[1]);
+        if (mdText === normalizedTitle) {
+          return htmlContent.slice(mdMatch[0].length);
+        }
+      }
+
+      const setextMatch = htmlContent.match(/^\s*(.+?)\s*\r?\n=+\s*\r?\n/);
+      if (setextMatch) {
+        const setextText = normalizeText(setextMatch[1]);
+        if (setextText === normalizedTitle) {
+          return htmlContent.slice(setextMatch[0].length);
+        }
+      }
+
+      return htmlContent;
+    };
+
+    const normalizeShopifyTags = (items) => {
+      const raw = (items || []).flatMap((item) =>
+        String(item || '').split(/[,;\n]+/)
+      );
+      const cleaned = raw
+        .map((tag) =>
+          tag
+            .replace(/[^a-zA-Z0-9 _-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        )
+        .filter(Boolean)
+        .map((tag) => (tag.length > 255 ? tag.slice(0, 255) : tag));
+      return Array.from(new Set(cleaned));
     };
 
     // Helper: fetch remote image and return base64 data + filename
@@ -1623,12 +1779,8 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
         }
       }
 
-      // Insert image into content body using mediaUrl (if available)
-      let contentWithImage = content;
-      if (mediaUrl) {
-        contentWithImage = insertImageIntoContent(mediaUrl, title, content);
-        console.log('[Publish] Image inserted into blog content');
-      }
+      // WordPress already renders the title + featured image, so avoid duplicating in body content.
+      let contentWithImage = stripLeadingTitleFromContent(content, title);
 
       // Build payload - plugin handles everything (image download, SEO, categories, etc.)
       const postPayload = {
@@ -1675,24 +1827,51 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       const blogId = ensureValue('Shopify blog ID', destination.blogId);
       const apiVersion = (destination.apiVersion || '2024-01').trim();
 
-      // Insert image into content body for Shopify
-      let contentWithImage = content;
-      if (imageUrl) {
-        contentWithImage = insertImageIntoContent(imageUrl, title, content);
-        console.log('[Publish] Image inserted into blog content for Shopify');
+      let mediaUrl = isPublicHttpUrl(imageUrl) ? imageUrl : null;
+      if (!imageStorageUsed && (imageUrl || localImagePath)) {
+        try {
+          const img = await loadImageBuffer({ imageUrl, localImagePath });
+          const base64 = img.buffer.toString('base64');
+          const fileResponse = await axios.post(
+            `https://${shopDomain}/admin/api/${apiVersion}/files.json`,
+            {
+              file: {
+                attachment: base64,
+                filename: img.filename || 'blog-image.jpg',
+                mime_type: img.mimeType || 'image/jpeg',
+              },
+            },
+            {
+              timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+              headers: {
+                ...PUBLISH_AXIOS_DEFAULTS.headers,
+                'X-Shopify-Access-Token': accessToken,
+                'Content-Type': 'application/json',
+              },
+            }
+          );
+          mediaUrl = fileResponse.data?.file?.url || mediaUrl;
+          console.log('[Publish] Shopify file uploaded:', mediaUrl);
+        } catch (err) {
+          const details = err?.response?.data || err.message;
+          console.warn('[Publish] Shopify file upload failed, using original URL:', details);
+        }
       }
+
+      // Shopify already displays the title + featured image, so avoid duplicating them in body_html.
+      let contentWithImage = stripLeadingTitleFromContent(content, title);
 
       const articlePayload = {
         title,
         body_html: contentWithImage,
         summary_html: metaDescription,
-        tags: [...keywords, ...categories].filter(Boolean).join(', '),
+        tags: normalizeShopifyTags([...keywords, ...categories]).join(', '),
         published: publishStatus === 'publish',
       };
 
       // Add featured image for Shopify (separate from content image)
-      if (imageUrl) {
-        articlePayload.image = { src: imageUrl };
+      if (mediaUrl) {
+        articlePayload.image = { src: mediaUrl };
         console.log('[Publish] Including featured image for Shopify article');
       }
 
@@ -1931,7 +2110,7 @@ ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion } =
     const version = (apiVersion || '2024-01').trim();
     const port = Number(process.env.SHOPIFY_OAUTH_PORT || 4319);
     const redirectUri = `http://localhost:${port}/shopify/callback`;
-    const scope = 'read_content,write_content';
+    const scope = 'read_content,write_content,write_files';
     const state = crypto.randomBytes(16).toString('hex');
 
     activeShopifyOAuth = new Promise((resolve, reject) => {
@@ -2076,6 +2255,77 @@ ipcMain.handle('download-image', async (event, { url, title }) => {
   }
 });
 
+ipcMain.handle('upload-image-storage', async (event, { blogId = null, title = '', imageUrl = '', localImagePath = '' } = {}) => {
+  try {
+    requirePermission('history');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const rawSettings = await getSetting({
+      userId: currentUser.id,
+      key: `user_settings_${currentUser.id}`,
+    });
+    const userSettings = rawSettings ? JSON.parse(rawSettings) : {};
+    if (!userSettings.imageStorage?.enabled) {
+      return { success: false, skipped: true, error: 'Image storage not enabled' };
+    }
+
+    let blog = null;
+    if (blogId) {
+      blog = await getBlogById(blogId, { userId: currentUser.id, isAdmin: isAdmin() });
+    }
+    const uploadedUrl = await uploadImageToStorage({
+      blog: blog || { id: blogId, title },
+      imageUrl,
+      localImagePath,
+      storage: userSettings.imageStorage,
+    });
+    if (!uploadedUrl) {
+      throw new Error('Image storage did not return a URL.');
+    }
+
+    if (blogId && blog) {
+      const updated = {
+        ...blog,
+        imageUrl: uploadedUrl,
+        localImagePath: '',
+      };
+      await updateBlog({ blog: updated, userId: currentUser.id, isAdmin: isAdmin() });
+    }
+
+    return { success: true, url: uploadedUrl };
+  } catch (error) {
+    return { success: false, error: error.message || 'Image storage upload failed' };
+  }
+});
+
+ipcMain.handle('test-image-storage', async (event, { imageStorage } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const storage = imageStorage || {};
+    if (!storage.enabled) {
+      throw new Error('Image storage not enabled');
+    }
+
+    const tinyPng =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
+
+    const url = await uploadImageToStorage({
+      blog: { title: 'storage-test' },
+      imageUrl: tinyPng,
+      localImagePath: '',
+      storage,
+    });
+
+    return { success: true, url };
+  } catch (error) {
+    return { success: false, error: error.message || 'Image storage test failed' };
+  }
+});
+
 ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) => {
   try {
     requirePermission('history');
@@ -2138,36 +2388,64 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       throw new Error(`Image generation failed for provider "${provider}"`);
     }
 
-    // Save image locally for reliable future publishing
+    const imageStorageEnabled = Boolean(storedSettings.imageStorage?.enabled);
     const imagesDir = getImagesDirectory();
     const safeTitle = (topic || 'image').replace(/[^a-z0-9-_ ]/gi, '').trim() || 'image';
     const filename = `${safeTitle.replace(/\s+/g, '-')}-${Date.now()}.png`;
     const filePath = path.join(imagesDir, filename);
     let savedLocalPath = '';
-    try {
-      if (imageResult.imageUrl.startsWith('data:')) {
-        const base64 = imageResult.imageUrl.split(',')[1] || '';
-        if (base64) {
-          fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+    if (!imageStorageEnabled) {
+      try {
+        if (imageResult.imageUrl.startsWith('data:')) {
+          const base64 = imageResult.imageUrl.split(',')[1] || '';
+          if (base64) {
+            fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+            savedLocalPath = filePath;
+          }
+        } else {
+          const resp = await axios.get(imageResult.imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+          fs.writeFileSync(filePath, resp.data);
           savedLocalPath = filePath;
         }
-      } else {
-        const resp = await axios.get(imageResult.imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
-        fs.writeFileSync(filePath, resp.data);
-        savedLocalPath = filePath;
+      } catch (err) {
+        console.warn('[Image] Failed to save locally:', err.message);
       }
-    } catch (err) {
-      console.warn('[Image] Failed to save locally:', err.message);
     }
 
     let updatedBlog = null;
+    let finalImageUrl = imageResult.imageUrl;
+    let finalLocalPath = savedLocalPath;
+
+    try {
+      if (imageStorageEnabled) {
+        const uploadedUrl = await uploadImageToStorage({
+          blog: blogId ? { id: blogId, title: title || topic } : { title: title || topic },
+          imageUrl: imageResult.imageUrl,
+          localImagePath: savedLocalPath,
+          storage: storedSettings.imageStorage,
+        });
+        if (uploadedUrl) {
+          finalImageUrl = uploadedUrl;
+          finalLocalPath = '';
+          console.log('[Image] Uploaded to external storage:', uploadedUrl);
+        }
+      }
+    } catch (err) {
+      console.warn('[Image] External storage upload failed:', err.message);
+    }
     if (blogId) {
       const existing = await getBlogById(blogId, { userId: currentUser.id, isAdmin: isAdmin() });
       if (existing) {
+        const existingGallery = normalizeImageGallery(
+          existing.imageGallery || existing.image_gallery,
+          existing.imageUrl || existing.image_url
+        );
+        const nextGallery = appendImageToGallery(existingGallery, finalImageUrl);
         updatedBlog = {
           ...existing,
-          imageUrl: imageResult.imageUrl,
-          localImagePath: savedLocalPath || existing.local_image_path || existing.localImagePath || '',
+          imageUrl: finalImageUrl,
+          imageGallery: nextGallery,
+          localImagePath: finalLocalPath || existing.local_image_path || existing.localImagePath || '',
           cost: (existing.cost || 0) + (imageResult.cost || 0),
         };
         await updateBlog({ blog: updatedBlog, userId: currentUser.id, isAdmin: isAdmin() });
@@ -2188,7 +2466,13 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       userId: currentUser.id,
     });
 
-    return { success: true, imageUrl: imageResult.imageUrl, localPath: savedLocalPath, blog: updatedBlog };
+    return {
+      success: true,
+      imageUrl: finalImageUrl,
+      localPath: finalLocalPath,
+      imageGallery: updatedBlog?.imageGallery || updatedBlog?.image_gallery || null,
+      blog: updatedBlog,
+    };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -3511,6 +3795,36 @@ async function fetchWordpressPosts({ baseUrl, token, authType = 'bearer', perPag
   }
 }
 
+async function fetchShopifyPosts({ shopDomain, accessToken, apiVersion = '2024-01', blogId, limit = 100 }) {
+  const domain = normalizeShopDomain(shopDomain);
+  const version = (apiVersion || '2024-01').trim();
+  const endpoint = `https://${domain}/admin/api/${version}/blogs/${blogId}/articles.json`;
+  console.log('[Shopify Sync] Fetching from:', endpoint);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await axios.get(endpoint, {
+        headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
+        params: { limit },
+        timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+      });
+      return Array.isArray(response.data?.articles) ? response.data.articles : [];
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 429 && attempt < 2) {
+        const retryAfter = Number(error.response?.headers?.['retry-after'] || 2);
+        const waitMs = Math.max(1, retryAfter) * 1000;
+        console.warn(`[Shopify Sync] Rate limited (429). Retrying in ${waitMs}ms...`);
+        await sleep(waitMs);
+        continue;
+      }
+      console.error('[Shopify Sync] Failed:', status || 'N/A', error.message);
+      throw new Error(extractPublishError(error));
+    }
+  }
+  throw new Error('Shopify sync failed after retries');
+}
+
 // Debug endpoint to test WordPress connection
 ipcMain.handle('test-wordpress-sync', async (event, { destinationId = null } = {}) => {
   try {
@@ -3749,70 +4063,113 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
       throw new Error('No destination found. Please select a WordPress destination.');
     }
 
-    // Support wordpress platform (and legacy wordpress-token for backward compat)
-    if (!['wordpress', 'wordpress-token'].includes(destination.platform)) {
-      throw new Error('Sync only works with WordPress destinations');
+    const platform = destination.platform;
+
+    if (platform === 'wordpress' || platform === 'wordpress-token') {
+      console.log('[Sync] Destination:', destination.name, 'Platform: wordpress (plugin endpoint)');
+
+      const baseUrl = destination.baseUrl;
+      if (!baseUrl) {
+        throw new Error('Destination baseUrl is missing. Please check your WordPress settings.');
+      }
+
+      // Determine authentication method
+      let token = null;
+      let authType = 'bearer';
+
+      // Check for JWT/Bearer token first
+      if (destination.apiToken?.trim()) {
+        token = destination.apiToken.trim();
+        authType = 'bearer';
+      } else if (destination.token?.trim()) {
+        token = destination.token.trim();
+        authType = 'bearer';
+      } else if (destination.authToken?.trim()) {
+        token = destination.authToken.trim();
+        authType = 'bearer';
+      } else if (destination.username?.trim() && destination.appPassword?.trim()) {
+        // Use Application Password with Basic Auth
+        token = Buffer.from(`${destination.username.trim()}:${destination.appPassword.trim()}`).toString('base64');
+        authType = 'basic';
+      }
+
+      if (!token) {
+        throw new Error('API token or credentials missing for destination');
+      }
+
+      console.log('[Sync] Fetching posts from:', baseUrl, 'using', authType, 'auth');
+
+      const data = await fetchWordpressPosts({ baseUrl, token, authType, after });
+      const posts = Array.isArray(data.items) ? data.items : [];
+
+      console.log('[Sync] Received posts:', posts.length);
+
+      await upsertRemotePosts(
+        posts.map((item) => ({
+          id: item.id,
+          destination_id: destination.id || null,
+          title: typeof item.title === 'string' ? item.title : (item.title?.rendered || 'Untitled'),
+          status: item.status,
+          url: item.url || item.link,
+          created_at: item.created_at || item.date,
+          updated_at: item.updated_at || item.modified,
+          published_at: item.status === 'publish' ? (item.created_at || item.date) : null,
+          views: typeof item.views === 'number' ? item.views : null,
+          last_viewed: item.last_viewed || null,
+          time_spent: typeof item.timeSpent === 'number' ? item.timeSpent : null,
+          topics: [...(item.tags || []), ...(item.categories || [])],
+        })),
+        'wordpress'
+      );
+
+      console.log('[Sync] Sync complete, saved posts:', posts.length);
+      return { success: true, count: posts.length };
     }
 
-    console.log('[Sync] Destination:', destination.name, 'Platform: wordpress (plugin endpoint)');
+    if (platform === 'shopify') {
+      console.log('[Sync] Destination:', destination.name, 'Platform: shopify');
+      const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
+      const accessToken = ensureValue('Shopify access token', destination.accessToken);
+      const blogId = ensureValue('Shopify blog ID', destination.blogId);
+      const apiVersion = (destination.apiVersion || '2024-01').trim();
 
-    const baseUrl = destination.baseUrl;
-    if (!baseUrl) {
-      throw new Error('Destination baseUrl is missing. Please check your WordPress settings.');
+      const articles = await fetchShopifyPosts({
+        shopDomain,
+        accessToken,
+        apiVersion,
+        blogId,
+      });
+
+      console.log('[Sync] Received posts:', articles.length);
+
+      await upsertRemotePosts(
+        articles.map((item) => ({
+          id: item.id,
+          destination_id: destination.id || null,
+          title: item.title || 'Untitled',
+          status: item.published_at ? 'publish' : 'draft',
+          url: item.url || item.handle || null,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          published_at: item.published_at,
+          views: null,
+          last_viewed: null,
+          time_spent: null,
+          topics: Array.isArray(item.tags)
+            ? item.tags
+            : String(item.tags || '')
+                .split(',')
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+        })),
+        'shopify'
+      );
+
+      console.log('[Sync] Sync complete, saved posts:', articles.length);
+      return { success: true, count: articles.length };
     }
 
-    // Determine authentication method
-    let token = null;
-    let authType = 'bearer';
-
-    // Check for JWT/Bearer token first
-    if (destination.apiToken?.trim()) {
-      token = destination.apiToken.trim();
-      authType = 'bearer';
-    } else if (destination.token?.trim()) {
-      token = destination.token.trim();
-      authType = 'bearer';
-    } else if (destination.authToken?.trim()) {
-      token = destination.authToken.trim();
-      authType = 'bearer';
-    } else if (destination.username?.trim() && destination.appPassword?.trim()) {
-      // Use Application Password with Basic Auth
-      token = Buffer.from(`${destination.username.trim()}:${destination.appPassword.trim()}`).toString('base64');
-      authType = 'basic';
-    }
-
-    if (!token) {
-      throw new Error('API token or credentials missing for destination');
-    }
-
-    console.log('[Sync] Fetching posts from:', baseUrl, 'using', authType, 'auth');
-
-    const data = await fetchWordpressPosts({ baseUrl, token, authType, after });
-    const posts = Array.isArray(data.items) ? data.items : [];
-
-    console.log('[Sync] Received posts:', posts.length);
-
-    await upsertRemotePosts(
-      posts.map((item) => ({
-        id: item.id,
-        destination_id: destination.id || null,
-        title: typeof item.title === 'string' ? item.title : (item.title?.rendered || 'Untitled'),
-        status: item.status,
-        url: item.url || item.link,
-        created_at: item.created_at || item.date,
-        updated_at: item.updated_at || item.modified,
-        published_at: item.status === 'publish' ? (item.created_at || item.date) : null,
-        views: typeof item.views === 'number' ? item.views : null,
-        last_viewed: item.last_viewed || null,
-        time_spent: typeof item.timeSpent === 'number' ? item.timeSpent : null,
-        topics: [...(item.tags || []), ...(item.categories || [])],
-      })),
-      'wordpress'
-    );
-
-    console.log('[Sync] Sync complete, saved posts:', posts.length);
-
-    return { success: true, count: posts.length };
+    throw new Error('Sync only works with WordPress or Shopify destinations');
   } catch (error) {
     console.error('[Sync] Error:', error);
     return { success: false, error: error.message || 'Sync failed' };

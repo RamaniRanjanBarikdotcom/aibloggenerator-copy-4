@@ -471,6 +471,7 @@ function App() {
       setGeneratedBlog((prev) => ({
         ...prev,
         imageUrl: imageResult.imageUrl,
+        imageGallery: imageResult.imageGallery || prev.imageGallery,
       }));
     }
   };

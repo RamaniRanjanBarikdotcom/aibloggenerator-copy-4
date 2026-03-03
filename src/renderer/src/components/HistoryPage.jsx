@@ -25,6 +25,26 @@ function HistoryPage({
   const [detailsExportFormat, setDetailsExportFormat] = useState('markdown');
   const summarySafe = summary || { totalCount: 0, totalCost: 0 };
   const wpCountsSafe = wpCounts || null;
+  const normalizeImageGallery = (galleryValue, imageUrl) => {
+    if (Array.isArray(galleryValue)) {
+      const list = galleryValue.filter(Boolean);
+      if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+      return list;
+    }
+    if (typeof galleryValue === 'string' && galleryValue.trim()) {
+      try {
+        const parsed = JSON.parse(galleryValue);
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter(Boolean);
+          if (imageUrl && !list.includes(imageUrl)) list.unshift(imageUrl);
+          return list;
+        }
+      } catch (error) {
+        // ignore parse error
+      }
+    }
+    return imageUrl ? [imageUrl] : [];
+  };
 
   // Load publish status for all blogs
   useEffect(() => {
@@ -74,6 +94,21 @@ function HistoryPage({
   }, [history, searchTerm, dateFilter]);
 
   const selectedPublishStatus = selectedBlogId ? publishStatuses[selectedBlogId] : null;
+  const selectedGallery = useMemo(
+    () => normalizeImageGallery(selectedBlog?.imageGallery || selectedBlog?.image_gallery, selectedBlog?.imageUrl),
+    [selectedBlog]
+  );
+
+  const handleSelectHistoryImage = async (url) => {
+    if (!selectedBlogId || !url || !selectedBlog) return;
+    setSelectedBlog((prev) => (prev ? { ...prev, imageUrl: url, imageGallery: selectedGallery } : prev));
+    const result = await window.electronAPI.updateBlog({
+      blog: { ...selectedBlog, imageUrl: url, imageGallery: selectedGallery },
+    });
+    if (!result.success) {
+      alert(result.error || 'Failed to update featured image');
+    }
+  };
 
   const openDetails = async (id) => {
     const fallback = history.find((entry) => entry.id === id) || null;
@@ -355,6 +390,29 @@ function HistoryPage({
                   ) : (
                     <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
                       No image available yet.
+                    </div>
+                  )}
+
+                  {selectedGallery.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-slate-600">
+                        {t.generatedImagesLabel || 'Generated images'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedGallery.map((url) => (
+                          <button
+                            key={url}
+                            type="button"
+                            onClick={() => handleSelectHistoryImage(url)}
+                            className={`h-16 w-20 overflow-hidden rounded-md border ${
+                              url === selectedBlog?.imageUrl ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+                            }`}
+                            title={t.selectImageLabel || 'Use as featured image'}
+                          >
+                            <img src={url} alt="Generated" className="h-full w-full object-cover" />
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
 
