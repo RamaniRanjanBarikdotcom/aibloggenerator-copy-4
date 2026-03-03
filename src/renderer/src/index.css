@@ -244,3 +244,72 @@ body {
 .dark ::-webkit-scrollbar-track { background: #0f172a; }
 .dark ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
 .dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Settings and form visual consistency */
+.settings-page .bg-white {
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.settings-page .shadow-sm {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.settings-page input:not([type="checkbox"]):not([type="radio"]),
+.settings-page textarea,
+.settings-page select {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.settings-page input::placeholder,
+.settings-page textarea::placeholder {
+  color: #94a3b8;
+}
+
+.settings-page .text-slate-600 {
+  color: #475569;
+}
+
+.settings-page .text-slate-500 {
+  color: #64748b;
+}
+
+.settings-page .save-settings-btn {
+  min-width: 188px;
+}
+
+.blog-form-page .text-slate-600 {
+  color: #475569;
+}
+
+.dark .settings-page .bg-white {
+  background-color: #0f1b32;
+  border-color: #22344f;
+}
+
+.dark .settings-page .shadow-sm {
+  box-shadow: 0 14px 30px rgba(2, 8, 23, 0.55);
+}
+
+.dark .settings-page input:not([type="checkbox"]):not([type="radio"]),
+.dark .settings-page textarea,
+.dark .settings-page select {
+  background-color: #182843;
+  border-color: #304564;
+  color: #e5edf8;
+}
+
+.dark .settings-page input::placeholder,
+.dark .settings-page textarea::placeholder {
+  color: #8ea0bd;
+}
+
+.dark .settings-page .text-slate-600 {
+  color: #b8c7de;
+}
+
+.dark .settings-page .text-slate-500 {
+  color: #93a8c8;
+}

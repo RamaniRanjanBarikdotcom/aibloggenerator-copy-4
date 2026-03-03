@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scrapeWebsite: (payload) => ipcRenderer.invoke('scrape-website', payload),
   saveProductDatabase: (payload) => ipcRenderer.invoke('save-product-database', payload),
   getProductDatabase: () => ipcRenderer.invoke('get-product-database'),
+  previewLink: (payload) => ipcRenderer.invoke('preview-link', payload),
   syncRemotePosts: (payload) => ipcRenderer.invoke('sync-remote-posts', payload),
   getRemotePosts: (payload) => ipcRenderer.invoke('get-remote-posts', payload),
   getRemotePostAnalytics: () => ipcRenderer.invoke('get-remote-post-analytics'),

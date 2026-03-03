@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Sparkles, Globe, RefreshCw, Settings2, X, Save } from 'lucide-react';
+import { Sparkles, Globe, RefreshCw, Settings2, X, Save, RotateCcw, Trash2, History, Eye } from 'lucide-react';
 import { languageNames } from '../i18n';
 
 const DEFAULT_PROMPTS = {
@@ -72,8 +72,55 @@ Format as JSON:
     'Improve the following blog post for natural flow, readability, and human tone without changing facts.\n\nContent:\n{{draft}}\n\nReturn the improved content only.',
   compliancePrompt:
     'You are a strict editor. Revise the draft to comply with all formatting and content rules.\n\nRules:\n- Output valid HTML only. Use <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, <table>, <tbody>, <tr>, <th>, <td>, <blockquote>, and <pre><code>.\n- Do not use Markdown markers like #, ##, ###, -, *, or ``` for formatting.\n- Do not wrap the output in Markdown code fences like \\`\\`\\` or \\`\\`\\`html.\n- Include a single <h1> at the top of the content.\n- H2 rules: max 9 words, format as "[Number] [Keyword] for [Benefit]" or "What [Keyword] are there?", use sequential numbers (1, 2, 3, 4, 5).\n- After each H2, add a 20-30 word intro sentence.\n- Lists: 5-7 items, 15-25 words each, noun-led, parallel structure, consistent punctuation.\n- Processes use numbered lists.\n- Include FAQ (3-5 Q&A), a comparison table, one blockquote, a code block only if the topic is technical, and a "Pro Tip" callout.\n- FACTS RULE: No statistics, percentages, or specific numeric claims in body content.\n- Add a gentle suggestion for individualized consultation.\n- Keep content natural, non-repetitive, and useful.\n\nDraft:\n{{draft}}\n\nReturn the revised content only.',
-  imagePrompt:
-    'A photorealistic, high-quality featured image for a blog post about "{{topic}}". Style: realistic, natural lighting, sharp details, cinematic composition, no text, no illustration, no CGI.',
+  imagePrompt: `You are an expert AI prompt engineer specialized in generating high-quality photorealistic featured image prompts for professional blog articles.
+
+Your task is to convert a blog topic paragraph into one polished image-generation prompt.
+
+Instructions:
+
+Analyze the input text and extract:
+
+A clear, specific visual subject
+
+A natural action being performed
+
+A realistic setting or environment
+
+Supporting visual details such as lighting, mood, composition, and color tones
+
+If the topic is abstract (SEO, AI, marketing, strategy, analytics, etc.), convert it into a realistic visual metaphor that can be photographed naturally.
+
+Generate exactly ONE single-line prompt using this structure:
+
+[Specific subject], [natural action], in [clear setting], with [lighting, mood, composition, visual details]. The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+
+Strict Rules:
+
+Output ONLY the final image prompt.
+
+No explanations.
+
+No extra text.
+
+No formatting.
+
+No text overlays.
+
+No logos.
+
+No UI elements.
+
+Must be photorealistic.
+
+Must be landscape orientation (16:9).
+
+Must end exactly with:
+
+The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+|
+
+Input text:
+{{topicParagraph}}`,
 };
 
 const PROMPT_LABELS = {
@@ -91,6 +138,10 @@ const PROMPT_LABELS = {
 };
 
 function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentUser }) {
+  const BLOG_FORM_DRAFT_KEY = 'blog_form_draft_v1';
+  const BLOG_FAILED_DRAFTS_KEY = 'blog_failed_generations_v2';
+  const LEGACY_FAILED_DRAFT_KEY = 'blog_failed_generation_v1';
+
   const [topic, setTopic] = useState('');
   const [keywords, setKeywords] = useState('');
   const [focusKeyword, setFocusKeyword] = useState('');
@@ -102,12 +153,50 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
   const [platform, setPlatform] = useState('generic');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState('');
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [linkPreview, setLinkPreview] = useState(null);
+  const [linkPreviewError, setLinkPreviewError] = useState('');
+  const [isPreviewPopoverOpen, setIsPreviewPopoverOpen] = useState(false);
+  const [lastPreviewUrl, setLastPreviewUrl] = useState('');
   const [productDatabase, setProductDatabase] = useState([]);
   const [loadedStatus, setLoadedStatus] = useState('');
   const [promptPanelOpen, setPromptPanelOpen] = useState(false);
   const [promptTemplates, setPromptTemplates] = useState(DEFAULT_PROMPTS);
   const [promptSaving, setPromptSaving] = useState(false);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [failedDrafts, setFailedDrafts] = useState([]);
+  const [failedDraftsOpen, setFailedDraftsOpen] = useState(false);
   const isAdmin = currentUser?.role === 'admin';
+
+  const saveFailedDrafts = (items) => {
+    setFailedDrafts(items);
+    localStorage.setItem(BLOG_FAILED_DRAFTS_KEY, JSON.stringify(items));
+  };
+
+  const applyDraft = (draft) => {
+    if (!draft) return;
+    setTopic(draft.topic || '');
+    setKeywords(draft.keywords || '');
+    setFocusKeyword(draft.settings?.focusKeyword || '');
+    setWritingStyle(draft.settings?.writingStyle || 'professional');
+    setWritingTone(draft.settings?.writingTone || 'friendly');
+    setTargetWordCount(draft.settings?.targetWordCount || 2500);
+    setUseProductContext(Boolean(draft.settings?.useProductContext));
+  };
+
+  const buildPayloadFromDraft = (draft) => ({
+    topic: (draft.topic || '').trim(),
+    keywords: (draft.keywords || '').trim(),
+    categories: Array.isArray(draft.categories) ? draft.categories : [],
+    settings: {
+      writingStyle: draft.settings?.writingStyle || 'professional',
+      writingTone: draft.settings?.writingTone || 'friendly',
+      targetWordCount: draft.settings?.targetWordCount || 2500,
+      useProductContext: Boolean(draft.settings?.useProductContext),
+      focusKeyword: draft.settings?.focusKeyword || '',
+      language: draft.settings?.language || languageNames[language] || 'English',
+    },
+  });
 
   useEffect(() => {
     const loadExistingProducts = async () => {
@@ -139,6 +228,70 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
     loadPromptTemplates();
   }, [isAdmin]);
 
+  useEffect(() => {
+    try {
+      const savedDraftRaw = localStorage.getItem(BLOG_FORM_DRAFT_KEY);
+      if (savedDraftRaw) {
+        const savedDraft = JSON.parse(savedDraftRaw);
+        applyDraft(savedDraft);
+      }
+
+      const failedDraftsRaw = localStorage.getItem(BLOG_FAILED_DRAFTS_KEY);
+      if (failedDraftsRaw) {
+        const parsed = JSON.parse(failedDraftsRaw);
+        if (Array.isArray(parsed)) {
+          setFailedDrafts(parsed);
+        } else if (parsed && typeof parsed === 'object') {
+          setFailedDrafts([parsed]);
+        } else {
+          setFailedDrafts([]);
+        }
+      } else {
+        const legacyRaw = localStorage.getItem(LEGACY_FAILED_DRAFT_KEY);
+        if (legacyRaw) {
+          const legacyDraft = JSON.parse(legacyRaw);
+          const migrated = [{ id: `fd-${Date.now()}`, ...legacyDraft }];
+          setFailedDrafts(migrated);
+          localStorage.setItem(BLOG_FAILED_DRAFTS_KEY, JSON.stringify(migrated));
+          localStorage.removeItem(LEGACY_FAILED_DRAFT_KEY);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load draft data:', error);
+    } finally {
+      setDraftHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!draftHydrated) return;
+    const draft = {
+      topic: topic.trim(),
+      keywords: keywords.trim(),
+      categories: [],
+      settings: {
+        writingStyle,
+        writingTone,
+        targetWordCount,
+        useProductContext,
+        focusKeyword: focusKeyword.trim(),
+        language: languageNames[language] || 'English',
+      },
+      savedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(BLOG_FORM_DRAFT_KEY, JSON.stringify(draft));
+  }, [
+    draftHydrated,
+    topic,
+    keywords,
+    focusKeyword,
+    writingStyle,
+    writingTone,
+    targetWordCount,
+    useProductContext,
+    language,
+  ]);
+
   const handleSubmit = (e) => {
     e.preventDefault();
 
@@ -159,6 +312,21 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
         focusKeyword,
         language: languageNames[language] || 'English',
       },
+    });
+  };
+
+  const handleGenerateAgain = (draft) => {
+    const payload = buildPayloadFromDraft(draft);
+    applyDraft(draft);
+    setFailedDraftsOpen(false);
+    onGenerate(payload, {
+      failedDraftId: draft.id,
+      resumeState: draft.resumeState || null,
+      resumeStep: draft.lastProgress?.step ?? draft.resumeState?.completedStep ?? 0,
+      resumeMessage:
+        draft.lastProgress?.message ||
+        t.resumeFromStepMessage ||
+        'Resuming from the last completed step...',
     });
   };
 
@@ -197,14 +365,79 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
     setIsScraping(false);
   };
 
-  return (
-    <div className={`max-w-4xl mx-auto p-8 ${promptPanelOpen ? 'mr-96' : ''}`}>
-      <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.createNewBlog}</h2>
-      <p className="text-slate-600 mb-8">{t.generateSeo}</p>
+  const normalizePreviewUrl = (value) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    if (!/^https?:\/\//i.test(trimmed)) return '';
+    return trimmed;
+  };
 
-      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm p-8 space-y-6">
+  const fetchLinkPreview = async (value) => {
+    const normalized = normalizePreviewUrl(value);
+    if (!normalized) {
+      setLinkPreview(null);
+      setLinkPreviewError('');
+      return;
+    }
+    if (normalized === lastPreviewUrl && (linkPreview || linkPreviewError)) {
+      return;
+    }
+    setIsPreviewLoading(true);
+    setLinkPreviewError('');
+    try {
+      const result = await window.electronAPI.previewLink({ url: normalized });
+      if (result.success) {
+        setLinkPreview(result.preview || null);
+        setLastPreviewUrl(normalized);
+      } else {
+        setLinkPreview(null);
+        setLinkPreviewError(result.error || t.previewUnavailable);
+        setLastPreviewUrl(normalized);
+      }
+    } catch (error) {
+      setLinkPreview(null);
+      setLinkPreviewError(error.message || t.previewUnavailable);
+      setLastPreviewUrl(normalized);
+    }
+    setIsPreviewLoading(false);
+  };
+
+  useEffect(() => {
+    const normalized = normalizePreviewUrl(websiteUrl);
+    if (!normalized) {
+      setLinkPreview(null);
+      setLinkPreviewError('');
+      setLastPreviewUrl('');
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchLinkPreview(normalized);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [websiteUrl]);
+
+  return (
+    <div className={`blog-form-page max-w-4xl mx-auto p-8 ${promptPanelOpen ? 'mr-96' : ''}`}>
+      <h2 className="text-3xl font-bold text-slate-900 mb-2 dark:text-slate-100">{t.createNewBlog}</h2>
+      <p className="text-slate-600 mb-8 dark:text-slate-300">{t.generateSeo}</p>
+      <div className="mb-4 flex justify-end">
+        <button
+          type="button"
+          onClick={() => setFailedDraftsOpen(true)}
+          title={t.failedDraftsTitle || 'Failed Generations'}
+          aria-label={t.failedDraftsTitle || 'Failed Generations'}
+          className="relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm hover:bg-blue-700"
+        >
+          <History className="h-4 w-4" />
+          <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-white px-1 text-center text-[10px] font-bold leading-5 text-blue-700">
+            {failedDrafts.length}
+          </span>
+        </button>
+      </div>
+
+      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm p-8 space-y-6 dark:bg-slate-900 dark:border dark:border-slate-700">
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.blogTopic}
           </label>
           <input
@@ -212,13 +445,13 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder={t.blogTopicPlaceholder}
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
             required
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.keywords}
           </label>
           <input
@@ -226,12 +459,12 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
             placeholder={t.keywordsPlaceholder}
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.focusKeywordLabel}
           </label>
           <input
@@ -239,33 +472,94 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
             value={focusKeyword}
             onChange={(e) => setFocusKeyword(e.target.value)}
             placeholder={t.focusKeywordPlaceholder}
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
           />
         </div>
 
-        <div className="border border-slate-200 rounded-lg p-5 space-y-4">
+        <div className="border border-slate-200 rounded-lg p-5 space-y-4 dark:border-slate-700 dark:bg-slate-950/30">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
+            <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
               {t.scraperUrlLabel}
             </label>
-            <input
-              type="url"
-              value={websiteUrl}
-              onChange={(e) => setWebsiteUrl(e.target.value)}
-              placeholder="https://example.com"
-              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+            <div className="relative flex gap-2">
+              <input
+                type="url"
+                value={websiteUrl}
+                onChange={(e) => setWebsiteUrl(e.target.value)}
+                placeholder="https://example.com"
+                className="w-full px-4 py-3 pr-12 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
+              />
+              <button
+                type="button"
+                onMouseEnter={() => setIsPreviewPopoverOpen(true)}
+                onMouseLeave={() => setIsPreviewPopoverOpen(false)}
+                onFocus={() => setIsPreviewPopoverOpen(true)}
+                onBlur={() => setIsPreviewPopoverOpen(false)}
+                aria-label={t.previewLinkButton || 'Preview'}
+                className="absolute right-2 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              >
+                <Eye className="h-4 w-4" />
+              </button>
+              {isPreviewPopoverOpen && (
+                <div
+                  onMouseEnter={() => setIsPreviewPopoverOpen(true)}
+                  onMouseLeave={() => setIsPreviewPopoverOpen(false)}
+                  className="absolute right-0 top-12 z-20 w-80 rounded-lg border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {t.previewSectionTitle}
+                  </p>
+                  {isPreviewLoading ? (
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{t.previewLoading}</p>
+                  ) : linkPreviewError ? (
+                    <p className="mt-2 text-xs text-red-600 dark:text-red-400">{linkPreviewError}</p>
+                  ) : linkPreview ? (
+                    <div className="mt-2 flex gap-3">
+                      {linkPreview.image ? (
+                        <img
+                          src={linkPreview.image}
+                          alt={linkPreview.title || 'preview'}
+                          className="h-14 w-14 rounded-md border border-slate-200 object-cover dark:border-slate-700"
+                        />
+                      ) : (
+                        <div className="h-14 w-14 rounded-md border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                          {linkPreview.title}
+                        </p>
+                        <p className="line-clamp-2 text-xs text-slate-600 dark:text-slate-300">
+                          {linkPreview.description || linkPreview.url}
+                        </p>
+                        <a
+                          href={linkPreview.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1 inline-block text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          {linkPreview.siteName || linkPreview.url}
+                        </a>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                      {t.previewUnavailable || 'Preview unavailable'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
+              <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
                 {t.scraperPlatformLabel}
               </label>
               <select
                 value={platform}
                 onChange={(e) => setPlatform(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-200 rounded-lg"
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
               >
                 <option value="shopify">Shopify</option>
                 <option value="woocommerce">WooCommerce</option>
@@ -295,34 +589,10 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
             )}
           </button>
 
-          {loadedStatus && (
-            <p className="text-xs text-slate-700 dark:text-slate-300">{loadedStatus}</p>
-          )}
-          {scrapeStatus && (
-            <p className="text-xs text-slate-700 dark:text-slate-300">{scrapeStatus}</p>
-          )}
+          {loadedStatus && <p className="text-xs text-slate-700 dark:text-slate-300">{loadedStatus}</p>}
+          {scrapeStatus && <p className="text-xs text-slate-700 dark:text-slate-300">{scrapeStatus}</p>}
 
-          {productDatabase.length > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 dark:bg-slate-900/70 dark:border-slate-700">
-              <p className="text-xs font-medium text-slate-800 mb-2 dark:text-slate-200">
-                {t.scraperPreviewTitle.replace('{count}', productDatabase.length)}
-              </p>
-              <ul className="text-xs text-slate-800 space-y-1 dark:text-slate-200">
-                {productDatabase.slice(0, 5).map((item, index) => (
-                  <li key={`${item.url || item.title}-${index}`}>
-                    {item.title || 'Product'}
-                  </li>
-                ))}
-              </ul>
-              {productDatabase.length > 5 && (
-                <p className="text-[11px] text-slate-700 mt-2 dark:text-slate-400">
-                  {t.scraperPreviewMore}
-                </p>
-              )}
-            </div>
-          )}
-
-          <label className="flex items-center gap-2 text-sm text-slate-700">
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
             <input
               type="checkbox"
               checked={useProductContext}
@@ -334,7 +604,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.writingStyle}
           </label>
           <div className="grid grid-cols-4 gap-3">
@@ -346,7 +616,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
                 className={`px-4 py-2 rounded-lg capitalize transition ${
                   writingStyle === style
                     ? 'bg-blue-500 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-purple-100'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
                 }`}
               >
                 {style}
@@ -356,7 +626,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.writingTone}
           </label>
           <div className="grid grid-cols-4 gap-3">
@@ -368,7 +638,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
                 className={`px-4 py-2 rounded-lg capitalize transition ${
                   writingTone === tone
                     ? 'bg-blue-500 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-purple-100'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
                 }`}
               >
                 {tone}
@@ -378,7 +648,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.targetWordCount}: {targetWordCount}
           </label>
           <input
@@ -390,7 +660,7 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
             onChange={(e) => setTargetWordCount(parseInt(e.target.value, 10))}
             className="w-full accent-blue-500"
           />
-          <div className="flex justify-between text-xs text-slate-500 mt-1">
+          <div className="flex justify-between text-xs text-slate-500 mt-1 dark:text-slate-400">
             <span>1,000</span>
             <span>5,000</span>
           </div>
@@ -405,10 +675,76 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
           <span>{isGenerating ? t.generating : t.generate}</span>
         </button>
 
-        <p className="text-xs text-slate-500 text-center mt-4">
-          {t.estimatedCost}
-        </p>
       </form>
+
+      {failedDraftsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                {t.failedDraftsTitle || 'Failed Generations'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setFailedDraftsOpen(false)}
+                  className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="max-h-[70vh] overflow-y-auto p-5 space-y-4">
+              {failedDrafts.length === 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                  {t.noFailedDrafts || 'No failed generations yet.'}
+                </div>
+              ) : (
+                failedDrafts.map((draft) => (
+                  <div
+                    key={draft.id}
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      {draft.topic || '-'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      {t.failedDraftKeywords || 'Keywords'}: {draft.keywords || '-'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      {t.failedDraftFailedAt || 'Failed at'}:{' '}
+                      {draft.failedAt ? new Date(draft.failedAt).toLocaleString() : '-'}
+                    </p>
+                    <p className="mt-1 text-xs text-red-700">
+                      {draft.error || t.failedDraftUnknown || 'Unknown error'}
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleGenerateAgain(draft)}
+                        disabled={isGenerating}
+                        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        <span>{t.generateAgainFromFailed || 'Generate Again'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = failedDrafts.filter((item) => item.id !== draft.id);
+                          saveFailedDrafts(next);
+                        }}
+                        className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>{t.deleteFailedDraft || 'Delete'}</span>
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {isAdmin && (
         <>

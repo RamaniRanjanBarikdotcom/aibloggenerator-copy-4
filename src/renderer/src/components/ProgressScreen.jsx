@@ -61,18 +61,13 @@ function ProgressScreen({ progress, t }) {
                 <div>
                   <p className="font-medium">{step}</p>
                   {index === currentStep && (
-                    <p className="text-sm text-slate-500">{steps[currentStep]}</p>
+                    <p className="text-sm text-slate-500">
+                      {progress.message || steps[currentStep]}
+                    </p>
                   )}
                 </div>
               </div>
             ))}
-          </div>
-
-          <div className="mt-8 text-center">
-            <p className="text-sm text-slate-500">
-              {t.progressFooter}
-              {Math.max(0, 180 - currentStep * 30)}s
-            </p>
           </div>
         </div>
       </div>

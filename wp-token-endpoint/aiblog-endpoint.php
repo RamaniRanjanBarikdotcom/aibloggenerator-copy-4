@@ -494,9 +494,12 @@ add_action('rest_api_init', function () {
                 $attach_id = aiblog_sideload_image($featured_image_url, $post_id, $featured_image_data, $featured_image_name);
                 if ($attach_id && !is_wp_error($attach_id)) {
                     set_post_thumbnail($post_id, $attach_id);
+                    $media_url = wp_get_attachment_url($attach_id);
+                    // Ensure the uploaded media is also used inside blog content.
+                    aiblog_ensure_featured_image_in_content($post_id, $media_url, $title);
                     $featured_image_result = [
                         'attachmentId' => $attach_id,
-                        'url'          => wp_get_attachment_url($attach_id),
+                        'url'          => $media_url,
                     ];
                 } else {
                     $featured_image_result = [
@@ -1873,6 +1876,37 @@ function aiblog_sideload_image($url, $post_id = 0, $base64_data = '', $provided_
     }
 
     return $attach_id;
+}
+
+/**
+ * Ensure post content contains the featured image from media library.
+ * If content already has an <img>, we keep it unchanged.
+ */
+function aiblog_ensure_featured_image_in_content($post_id, $image_url, $alt_text = '') {
+    $post_id = intval($post_id);
+    $image_url = esc_url_raw((string)$image_url);
+    if ($post_id <= 0 || !$image_url) {
+        return;
+    }
+
+    $content = (string)get_post_field('post_content', $post_id);
+    if (stripos($content, '<img') !== false) {
+        return;
+    }
+
+    $safe_alt = esc_attr($alt_text ?: get_the_title($post_id));
+    $image_html = '<figure class="wp-block-image alignwide"><img src="' . esc_url($image_url) . '" alt="' . $safe_alt . '" /></figure>' . "\n\n";
+    $new_content = $image_html . $content;
+
+    if (preg_match('/^\s*<h1[^>]*>.*?<\/h1>\s*/is', $content, $matches)) {
+        $h1_block = $matches[0];
+        $new_content = $h1_block . $image_html . substr($content, strlen($h1_block));
+    }
+
+    wp_update_post([
+        'ID' => $post_id,
+        'post_content' => $new_content,
+    ]);
 }
 
 /**

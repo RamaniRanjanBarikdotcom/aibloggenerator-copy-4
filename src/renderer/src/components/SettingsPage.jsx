@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Save, Eye, EyeOff, Plus, Trash2, CheckCircle, RefreshCw } from 'lucide-react';
+import { Save, Eye, EyeOff, Plus, Trash2, CheckCircle, RefreshCw, ChevronDown } from 'lucide-react';
 
 const PROVIDERS = [
   {
@@ -57,12 +57,96 @@ const PROVIDERS = [
     supportsResearch: false,
   },
   {
+    id: 'anthropic',
+    name: 'Anthropic',
+    keyPrefix: 'sk-ant-',
+    models: [
+      'claude-3-7-sonnet-latest',
+      'claude-3-5-sonnet-latest',
+      'claude-3-5-haiku-latest',
+      'claude-3-opus-latest',
+    ],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'groq',
+    name: 'Groq',
+    keyPrefix: 'gsk_',
+    models: [
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'mixtral-8x7b-32768',
+      'gemma2-9b-it',
+    ],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'xai',
+    name: 'xAI (Grok)',
+    keyPrefix: 'xai-',
+    models: ['grok-2-latest', 'grok-2-mini-latest', 'grok-beta'],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'huggingface',
+    name: 'Hugging Face',
+    keyPrefix: 'hf_',
+    models: [
+      'meta-llama/Llama-3.3-70B-Instruct',
+      'Qwen/Qwen2.5-72B-Instruct',
+      'mistralai/Mistral-7B-Instruct-v0.3',
+    ],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral',
+    keyPrefix: '',
+    models: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest'],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    keyPrefix: '',
+    models: [
+      'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+      'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+      'Qwen/Qwen2.5-72B-Instruct-Turbo',
+    ],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
+    id: 'fireworks',
+    name: 'Fireworks',
+    keyPrefix: '',
+    models: [
+      'accounts/fireworks/models/llama-v3p3-70b-instruct',
+      'accounts/fireworks/models/deepseek-r1',
+    ],
+    imageModels: [],
+    supportsGeneration: true,
+    supportsResearch: true,
+  },
+  {
     id: 'perplexity',
     name: 'Perplexity',
     keyPrefix: 'pplx-',
     models: ['sonar', 'sonar-pro'],
     imageModels: [],
-    supportsGeneration: false,
+    supportsGeneration: true,
     supportsResearch: true,
   },
   {
@@ -162,17 +246,65 @@ Format as JSON:
     'Improve the following blog post for natural flow, readability, and human tone without changing facts.\n\nContent:\n{{draft}}\n\nReturn the improved content only.',
   compliancePrompt:
     'You are a strict editor. Revise the draft to comply with all formatting and content rules.\n\nRules:\n- Output valid HTML only. Use <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, <table>, <tbody>, <tr>, <th>, <td>, <blockquote>, and <pre><code>.\n- Do not use Markdown markers like #, ##, ###, -, *, or ``` for formatting.\n- Do not wrap the output in Markdown code fences like \\`\\`\\` or \\`\\`\\`html.\n- Include a single <h1> at the top of the content.\n- H2 rules: max 9 words, format as "[Number] [Keyword] for [Benefit]" or "What [Keyword] are there?", use sequential numbers (1, 2, 3, 4, 5).\n- After each H2, add a 20-30 word intro sentence.\n- Lists: 5-7 items, 15-25 words each, noun-led, parallel structure, consistent punctuation.\n- Processes use numbered lists.\n- Include FAQ (3-5 Q&A), a comparison table, one blockquote, a code block only if the topic is technical, and a "Pro Tip" callout.\n- FACTS RULE: No statistics, percentages, or specific numeric claims in body content.\n- Add a gentle suggestion for individualized consultation.\n- Keep content natural, non-repetitive, and useful.\n\nDraft:\n{{draft}}\n\nReturn the revised content only.',
-  imagePrompt:
-    'A photorealistic, high-quality featured image for a blog post about "{{topic}}". Style: realistic, natural lighting, sharp details, cinematic composition, no text, no illustration, no CGI.',
+  imagePrompt: `You are an expert AI prompt engineer specialized in generating high-quality photorealistic featured image prompts for professional blog articles.
+
+Your task is to convert a blog topic paragraph into one polished image-generation prompt.
+
+Instructions:
+
+Analyze the input text and extract:
+
+A clear, specific visual subject
+
+A natural action being performed
+
+A realistic setting or environment
+
+Supporting visual details such as lighting, mood, composition, and color tones
+
+If the topic is abstract (SEO, AI, marketing, strategy, analytics, etc.), convert it into a realistic visual metaphor that can be photographed naturally.
+
+Generate exactly ONE single-line prompt using this structure:
+
+[Specific subject], [natural action], in [clear setting], with [lighting, mood, composition, visual details]. The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+
+Strict Rules:
+
+Output ONLY the final image prompt.
+
+No explanations.
+
+No extra text.
+
+No formatting.
+
+No text overlays.
+
+No logos.
+
+No UI elements.
+
+Must be photorealistic.
+
+Must be landscape orientation (16:9).
+
+Must end exactly with:
+
+The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+|
+
+Input text:
+{{topicParagraph}}`,
 };
 
-function SettingsPage({ t, currentUser }) {
+function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions }) {
   const [apiKeys, setApiKeys] = useState([]);
   const [newKeyLabel, setNewKeyLabel] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
   const [newKeyProvider, setNewKeyProvider] = useState('openai');
   const [showKeyId, setShowKeyId] = useState(null);
   const [aiProvider, setAiProvider] = useState('openai');
+  const [imageProvider, setImageProvider] = useState('openai');
   const [aiModel, setAiModel] = useState('gpt-4o');
   const [imageModel, setImageModel] = useState('dall-e-3');
   const [maxTokens, setMaxTokens] = useState('');
@@ -181,11 +313,17 @@ function SettingsPage({ t, currentUser }) {
   const [deepResearchModel, setDeepResearchModel] = useState('gpt-4o-mini');
   const [useWikipedia, setUseWikipedia] = useState(true);
   const [siteBaseUrl, setSiteBaseUrl] = useState('');
+  const [linkPreviewApiKey, setLinkPreviewApiKey] = useState('');
   const [tavilyKey, setTavilyKey] = useState('');
   const [perplexityKey, setPerplexityKey] = useState('');
   const [autoSave, setAutoSave] = useState(true);
   const [saved, setSaved] = useState(false);
   const [activeTab, setActiveTab] = useState('ai');
+  const [modelSearch, setModelSearch] = useState('');
+  const [imageModelSearch, setImageModelSearch] = useState('');
+  const [modelFamilyFilter, setModelFamilyFilter] = useState('all');
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [imageModelDropdownOpen, setImageModelDropdownOpen] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState({});
   const [publishTestStatus, setPublishTestStatus] = useState({});
   const [promptTemplates, setPromptTemplates] = useState(DEFAULT_PROMPTS);
@@ -216,8 +354,56 @@ function SettingsPage({ t, currentUser }) {
   const [selectedUserId, setSelectedUserId] = useState('');
   const [selectedUserSettings, setSelectedUserSettings] = useState(null);
   const [userSaved, setUserSaved] = useState(false);
+  const [savedFingerprint, setSavedFingerprint] = useState('');
 
   const isAdmin = currentUser?.role === 'admin';
+
+  const buildSettingsPayload = () => {
+    const nextApiKeys = Array.isArray(apiKeys) ? [...apiKeys] : [];
+    const upsertKey = (providerId, keyValue, label) => {
+      const trimmed = keyValue.trim();
+      if (!trimmed) return;
+      const existing = nextApiKeys.find((item) => item.provider === providerId);
+      if (existing) {
+        existing.key = trimmed;
+        existing.label = existing.label || label;
+        existing.isActive = true;
+        return;
+      }
+      nextApiKeys.push({
+        id: `provider_${providerId}`,
+        label,
+        key: trimmed,
+        provider: providerId,
+        isActive: true,
+      });
+    };
+    upsertKey('tavily', tavilyKey, 'Tavily Key');
+    upsertKey('perplexity', perplexityKey, 'Perplexity Key');
+    const payload = {
+      aiProvider,
+      imageProvider,
+      aiModel,
+      imageModel,
+      maxTokens: maxTokens === '' ? null : Number(maxTokens),
+      serpProvider,
+      deepResearchProvider,
+      deepResearchModel,
+      useWikipedia,
+      siteBaseUrl,
+      linkPreviewApiKey: linkPreviewApiKey.trim(),
+      autoSave,
+      apiKeys: nextApiKeys,
+      promptTemplates,
+      publishDestinations,
+    };
+    return { payload, nextApiKeys };
+  };
+
+  const computeFingerprint = () => {
+    const { payload } = buildSettingsPayload();
+    return JSON.stringify(payload);
+  };
 
 
   useEffect(() => {
@@ -263,6 +449,11 @@ function SettingsPage({ t, currentUser }) {
   }, [aiProvider, apiKeys]);
 
   useEffect(() => {
+    if (!imageProvider) return;
+    refreshProviderModels(imageProvider, { silent: true });
+  }, [imageProvider, apiKeys]);
+
+  useEffect(() => {
     if (!deepResearchProvider || deepResearchProvider === 'none') return;
     refreshProviderModels(deepResearchProvider, { silent: true });
   }, [deepResearchProvider, apiKeys]);
@@ -272,6 +463,7 @@ function SettingsPage({ t, currentUser }) {
     if (result.success) {
       const settings = result.settings || {};
       setAiProvider(settings.aiProvider || 'openai');
+      setImageProvider(settings.imageProvider || settings.aiProvider || 'openai');
       setAiModel(settings.aiModel || 'gpt-4o');
       setImageModel(settings.imageModel || 'dall-e-3');
       setMaxTokens(
@@ -284,6 +476,7 @@ function SettingsPage({ t, currentUser }) {
       setDeepResearchModel(settings.deepResearchModel || 'gpt-4o-mini');
       setUseWikipedia(settings.useWikipedia !== false);
       setSiteBaseUrl(settings.siteBaseUrl || '');
+      setLinkPreviewApiKey(settings.linkPreviewApiKey || '');
       setAutoSave(settings.autoSave !== false);
       setApiKeys(Array.isArray(settings.apiKeys) ? settings.apiKeys : []);
       const storedKeys = Array.isArray(settings.apiKeys) ? settings.apiKeys : [];
@@ -293,6 +486,28 @@ function SettingsPage({ t, currentUser }) {
       setPublishDestinations(
         Array.isArray(settings.publishDestinations) ? settings.publishDestinations : []
       );
+      const payloadForFingerprint = {
+        aiProvider: settings.aiProvider || 'openai',
+        imageProvider: settings.imageProvider || settings.aiProvider || 'openai',
+        aiModel: settings.aiModel || 'gpt-4o',
+        imageModel: settings.imageModel || 'dall-e-3',
+        maxTokens:
+          settings.maxTokens === null || settings.maxTokens === undefined
+            ? null
+            : Number(settings.maxTokens),
+        serpProvider: settings.serpProvider || 'openai',
+        deepResearchProvider: settings.deepResearchProvider || 'openai',
+        deepResearchModel: settings.deepResearchModel || 'gpt-4o-mini',
+        useWikipedia: settings.useWikipedia !== false,
+        siteBaseUrl: settings.siteBaseUrl || '',
+        linkPreviewApiKey: settings.linkPreviewApiKey || '',
+        autoSave: settings.autoSave !== false,
+        apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
+        promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
+        publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
+      };
+      setSavedFingerprint(JSON.stringify(payloadForFingerprint));
+      onUnsavedChange?.(false);
     } else if (result.error) {
       console.error('Failed to load settings:', result.error);
       alert(t.loadSettingsError || `Failed to load settings: ${result.error}`);
@@ -498,53 +713,18 @@ function SettingsPage({ t, currentUser }) {
   };
 
   const handleSaveSettings = async () => {
-    const nextApiKeys = Array.isArray(apiKeys) ? [...apiKeys] : [];
-    const upsertKey = (providerId, keyValue, label) => {
-      const trimmed = keyValue.trim();
-      if (!trimmed) {
-        return;
-      }
-      const existing = nextApiKeys.find((item) => item.provider === providerId);
-      if (existing) {
-        existing.key = trimmed;
-        existing.label = existing.label || label;
-        existing.isActive = true;
-        return;
-      }
-      nextApiKeys.push({
-        id: Date.now().toString() + providerId,
-        label,
-        key: trimmed,
-        provider: providerId,
-        isActive: true,
-      });
-    };
-    upsertKey('tavily', tavilyKey, 'Tavily Key');
-    upsertKey('perplexity', perplexityKey, 'Perplexity Key');
-
-    const payload = {
-      aiProvider,
-      imageProvider: aiProvider,
-      aiModel,
-      imageModel,
-      maxTokens: maxTokens === '' ? null : Number(maxTokens),
-      serpProvider,
-      deepResearchProvider,
-      deepResearchModel,
-      useWikipedia,
-      siteBaseUrl,
-      autoSave,
-      apiKeys: nextApiKeys,
-      promptTemplates,
-      publishDestinations,
-    };
+    const { payload, nextApiKeys } = buildSettingsPayload();
     const result = await window.electronAPI.saveSettings(payload);
     if (result.success) {
       setApiKeys(nextApiKeys);
+      setSavedFingerprint(JSON.stringify(payload));
+      onUnsavedChange?.(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      return true;
     } else {
       alert(result.error || 'Failed to save');
+      return false;
     }
   };
 
@@ -586,30 +766,74 @@ function SettingsPage({ t, currentUser }) {
     }
   };
 
+  useEffect(() => {
+    const dirty = Boolean(savedFingerprint) && computeFingerprint() !== savedFingerprint;
+    onUnsavedChange?.(dirty);
+  }, [
+    savedFingerprint,
+    aiProvider,
+    imageProvider,
+    aiModel,
+    imageModel,
+    maxTokens,
+    serpProvider,
+    deepResearchProvider,
+    deepResearchModel,
+    useWikipedia,
+    siteBaseUrl,
+    linkPreviewApiKey,
+    autoSave,
+    apiKeys,
+    promptTemplates,
+    publishDestinations,
+    tavilyKey,
+    perplexityKey,
+  ]);
+
+  useEffect(() => {
+    registerLeaveActions?.({
+      save: handleSaveSettings,
+      discard: async () => {
+        await loadSettings();
+        return true;
+      },
+    });
+    return () => registerLeaveActions?.(null);
+  }, [
+    registerLeaveActions,
+    handleSaveSettings,
+  ]);
+
   const baseProviderOptions =
     GENERATION_PROVIDERS.find((item) => item.id === aiProvider) || GENERATION_PROVIDERS[0];
-  const dynamicProviderOptions = providerCatalog[aiProvider] || { textModels: [], imageModels: [] };
-  const providerOptions = {
+  const dynamicTextProviderOptions = providerCatalog[aiProvider] || { textModels: [], imageModels: [] };
+  const textProviderOptions = {
     ...baseProviderOptions,
     models: Array.from(
-      new Set([...(baseProviderOptions?.models || []), ...(dynamicProviderOptions.textModels || [])])
+      new Set([...(baseProviderOptions?.models || []), ...(dynamicTextProviderOptions.textModels || [])])
     ),
+  };
+  const baseImageProviderOptions =
+    GENERATION_PROVIDERS.find((item) => item.id === imageProvider) || GENERATION_PROVIDERS[0];
+  const dynamicImageProviderOptions = providerCatalog[imageProvider] || { textModels: [], imageModels: [] };
+  const imageProviderOptions = {
+    ...baseImageProviderOptions,
     imageModels: Array.from(
-      new Set([...(baseProviderOptions?.imageModels || []), ...(dynamicProviderOptions.imageModels || [])])
+      new Set([...(baseImageProviderOptions?.imageModels || []), ...(dynamicImageProviderOptions.imageModels || [])])
     ),
   };
 
   useEffect(() => {
-    if (!aiModel && providerOptions.models.length > 0) {
-      setAiModel(providerOptions.models[0]);
+    if (!aiModel && textProviderOptions.models.length > 0) {
+      setAiModel(textProviderOptions.models[0]);
     }
-  }, [aiModel, providerOptions.models]);
+  }, [aiModel, textProviderOptions.models]);
 
   useEffect(() => {
-    if (!imageModel && providerOptions.imageModels.length > 0) {
-      setImageModel(providerOptions.imageModels[0]);
+    if (!imageModel && imageProviderOptions.imageModels.length > 0) {
+      setImageModel(imageProviderOptions.imageModels[0]);
     }
-  }, [imageModel, providerOptions.imageModels]);
+  }, [imageModel, imageProviderOptions.imageModels]);
 
   const deepResearchBaseProvider =
     PROVIDERS.find((item) => item.id === deepResearchProvider) || PROVIDERS[0];
@@ -629,6 +853,35 @@ function SettingsPage({ t, currentUser }) {
     custom: t.platformCustom || 'Custom API',
     jtl: t.platformJtl || 'JTL Shop',
   };
+  const getModelFamily = (modelId) => {
+    const id = String(modelId || '').toLowerCase();
+    if (!id) return 'other';
+    if (id.includes('gpt') || id.startsWith('o1') || id.startsWith('o3') || id.includes('chatgpt')) return 'openai';
+    if (id.includes('claude')) return 'claude';
+    if (id.includes('gemini')) return 'gemini';
+    if (id.includes('grok')) return 'grok';
+    if (id.includes('llama')) return 'llama';
+    if (id.includes('mistral') || id.includes('mixtral') || id.includes('codestral')) return 'mistral';
+    if (id.includes('qwen')) return 'qwen';
+    if (id.includes('deepseek')) return 'deepseek';
+    if (id.includes('phi')) return 'phi';
+    if (id.includes('command')) return 'cohere';
+    if (id.includes('dall-e') || id.includes('imagen') || id.includes('image')) return 'image';
+    return 'other';
+  };
+  const textModelFamilies = Array.from(
+    new Set((textProviderOptions.models || []).map((modelId) => getModelFamily(modelId)))
+  ).sort((a, b) => a.localeCompare(b));
+  const filteredTextModels = (textProviderOptions.models || []).filter((modelId) => {
+    const search = modelSearch.trim().toLowerCase();
+    const familyOk = modelFamilyFilter === 'all' || getModelFamily(modelId) === modelFamilyFilter;
+    const searchOk = !search || modelId.toLowerCase().includes(search);
+    return familyOk && searchOk;
+  });
+  const filteredImageModels = (imageProviderOptions.imageModels || []).filter((modelId) => {
+    const search = imageModelSearch.trim().toLowerCase();
+    return !search || modelId.toLowerCase().includes(search);
+  });
   const formatDestinationSummary = (destination) => {
     if (!destination) return '';
     if (destination.platform === 'wordpress' || destination.platform === 'wordpress-token') {
@@ -654,9 +907,9 @@ function SettingsPage({ t, currentUser }) {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-8">
-      <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.settingsTitle}</h2>
-      <p className="text-slate-600 mb-8">{t.settingsSubtitle}</p>
+    <div className="settings-page max-w-5xl mx-auto p-8">
+      <h2 className="text-3xl font-bold text-slate-900 mb-2 dark:text-slate-100">{t.settingsTitle}</h2>
+      <p className="text-slate-600 mb-8 dark:text-slate-300">{t.settingsSubtitle}</p>
 
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2">
@@ -667,8 +920,8 @@ function SettingsPage({ t, currentUser }) {
               onClick={() => setActiveTab(tab.id)}
               className={`px-4 py-2 text-sm font-semibold rounded-full border transition ${
                 activeTab === tab.id
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-slate-900'
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-300 hover:border-blue-300 hover:text-slate-900 dark:bg-slate-900 dark:text-slate-200 dark:border-slate-700 dark:hover:border-blue-500 dark:hover:text-slate-100'
               }`}
             >
               {tab.label}
@@ -677,8 +930,8 @@ function SettingsPage({ t, currentUser }) {
         </div>
         <button
           onClick={handleSaveSettings}
-          className={`flex items-center justify-center space-x-2 px-5 py-2 rounded-lg font-semibold transition ${
-            saved ? 'bg-blue-500 text-white' : 'bg-slate-900 text-white hover:bg-slate-800'
+          className={`save-settings-btn flex h-11 items-center justify-center space-x-2 px-5 py-2 rounded-lg font-semibold transition ${
+            saved ? 'bg-blue-600 text-white' : 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500'
           }`}
         >
           <Save className="w-4 h-4" />
@@ -705,7 +958,7 @@ function SettingsPage({ t, currentUser }) {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
                   {t.providerLabel || 'AI provider'}
@@ -715,21 +968,15 @@ function SettingsPage({ t, currentUser }) {
                   onChange={(event) => {
                     const next = event.target.value;
                     setAiProvider(next);
+                    setModelSearch('');
+                    setModelFamilyFilter('all');
                     const provider = GENERATION_PROVIDERS.find((item) => item.id === next);
-                    const dynamic = providerCatalog[next] || { textModels: [], imageModels: [] };
+                    const dynamic = providerCatalog[next] || { textModels: [] };
                     const mergedTextModels = Array.from(
                       new Set([...(provider?.models || []), ...(dynamic.textModels || [])])
                     );
-                    const mergedImageModels = Array.from(
-                      new Set([...(provider?.imageModels || []), ...(dynamic.imageModels || [])])
-                    );
                     if (mergedTextModels.length > 0) {
                       setAiModel(mergedTextModels[0]);
-                    }
-                    if (mergedImageModels.length > 0) {
-                      setImageModel(mergedImageModels[0]);
-                    } else {
-                      setImageModel('');
                     }
                   }}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg"
@@ -743,14 +990,76 @@ function SettingsPage({ t, currentUser }) {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">{t.modelLabel}</label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setModelDropdownOpen((prev) => !prev)}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  >
+                    <span className="truncate">{aiModel || 'Select model'}</span>
+                    <ChevronDown className="h-4 w-4 text-slate-500" />
+                  </button>
+                  {modelDropdownOpen && (
+                    <div className="absolute z-20 mt-2 w-full rounded-lg border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                      <input
+                        type="text"
+                        value={modelSearch}
+                        onChange={(event) => setModelSearch(event.target.value)}
+                        className="mb-2 w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        placeholder="Search model..."
+                      />
+                      <select
+                        value={modelFamilyFilter}
+                        onChange={(event) => setModelFamilyFilter(event.target.value)}
+                        className="mb-2 w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      >
+                        <option value="all">All families</option>
+                        {textModelFamilies.map((family) => (
+                          <option key={family} value={family}>
+                            {family}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="max-h-56 overflow-y-auto rounded-md border border-slate-100 dark:border-slate-800">
+                        {filteredTextModels.map((model) => (
+                          <button
+                            key={model}
+                            type="button"
+                            onClick={() => {
+                              setAiModel(model);
+                              setModelDropdownOpen(false);
+                            }}
+                            className={`block w-full px-2 py-1.5 text-left text-sm hover:bg-blue-50 dark:hover:bg-slate-800 ${
+                              aiModel === model ? 'bg-blue-50 text-blue-700 dark:bg-slate-800 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                            }`}
+                          >
+                            {model}
+                          </button>
+                        ))}
+                        {filteredTextModels.length === 0 && (
+                          <p className="px-2 py-2 text-xs text-slate-500 dark:text-slate-400">No models found</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">{t.imageProviderLabel || 'Image provider'}</label>
                 <select
-                  value={aiModel}
-                  onChange={(event) => setAiModel(event.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  value={imageProvider}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setImageProvider(next);
+                    setImageModelSearch('');
+                    setImageModel('');
+                    setImageModelDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                 >
-                  {providerOptions.models.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
+                  {GENERATION_PROVIDERS.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
                     </option>
                   ))}
                 </select>
@@ -759,22 +1068,52 @@ function SettingsPage({ t, currentUser }) {
                 <label className="block text-sm font-medium text-slate-700 mb-2">
                   {t.imageModelLabel}
                 </label>
-                <select
-                  value={imageModel}
-                  onChange={(event) => setImageModel(event.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                  disabled={providerOptions.imageModels.length === 0}
-                >
-                  {providerOptions.imageModels.length === 0 ? (
-                    <option value="">{t.noImageSupport || 'No image models available'}</option>
-                  ) : (
-                    providerOptions.imageModels.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setImageModelDropdownOpen((prev) => !prev)}
+                    disabled={imageProviderOptions.imageModels.length === 0}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  >
+                    <span className="truncate">
+                      {imageProviderOptions.imageModels.length === 0
+                        ? t.noImageSupport || 'No image models available'
+                        : imageModel || 'Select image model'}
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-slate-500" />
+                  </button>
+                  {imageModelDropdownOpen && imageProviderOptions.imageModels.length > 0 && (
+                    <div className="absolute z-20 mt-2 w-full rounded-lg border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                      <input
+                        type="text"
+                        value={imageModelSearch}
+                        onChange={(event) => setImageModelSearch(event.target.value)}
+                        className="mb-2 w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        placeholder="Search image model..."
+                      />
+                      <div className="max-h-56 overflow-y-auto rounded-md border border-slate-100 dark:border-slate-800">
+                        {filteredImageModels.map((model) => (
+                          <button
+                            key={model}
+                            type="button"
+                            onClick={() => {
+                              setImageModel(model);
+                              setImageModelDropdownOpen(false);
+                            }}
+                            className={`block w-full px-2 py-1.5 text-left text-sm hover:bg-blue-50 dark:hover:bg-slate-800 ${
+                              imageModel === model ? 'bg-blue-50 text-blue-700 dark:bg-slate-800 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                            }`}
+                          >
+                            {model}
+                          </button>
+                        ))}
+                        {filteredImageModels.length === 0 && (
+                          <p className="px-2 py-2 text-xs text-slate-500 dark:text-slate-400">No models found</p>
+                        )}
+                      </div>
+                    </div>
                   )}
-                </select>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -793,10 +1132,13 @@ function SettingsPage({ t, currentUser }) {
             </div>
 
             <p className="text-xs text-slate-500">
-              {`Loaded models: ${providerOptions.models.length} text, ${providerOptions.imageModels.length} image`}
+              {`Loaded models: ${textProviderOptions.models.length} text, ${imageProviderOptions.imageModels.length} image`}
             </p>
             {providerCatalogStatus[aiProvider] === 'error' && providerCatalogError[aiProvider] ? (
               <p className="text-xs text-red-600 break-all">{providerCatalogError[aiProvider]}</p>
+            ) : null}
+            {providerCatalogStatus[imageProvider] === 'error' && providerCatalogError[imageProvider] ? (
+              <p className="text-xs text-red-600 break-all">{providerCatalogError[imageProvider]}</p>
             ) : null}
 
             <div className="flex items-center gap-3">
@@ -829,6 +1171,20 @@ function SettingsPage({ t, currentUser }) {
                 placeholder="https://your-site.com"
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                {t.linkPreviewApiKeyLabel || 'LinkPreview API Key'}
+              </label>
+              <input
+                type="password"
+                value={linkPreviewApiKey}
+                onChange={(event) => setLinkPreviewApiKey(event.target.value)}
+                placeholder="Your API key"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Endpoint is fixed to https://api.linkpreview.net</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

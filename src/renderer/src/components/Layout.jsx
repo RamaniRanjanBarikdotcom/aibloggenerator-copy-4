@@ -48,8 +48,7 @@ function Layout({
   const languageOptions = useMemo(
     () => [
       { code: 'en', label: 'English' },
-      { code: 'hi', label: 'Hindi' },
-      { code: 'de', label: 'Dutch' },
+      { code: 'de', label: 'Deutsch' },
     ],
     []
   );
@@ -70,7 +69,7 @@ function Layout({
   }, []);
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-purple-50 via-slate-50 to-blue-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-900">
+    <div className="flex h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-100 dark:from-[#050b18] dark:via-[#07132a] dark:to-[#081835]">
       <div className="w-64 bg-white/90 backdrop-blur border-r border-purple-100 flex flex-col dark:bg-slate-900/80 dark:border-slate-800">
         <div className="p-6 border-b border-purple-100 dark:border-slate-800">
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
@@ -85,7 +84,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'home'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <Home className="w-5 h-5 mr-3" />
@@ -99,7 +98,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'history'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <History className="w-5 h-5 mr-3" />
@@ -113,7 +112,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'posts'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <Globe className="w-5 h-5 mr-3" />
@@ -127,7 +126,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'settings'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <Settings className="w-5 h-5 mr-3" />
@@ -141,7 +140,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'scraper'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <Database className="w-5 h-5 mr-3" />
@@ -155,7 +154,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'logs'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <ClipboardList className="w-5 h-5 mr-3" />
@@ -169,7 +168,7 @@ function Layout({
               className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
                 currentView === 'admin'
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-purple-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
               }`}
             >
               <Shield className="w-5 h-5 mr-3" />

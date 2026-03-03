@@ -14,7 +14,7 @@
     "dev:electron": "wait-on http://localhost:5174 && electron .",
 
     "prebuild": "npm run copy:tinymce",
-    "build": "vite build --outDir src/renderer/dist",
+    "build": "vite build",
     "dist": "npm run build && electron-builder",
 
     "build:win": "npm run build && electron-builder --win",

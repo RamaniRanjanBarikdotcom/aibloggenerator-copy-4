@@ -70,6 +70,7 @@ const {
 const { exportBlog, exportHistoryCsv } = require('./services/fileExporter');
 const ProductScraper = require('./services/productScraper');
 const axios = require('axios');
+const cheerio = require('cheerio');
 
 const store = new Store({
   encryptionKey: 'your-secret-key-change-in-production',
@@ -117,6 +118,18 @@ async function loadImageBuffer({ imageUrl, localImagePath }) {
 
   if (!imageUrl) {
     throw new Error('No image source provided');
+  }
+
+  // Support data URI sources directly.
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(imageUrl)) {
+    const match = imageUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+    if (!match) {
+      throw new Error('Invalid data URI image');
+    }
+    const mimeType = match[1] || 'image/jpeg';
+    const buffer = Buffer.from(match[2], 'base64');
+    const ext = mime.extension(mimeType) || 'jpg';
+    return { buffer, mimeType, filename: `image.${ext}` };
   }
 
   const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
@@ -488,8 +501,55 @@ Draft:
 {{draft}}
 
 Return the enriched HTML content only.`,
-  imagePrompt:
-    `[subject], [action], [setting], [additional details]. The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9`,
+  imagePrompt: `You are an expert AI prompt engineer specialized in generating high-quality photorealistic featured image prompts for professional blog articles.
+
+Your task is to convert a blog topic paragraph into one polished image-generation prompt.
+
+Instructions:
+
+Analyze the input text and extract:
+
+A clear, specific visual subject
+
+A natural action being performed
+
+A realistic setting or environment
+
+Supporting visual details such as lighting, mood, composition, and color tones
+
+If the topic is abstract (SEO, AI, marketing, strategy, analytics, etc.), convert it into a realistic visual metaphor that can be photographed naturally.
+
+Generate exactly ONE single-line prompt using this structure:
+
+[Specific subject], [natural action], in [clear setting], with [lighting, mood, composition, visual details]. The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+
+Strict Rules:
+
+Output ONLY the final image prompt.
+
+No explanations.
+
+No extra text.
+
+No formatting.
+
+No text overlays.
+
+No logos.
+
+No UI elements.
+
+Must be photorealistic.
+
+Must be landscape orientation (16:9).
+
+Must end exactly with:
+
+The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9
+|
+
+Input text:
+{{topicParagraph}}`,
 };
 
 function renderTemplate(template, variables) {
@@ -503,27 +563,12 @@ function renderTemplate(template, variables) {
 
 function buildImagePrompt({ title, content, template }) {
   const baseTemplate = template || DEFAULT_PROMPTS.imagePrompt;
-
   const cleanText = stripHtmlTags(content || '').trim();
-  const subject = (title || '').trim() || 'main subject of the blog';
-
-  // Derive action from first verb-like word; fallback
-  const tokens = cleanText.split(/\s+/).filter(Boolean);
-  const action = tokens.find((w) => w.match(/ing$|ed$/i)) ? `${tokens.find((w) => w.match(/ing$|ed$/i))} in context` : 'engaging with the topic';
-
-  let setting = 'set in a realistic environment matching the topic';
-  if (cleanText) {
-    const firstSentence = cleanText.split(/[.!?]/).map((s) => s.trim()).filter(Boolean)[0];
-    if (firstSentence) {
-      const snippet = firstSentence.length > 140 ? `${firstSentence.slice(0, 137)}...` : firstSentence;
-      setting = `set around ${snippet}`;
-    }
-  }
-
-  const additionalDetails =
-    'natural light, true-to-life colors, shallow depth of field, candid framing, no text overlay';
-
-  return `${subject}, ${action}, ${setting}, ${additionalDetails}. The image must be natural, realistic, in 2018, style raw, 8K, taken on iPhone, --ar 16:9`;
+  const topicParagraph = cleanText || (title || '').trim() || 'Professional blog topic';
+  return renderTemplate(baseTemplate, {
+    topic: (title || '').trim(),
+    topicParagraph,
+  });
 }
 
 function getPromptTemplates(settings) {
@@ -562,8 +607,7 @@ function ensureInternalLink(content, siteBaseUrl) {
     if (content.includes(siteBaseUrl)) return content;
     return `${content}\n\n<p>Explore more helpful guides at <a href="${siteBaseUrl}">${siteBaseUrl}</a>.</p>`;
   }
-  // fallback external helpful link
-  return `${content}\n\n<p>Learn more about printer care at <a href="https://support.hp.com">HP Support</a>.</p>`;
+  return content;
 }
 
 function escapeRegExp(value) {
@@ -607,6 +651,32 @@ function linkProducts(content, products) {
   });
 
   return linked.join('');
+}
+
+function normalizeUrlForMatch(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    return parsed.toString().replace(/\/+$/, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function keepOnlyScrapedLinks(content, products) {
+  if (!content) return content;
+  const allowed = new Set(
+    (Array.isArray(products) ? products : [])
+      .map((item) => normalizeUrlForMatch(item?.url))
+      .filter(Boolean)
+  );
+  return content.replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, href, inner) => {
+    const normalizedHref = normalizeUrlForMatch(href);
+    if (normalizedHref && allowed.has(normalizedHref)) {
+      return match;
+    }
+    // Keep readable text but strip disallowed link markup.
+    return inner;
+  });
 }
 
 function normalizeSeoData(raw) {
@@ -720,15 +790,6 @@ function ensureFocusKeywordUsage(content, keyword) {
   return updated;
 }
 
-function ensureKeywordImage(content, keyword) {
-  if (!content || !keyword) return content;
-  const safe = keyword.replace(/[^a-z0-9\- ]/gi, '').trim().replace(/\s+/g, '-').toLowerCase();
-  const alt = keyword;
-  const src = `https://dummyimage.com/1200x675/111/fff.jpg&text=${encodeURIComponent(safe)}`;
-  const figure = `<figure class="aligncenter"><img src="${src}" alt="${alt}" loading="lazy" /><figcaption>${keyword}</figcaption></figure>`;
-  return figure + '\n' + content;
-}
-
 async function ensureWordTarget({
   content,
   targetWords,
@@ -769,11 +830,39 @@ function getProductsPath() {
 }
 
 function getImagesDirectory() {
-  const dir = path.join(app.getPath('userData'), 'images');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  // Store generated images in a user-visible folder regardless of install location.
+  const candidateBases = [];
+  try {
+    candidateBases.push(app.getPath('pictures'));
+  } catch {}
+  try {
+    candidateBases.push(app.getPath('documents'));
+  } catch {}
+  try {
+    candidateBases.push(app.getPath('home'));
+  } catch {}
+  candidateBases.push(app.getPath('userData'));
+
+  const folderName = 'Blog Generator Images';
+  for (const base of candidateBases) {
+    if (!base) continue;
+    const dir = path.join(base, folderName);
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      return dir;
+    } catch {
+      // Try next candidate path.
+    }
   }
-  return dir;
+
+  // Final fallback (should rarely happen).
+  const fallbackDir = path.join(process.cwd(), folderName);
+  if (!fs.existsSync(fallbackDir)) {
+    fs.mkdirSync(fallbackDir, { recursive: true });
+  }
+  return fallbackDir;
 }
 
 function loadProducts() {
@@ -1397,8 +1486,8 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
     const title = blog.title || 'Untitled';
     let content = blog.content || '';
     const metaDescription = blog.metaDescription || '';
-    const imageUrl = blog.imageUrl || null;
-    const localImagePath = blog.localImagePath || blog.local_image_path || null;
+    let imageUrl = blog.imageUrl || null;
+    let localImagePath = blog.localImagePath || blog.local_image_path || null;
     const keywords = Array.isArray(blog.keywords)
       ? blog.keywords
       : String(blog.keywords || '')
@@ -1447,6 +1536,20 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
     };
 
     if (platform === 'wordpress' || platform === 'wordpress-token') {
+      // Pull latest stored image paths if current payload is missing them.
+      if ((!imageUrl || !localImagePath) && blog?.id) {
+        try {
+          const latest = await getBlogById(blog.id, { userId: currentUser.id, isAdmin: isAdmin() });
+          if (latest) {
+            imageUrl = imageUrl || latest.image_url || latest.imageUrl || null;
+            localImagePath =
+              localImagePath || latest.local_image_path || latest.localImagePath || null;
+          }
+        } catch (err) {
+          console.warn('[Publish] Failed to load latest blog image from DB:', err.message);
+        }
+      }
+
       const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
       const endpoint = `${baseUrl}/wp-json/aiblog/v1/post`;
 
@@ -1464,23 +1567,32 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
         throw new Error('Provide either an API token (from AI Blog Token plugin) or username + application password');
       }
 
-      // Upload image to WordPress media (via plugin endpoint) so it's in Media Library
-      let mediaUrl = imageUrl;
+      // Prepare image payload once so we can use it for both /upload and /post fallback.
+      let imageAsset = null;
       if (imageUrl || localImagePath) {
         try {
-          const img = await loadImageBuffer({ imageUrl, localImagePath });
+          imageAsset = await loadImageBuffer({ imageUrl, localImagePath });
+        } catch (err) {
+          console.warn('[Publish] Failed to load image asset:', err.message);
+        }
+      }
+
+      // Upload image to WordPress media (via plugin endpoint) so it's in Media Library
+      let mediaUrl = imageUrl;
+      if (imageAsset) {
+        try {
           const uploaded = await uploadImageViaPlugin({
             baseUrl,
             authHeader,
-            buffer: img.buffer,
-            filename: img.filename,
-            mimeType: img.mimeType,
+            buffer: imageAsset.buffer,
+            filename: imageAsset.filename,
+            mimeType: imageAsset.mimeType,
             altText: title,
           });
           mediaUrl = uploaded.fullUrl || uploaded.url || mediaUrl;
           console.log('[Publish] Image uploaded to WordPress media library:', mediaUrl);
         } catch (err) {
-          console.warn('[Publish] Image upload failed, falling back to original URL:', err.message);
+          console.warn('[Publish] Image upload failed, will send inline image data to /post:', err.message);
         }
       }
 
@@ -1507,6 +1619,13 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       if (mediaUrl) {
         postPayload.featuredImage = mediaUrl;
         console.log('[Publish] Including media library URL as featured image');
+      }
+
+      // Fallback for servers that cannot download remote URLs:
+      // send the image binary directly so WordPress can save it to Media Library.
+      if (imageAsset) {
+        postPayload.featuredImageData = `data:${imageAsset.mimeType};base64,${imageAsset.buffer.toString('base64')}`;
+        postPayload.featuredImageName = imageAsset.filename || 'featured-image.jpg';
       }
 
       console.log('[Publish] Posting to WordPress plugin endpoint:', endpoint, 'status:', publishStatus);
@@ -1807,6 +1926,7 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
     const storedSettings = userSettingsRaw ? JSON.parse(userSettingsRaw) : {};
     const mergedSettings = {
       aiProvider: 'openai',
+      imageProvider: 'openai',
       imageModel: 'gpt-image-1',
       ...storedSettings,
     };
@@ -1829,7 +1949,7 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       return key;
     };
 
-    const provider = mergedSettings.aiProvider || 'openai';
+    const provider = mergedSettings.imageProvider || mergedSettings.aiProvider || 'openai';
     const providerInfo = getProvider(provider);
     if (!providerInfo?.supportsImages) {
       throw new Error(`Selected provider "${provider}" does not support image generation`);
@@ -1854,20 +1974,23 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       throw new Error(`Image generation failed for provider "${provider}"`);
     }
 
-    // Save image locally for reference
+    // Save image locally for reliable future publishing
     const imagesDir = getImagesDirectory();
     const safeTitle = (topic || 'image').replace(/[^a-z0-9-_ ]/gi, '').trim() || 'image';
     const filename = `${safeTitle.replace(/\s+/g, '-')}-${Date.now()}.png`;
     const filePath = path.join(imagesDir, filename);
+    let savedLocalPath = '';
     try {
       if (imageResult.imageUrl.startsWith('data:')) {
         const base64 = imageResult.imageUrl.split(',')[1] || '';
         if (base64) {
           fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+          savedLocalPath = filePath;
         }
       } else {
         const resp = await axios.get(imageResult.imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
         fs.writeFileSync(filePath, resp.data);
+        savedLocalPath = filePath;
       }
     } catch (err) {
       console.warn('[Image] Failed to save locally:', err.message);
@@ -1880,7 +2003,7 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
         updatedBlog = {
           ...existing,
           imageUrl: imageResult.imageUrl,
-          localImagePath: filePath,
+          localImagePath: savedLocalPath || existing.local_image_path || existing.localImagePath || '',
           cost: (existing.cost || 0) + (imageResult.cost || 0),
         };
         await updateBlog({ blog: updatedBlog, userId: currentUser.id, isAdmin: isAdmin() });
@@ -1901,7 +2024,7 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       userId: currentUser.id,
     });
 
-    return { success: true, imageUrl: imageResult.imageUrl, localPath: filePath, blog: updatedBlog };
+    return { success: true, imageUrl: imageResult.imageUrl, localPath: savedLocalPath, blog: updatedBlog };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1963,7 +2086,10 @@ ipcMain.handle('get-wordpress-stats', async (event, { destinationId = null } = {
   }
 });
 
-ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = [], settings }) => {
+ipcMain.handle(
+  'generate-blog',
+  async (event, { topic, keywords, categories = [], settings, resumeState = null }) => {
+  let checkpoint = null;
   try {
     requirePermission('generate');
     if (!currentUser) {
@@ -1976,6 +2102,7 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
     const storedSettings = userSettingsRaw ? JSON.parse(userSettingsRaw) : {};
     const mergedSettings = {
       aiProvider: 'openai',
+      imageProvider: 'openai',
       aiModel: 'gpt-4o',
       imageModel: 'gpt-image-1',
       maxTokens: null,
@@ -2030,35 +2157,72 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
     };
 
     const language = mergedSettings.language || 'English';
+    const canResume =
+      resumeState &&
+      resumeState.topic === topic &&
+      JSON.stringify(resumeState.keywords || '') === JSON.stringify(keywords || '') &&
+      resumeState.language === language;
+    checkpoint = canResume
+      ? {
+          ...resumeState,
+          responses: resumeState.responses || {},
+        }
+      : {
+          topic,
+          keywords,
+          language,
+          completedStep: -1,
+          responses: {},
+        };
+    const markCheckpoint = (step, patch = {}) => {
+      Object.assign(checkpoint, patch);
+      checkpoint.completedStep = Math.max(checkpoint.completedStep || -1, step);
+    };
     const focusKeyword =
       mergedSettings.focusKeyword ||
       (Array.isArray(keywords) ? keywords[0] : keywords) ||
       topic ||
       '';
+    const siteBaseUrl = mergedSettings.siteBaseUrl || '';
 
-    sendProgress(0, 'Researching topic...');
-    const seoPrompt = renderTemplate(promptTemplates.seoResearchPrompt, {
-      topic,
-      keywords: keywords || '',
-      focusKeyword,
-      language,
-    });
-    const seoResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [{ role: 'user', content: seoPrompt }],
-    });
-    const seoData = normalizeSeoData(parseJsonContent(seoResponse.text));
+    let seoResponse = checkpoint.responses.seoResponse || null;
+    let seoData = checkpoint.seoData || null;
+    if (!seoData) {
+      sendProgress(0, 'Researching topic...');
+      const seoPrompt = renderTemplate(promptTemplates.seoResearchPrompt, {
+        topic,
+        keywords: keywords || '',
+        focusKeyword,
+        language,
+      });
+      seoResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [{ role: 'user', content: seoPrompt }],
+      });
+      seoData = normalizeSeoData(parseJsonContent(seoResponse.text));
+      markCheckpoint(0, {
+        seoData,
+        responses: {
+          ...checkpoint.responses,
+          seoResponse: { usage: seoResponse?.usage || {} },
+        },
+      });
+    } else {
+      sendProgress(0, 'Resuming from saved topic research...');
+    }
 
-    sendProgress(1, 'Gathering sources...');
-    const researchContextParts = [];
+    let researchSynthesisResponse = checkpoint.responses.researchSynthesisResponse || null;
+    let researchContextText = checkpoint.researchContextText || '';
+    if (!researchContextText) {
+      sendProgress(1, 'Gathering sources...');
+      const researchContextParts = [];
     const serpProvider = mergedSettings.serpProvider || 'openai';
     const serpModel = mergedSettings.serpModel || 'gpt-4o-mini';
     const deepResearchProvider = mergedSettings.deepResearchProvider || 'openai';
     const deepResearchModel = mergedSettings.deepResearchModel || 'gpt-4o-mini';
-    const siteBaseUrl = mergedSettings.siteBaseUrl || '';
 
     if (serpProvider === 'openai') {
       const openaiKey = await getProviderApiKey('openai');
@@ -2131,85 +2295,121 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
       }
     }
 
-    let researchSynthesisResponse = null;
-    let researchSynthesis = '';
-    const researchContext = researchContextParts.join('\n\n');
-    if (deepResearchProvider && deepResearchProvider !== 'none') {
-      const deepKey = await getProviderApiKey(deepResearchProvider);
-      if (deepKey) {
-        try {
-          const synthesisPrompt = renderTemplate(promptTemplates.researchSynthesisPrompt, {
-            topic,
-            language,
-            researchContext: researchContext || 'No external sources available.',
-          });
-          researchSynthesisResponse = await chatCompletion({
-            provider: deepResearchProvider,
-            apiKey: deepKey,
-            model: deepResearchModel,
-            maxTokens,
-            messages: [{ role: 'user', content: synthesisPrompt }],
-          });
-          researchSynthesis = researchSynthesisResponse.text || '';
-        } catch (error) {
-          await addLog({
-            level: 'warn',
-            category: 'generation',
-            message: 'Deep research failed',
-            details: { error: error.message },
-            userId: currentUser.id,
-          });
+      let researchSynthesis = '';
+      const researchContext = researchContextParts.join('\n\n');
+      if (deepResearchProvider && deepResearchProvider !== 'none') {
+        const deepKey = await getProviderApiKey(deepResearchProvider);
+        if (deepKey) {
+          try {
+            const synthesisPrompt = renderTemplate(promptTemplates.researchSynthesisPrompt, {
+              topic,
+              language,
+              researchContext: researchContext || 'No external sources available.',
+            });
+            researchSynthesisResponse = await chatCompletion({
+              provider: deepResearchProvider,
+              apiKey: deepKey,
+              model: deepResearchModel,
+              maxTokens,
+              messages: [{ role: 'user', content: synthesisPrompt }],
+            });
+            researchSynthesis = researchSynthesisResponse.text || '';
+          } catch (error) {
+            await addLog({
+              level: 'warn',
+              category: 'generation',
+              message: 'Deep research failed',
+              details: { error: error.message },
+              userId: currentUser.id,
+            });
+          }
         }
       }
+
+      researchContextText = [
+        researchContext ? `Research context:\n${researchContext}` : '',
+        researchSynthesis ? `Research synthesis:\n${researchSynthesis}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      markCheckpoint(1, {
+        researchContextText,
+        responses: {
+          ...checkpoint.responses,
+          researchSynthesisResponse: researchSynthesisResponse
+            ? { usage: researchSynthesisResponse?.usage || {} }
+            : null,
+        },
+      });
+    } else {
+      sendProgress(1, 'Resuming from saved research context...');
     }
 
-    const researchContextText = [
-      researchContext ? `Research context:\n${researchContext}` : '',
-      researchSynthesis ? `Research synthesis:\n${researchSynthesis}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
-    sendProgress(2, 'Creating key takeaways...');
-    const takeawaysPrompt = renderTemplate(promptTemplates.keyTakeawaysPrompt, {
-      topic,
-      language,
-    });
-    const takeawaysResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [
-        {
-          role: 'user',
-          content: [takeawaysPrompt, researchContextText].filter(Boolean).join('\n\n'),
+    let takeawaysResponse = checkpoint.responses.takeawaysResponse || null;
+    let keyTakeaways = checkpoint.keyTakeaways || '';
+    if (!keyTakeaways) {
+      sendProgress(2, 'Creating key takeaways...');
+      const takeawaysPrompt = renderTemplate(promptTemplates.keyTakeawaysPrompt, {
+        topic,
+        language,
+      });
+      takeawaysResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: [takeawaysPrompt, researchContextText].filter(Boolean).join('\n\n'),
+          },
+        ],
+      });
+      keyTakeaways = takeawaysResponse.text || '';
+      markCheckpoint(2, {
+        keyTakeaways,
+        responses: {
+          ...checkpoint.responses,
+          takeawaysResponse: { usage: takeawaysResponse?.usage || {} },
         },
-      ],
-    });
-    const keyTakeaways = takeawaysResponse.text || '';
+      });
+    } else {
+      sendProgress(2, 'Resuming from saved key takeaways...');
+    }
 
-    sendProgress(3, 'Creating outline...');
-    const outlinePrompt = renderTemplate(promptTemplates.outlinePrompt, {
-      topic,
-      language,
-      secondaryKeywords: seoData.secondaryKeywords.join(', '),
-    });
-    const outlineResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [
-        {
-          role: 'user',
-          content: [outlinePrompt, researchContextText].filter(Boolean).join('\n\n'),
+    let outlineResponse = checkpoint.responses.outlineResponse || null;
+    let outline = checkpoint.outline || null;
+    if (!outline) {
+      sendProgress(3, 'Creating outline...');
+      const outlinePrompt = renderTemplate(promptTemplates.outlinePrompt, {
+        topic,
+        language,
+        secondaryKeywords: seoData.secondaryKeywords.join(', '),
+      });
+      outlineResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: [outlinePrompt, researchContextText].filter(Boolean).join('\n\n'),
+          },
+        ],
+      });
+      outline = parseJsonContent(outlineResponse.text) || { sections: [] };
+      markCheckpoint(3, {
+        outline,
+        responses: {
+          ...checkpoint.responses,
+          outlineResponse: { usage: outlineResponse?.usage || {} },
         },
-      ],
-    });
-    const outline = parseJsonContent(outlineResponse.text) || { sections: [] };
+      });
+    } else {
+      sendProgress(3, 'Resuming from saved outline...');
+    }
 
-    sendProgress(4, 'Writing blog content...');
     const productContext = mergedSettings.useProductContext ? loadProducts() : [];
     const productContextText =
       productContext.length > 0
@@ -2221,43 +2421,57 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
             })
             .join('\n')}`
         : '';
-    const blogPrompt = [
-      promptTemplates.styleGuardrails,
-      promptTemplates.seoStructureGuardrails,
-      renderTemplate(promptTemplates.blogPrompt, {
-        topic,
-        language,
-        writingStyle: mergedSettings.writingStyle || 'professional',
-        writingTone: mergedSettings.writingTone || 'friendly',
-        targetWordCount: mergedSettings.targetWordCount || 2500,
-        primaryKeyword: seoData.primaryKeyword || '',
-        secondaryKeywords: seoData.secondaryKeywords.join(', '),
-        outline: JSON.stringify(outline.sections || [], null, 2),
-      }),
-      researchContextText ? `\n\n${researchContextText}` : '',
-      siteBaseUrl ? `\n\nInternal site URL: ${siteBaseUrl}` : '',
-      productContextText,
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-    const blogResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [{ role: 'user', content: blogPrompt }],
-    });
-    let blogContent = parseJsonContent(blogResponse.text);
-    if (!blogContent || !blogContent.content) {
-      blogContent = { title: '', metaDescription: '', content: blogResponse.text || '' };
+    let blogResponse = checkpoint.responses.blogResponse || null;
+    let blogContent = checkpoint.blogContent || null;
+    if (!blogContent) {
+      sendProgress(4, 'Writing blog content...');
+      const blogPrompt = [
+        promptTemplates.styleGuardrails,
+        promptTemplates.seoStructureGuardrails,
+        renderTemplate(promptTemplates.blogPrompt, {
+          topic,
+          language,
+          writingStyle: mergedSettings.writingStyle || 'professional',
+          writingTone: mergedSettings.writingTone || 'friendly',
+          targetWordCount: mergedSettings.targetWordCount || 2500,
+          primaryKeyword: seoData.primaryKeyword || '',
+          secondaryKeywords: seoData.secondaryKeywords.join(', '),
+          outline: JSON.stringify(outline.sections || [], null, 2),
+        }),
+        researchContextText ? `\n\n${researchContextText}` : '',
+        siteBaseUrl ? `\n\nInternal site URL: ${siteBaseUrl}` : '',
+        productContextText,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      blogResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [{ role: 'user', content: blogPrompt }],
+      });
+      blogContent = parseJsonContent(blogResponse.text);
+      if (!blogContent || !blogContent.content) {
+        blogContent = { title: '', metaDescription: '', content: blogResponse.text || '' };
+      }
+      markCheckpoint(4, {
+        blogContent,
+        responses: {
+          ...checkpoint.responses,
+          blogResponse: { usage: blogResponse?.usage || {} },
+        },
+      });
+    } else {
+      sendProgress(4, 'Resuming from saved draft...');
     }
 
     const contentText = blogContent.content || '';
     const contentWords = stripHtmlTags(contentText).split(/\s+/).filter(Boolean).length;
     const looksLikeOutline =
       /^#?\s*outline/i.test(contentText) || contentWords < 300 || contentText.split(/\n/).length < 3;
-    let repairResponse = null;
-    if (looksLikeOutline) {
+    let repairResponse = checkpoint.responses.repairResponse || null;
+    if (looksLikeOutline && !checkpoint.repairCompleted) {
       sendProgress(5, 'Repairing draft...');
       const repairPrompt = renderTemplate(promptTemplates.repairPrompt, {
         draft: contentText,
@@ -2273,44 +2487,84 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
       if (repaired && repaired.content) {
         blogContent = repaired;
       }
+      markCheckpoint(5, {
+        repairCompleted: true,
+        blogContent,
+        responses: {
+          ...checkpoint.responses,
+          repairResponse: repairResponse ? { usage: repairResponse?.usage || {} } : null,
+        },
+      });
+    } else if (looksLikeOutline) {
+      sendProgress(5, 'Resuming from repaired draft...');
     }
 
-    sendProgress(6, 'Humanizing content...');
-    const humanizePrompt = renderTemplate(promptTemplates.humanizePrompt, {
-      draft: blogContent.content || contentText,
-    });
-    const humanizedResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [{ role: 'user', content: humanizePrompt }],
-    });
-    const humanizedContent = humanizedResponse.text || blogContent.content;
+    let humanizedResponse = checkpoint.responses.humanizedResponse || null;
+    let humanizedContent = checkpoint.humanizedContent || '';
+    if (!humanizedContent) {
+      sendProgress(6, 'Humanizing content...');
+      const humanizePrompt = renderTemplate(promptTemplates.humanizePrompt, {
+        draft: blogContent.content || contentText,
+      });
+      humanizedResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [{ role: 'user', content: humanizePrompt }],
+      });
+      humanizedContent = humanizedResponse.text || blogContent.content;
+      markCheckpoint(6, {
+        humanizedContent,
+        responses: {
+          ...checkpoint.responses,
+          humanizedResponse: { usage: humanizedResponse?.usage || {} },
+        },
+      });
+    } else {
+      sendProgress(6, 'Resuming from humanized content...');
+    }
 
-    sendProgress(7, 'Checking compliance...');
-    const compliancePrompt = renderTemplate(promptTemplates.compliancePrompt, {
-      draft: humanizedContent,
-    });
-    const complianceResponse = await chatCompletion({
-      provider,
-      apiKey,
-      model: chatModel,
-      maxTokens,
-      messages: [{ role: 'user', content: compliancePrompt }],
-    });
-    const compliantContent = complianceResponse.text || humanizedContent;
+    let complianceResponse = checkpoint.responses.complianceResponse || null;
+    let compliantContent = checkpoint.compliantContent || '';
+    if (!compliantContent) {
+      sendProgress(7, 'Checking compliance...');
+      const compliancePrompt = renderTemplate(promptTemplates.compliancePrompt, {
+        draft: humanizedContent,
+      });
+      complianceResponse = await chatCompletion({
+        provider,
+        apiKey,
+        model: chatModel,
+        maxTokens,
+        messages: [{ role: 'user', content: compliancePrompt }],
+      });
+      compliantContent = complianceResponse.text || humanizedContent;
+      markCheckpoint(7, {
+        compliantContent,
+        responses: {
+          ...checkpoint.responses,
+          complianceResponse: { usage: complianceResponse?.usage || {} },
+        },
+      });
+    } else {
+      sendProgress(7, 'Resuming from compliance check...');
+    }
 
     const targetWords = mergedSettings.targetWordCount || 2500;
-    const expandedContent = await ensureWordTarget({
-      content: compliantContent,
-      targetWords,
-      provider,
-      apiKey,
-      model: chatModel,
-      promptTemplates,
-      maxTokens,
-    });
+    let expandedContent = checkpoint.expandedContent || '';
+    if (!expandedContent) {
+      expandedContent = await ensureWordTarget({
+        content: compliantContent,
+        targetWords,
+        provider,
+        apiKey,
+        model: chatModel,
+        promptTemplates,
+        maxTokens,
+      });
+      markCheckpoint(8, { expandedContent });
+    }
     const finalWordsCheck = stripHtmlTags(expandedContent).split(/\s+/).filter(Boolean).length;
     if (finalWordsCheck < targetWords * 0.90) {
       throw new Error(`Generated content too short (${finalWordsCheck} words, target ${targetWords}). Please retry.`);
@@ -2352,11 +2606,10 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
       '';
 
     let finalContent = expandedContent || compliantContent || humanizedContent || blogContent.content || '';
-    finalContent = ensureKeywordImage(finalContent, chosenKeyword);
     finalContent = ensureFocusKeywordUsage(finalContent, chosenKeyword);
     finalContent = stripMarkdownFences(finalContent);
     finalContent = linkProducts(finalContent, productContext);
-    finalContent = ensureInternalLink(finalContent, siteBaseUrl);
+    finalContent = keepOnlyScrapedLinks(finalContent, productContext);
     finalContent = renumberH2Headings(finalContent);
     if (!isTechnicalTopic(topic, keywords)) {
       finalContent = stripCodeBlocks(finalContent);
@@ -2436,7 +2689,11 @@ ipcMain.handle('generate-blog', async (event, { topic, keywords, categories = []
         userId: currentUser.id,
       });
     }
-    return { success: false, error: error.message };
+    return {
+      success: false,
+      error: error.message,
+      resumeState: checkpoint ? { ...checkpoint, failedAt: new Date().toISOString() } : null,
+    };
   }
 });
 
@@ -2893,6 +3150,158 @@ ipcMain.handle('get-product-database', async () => {
     return { success: true, products };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('preview-link', async (event, { url }) => {
+  try {
+    requirePermission('generate');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const raw = String(url || '').trim();
+    if (!raw) {
+      throw new Error('URL is required');
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      throw new Error('URL must start with http:// or https://');
+    }
+
+    const userSettingsRaw = await getSetting({
+      userId: currentUser.id,
+      key: `user_settings_${currentUser.id}`,
+    });
+    const userSettings = userSettingsRaw ? JSON.parse(userSettingsRaw) : {};
+    const configuredEndpoint = String(
+      userSettings.linkPreviewEndpoint ||
+        process.env.LINKPREVIEW_ENDPOINT ||
+        'https://api.linkpreview.net'
+    ).trim();
+    const linkPreviewApiKey = String(
+      userSettings.linkPreviewApiKey || process.env.LINKPREVIEW_API_KEY || ''
+    ).trim();
+    const normalizeLinkPreviewEndpoint = (endpoint) => {
+      try {
+        const parsed = new URL(endpoint || 'https://api.linkpreview.net');
+        const host = parsed.hostname.toLowerCase();
+        // my.linkpreview.net is the dashboard; the API is api.linkpreview.net.
+        if (host === 'my.linkpreview.net' || host === 'linkpreview.net' || host === 'www.linkpreview.net') {
+          return 'https://api.linkpreview.net';
+        }
+        return `${parsed.protocol}//${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+      } catch (_error) {
+        return 'https://api.linkpreview.net';
+      }
+    };
+    const linkPreviewEndpoint = normalizeLinkPreviewEndpoint(configuredEndpoint);
+
+    const buildFallbackPreview = async () => {
+      const response = await axios.get(raw, {
+        timeout: 15000,
+        maxRedirects: 5,
+        headers: {
+          ...PUBLISH_AXIOS_DEFAULTS.headers,
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        responseType: 'text',
+      });
+
+      const finalUrl = response?.request?.res?.responseUrl || raw;
+      const $ = cheerio.load(response.data || '');
+      const firstNonEmpty = (...vals) =>
+        vals.find((v) => typeof v === 'string' && v.trim())?.trim() || '';
+      const absolutize = (candidate) => {
+        if (!candidate) return '';
+        try {
+          return new URL(candidate, finalUrl).toString();
+        } catch (_error) {
+          return '';
+        }
+      };
+
+      const title = firstNonEmpty(
+        $('meta[property="og:title"]').attr('content'),
+        $('meta[name="twitter:title"]').attr('content'),
+        $('title').first().text()
+      );
+      const description = firstNonEmpty(
+        $('meta[property="og:description"]').attr('content'),
+        $('meta[name="description"]').attr('content'),
+        $('meta[name="twitter:description"]').attr('content')
+      );
+      const image = absolutize(
+        firstNonEmpty(
+          $('meta[property="og:image"]').attr('content'),
+          $('meta[name="twitter:image"]').attr('content')
+        )
+      );
+      const siteName = firstNonEmpty(
+        $('meta[property="og:site_name"]').attr('content'),
+        new URL(finalUrl).hostname
+      );
+      const favicon = absolutize(
+        firstNonEmpty(
+          $('link[rel="icon"]').attr('href'),
+          $('link[rel="shortcut icon"]').attr('href'),
+          '/favicon.ico'
+        )
+      );
+
+      return {
+        url: finalUrl,
+        title: title || finalUrl,
+        description,
+        image,
+        siteName,
+        favicon,
+      };
+    };
+
+    if (linkPreviewApiKey && /^https?:\/\//i.test(linkPreviewEndpoint)) {
+      try {
+        const lpRes = await axios.get(linkPreviewEndpoint, {
+          timeout: 15000,
+          headers: {
+            ...PUBLISH_AXIOS_DEFAULTS.headers,
+            'X-Linkpreview-Api-Key': linkPreviewApiKey,
+          },
+          params: {
+            q: raw,
+            // Deprecated, but some plans/proxies still expect it.
+            key: linkPreviewApiKey,
+            fields: 'icon,icon_type',
+          },
+        });
+        const data = lpRes.data || {};
+        const hasStructuredData =
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          (data.title || data.description || data.image || data.url);
+        if (!hasStructuredData) {
+          throw new Error('LinkPreview returned an unexpected payload');
+        }
+        const resolvedUrl = String(data.url || raw);
+        return {
+          success: true,
+          preview: {
+            url: resolvedUrl,
+            title: String(data.title || resolvedUrl),
+            description: String(data.description || ''),
+            image: String(data.image || ''),
+            siteName: new URL(resolvedUrl).hostname,
+            favicon: String(data.icon || ''),
+          },
+        };
+      } catch (error) {
+        // Service unavailable or invalid key; fallback to local metadata extraction.
+        console.warn('[preview-link] LinkPreview API failed, using fallback:', error.message);
+      }
+    }
+
+    const fallbackPreview = await buildFallbackPreview();
+    return { success: true, preview: fallbackPreview };
+  } catch (error) {
+    return { success: false, error: error.message || 'Preview failed' };
   }
 });
 

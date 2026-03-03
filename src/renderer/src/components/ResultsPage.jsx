@@ -23,6 +23,16 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
   const hasH1 = /<h1\b[^>]*>/i.test(rawContent);
   const md = useMemo(() => new MarkdownIt(), []);
   const isLegacyPlain = /(^|\n)\s*H2:\s+/i.test(rawContent);
+  const computedWordCount = useMemo(() => {
+    const fromBlog = Number(blog?.wordCount);
+    if (Number.isFinite(fromBlog) && fromBlog > 0) return fromBlog;
+    const plain = String(rawContent || '')
+      .replace(/<[^>]*>/g, ' ')
+      .trim();
+    const words = plain.split(/\s+/).filter(Boolean).length;
+    return words;
+  }, [blog?.wordCount, rawContent]);
+  const readingMinutes = Math.max(1, Math.ceil(computedWordCount / 200));
 
   const legacyToHtml = (text) => {
     const lines = (text || '').split(/\r?\n/);
@@ -279,6 +289,8 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
       setPublishStatus({ state: 'idle', message: '', url: null });
       setLocalImagePath(result.localPath || '');
       blog.imageUrl = result.imageUrl;
+      blog.localImagePath = result.localPath || '';
+      blog.local_image_path = result.localPath || '';
       alert('Image generated and saved locally.');
     } else {
       alert(result.error || 'Image generation failed');
@@ -307,12 +319,12 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                 <div className="flex items-center space-x-8">
                   <div>
                     <p className="text-sm text-slate-500">{t.words}</p>
-                    <p className="text-2xl font-bold text-slate-900">{blog.wordCount}</p>
+                    <p className="text-2xl font-bold text-slate-900">{computedWordCount}</p>
                   </div>
                   <div>
                     <p className="text-sm text-slate-500">{t.readingTime}</p>
                     <p className="text-2xl font-bold text-slate-900">
-                      {Math.ceil(blog.wordCount / 200)} min
+                      {readingMinutes} min
                     </p>
                   </div>
                   <div className="ml-auto flex items-center gap-3">

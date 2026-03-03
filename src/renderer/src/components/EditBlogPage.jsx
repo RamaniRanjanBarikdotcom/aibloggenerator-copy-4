@@ -5,8 +5,6 @@ const TINYMCE_SCRIPT_SRC = './tinymce/tinymce.min.js';
 const TINYMCE_BASE_URL = './tinymce';
 
 function EditBlogPage({ blog, t, onSave, onCancel }) {
-  const [title, setTitle] = useState(blog.title || '');
-  const [metaDescription, setMetaDescription] = useState(blog.metaDescription || '');
   const normalizedKeywords = Array.isArray(blog.keywords)
     ? blog.keywords
     : typeof blog.keywords === 'string'
@@ -24,18 +22,23 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         .filter(Boolean)
     : [];
 
+  const [title, setTitle] = useState(blog.title || '');
+  const [metaDescription, setMetaDescription] = useState(blog.metaDescription || '');
   const [keywords, setKeywords] = useState(normalizedKeywords.join(', '));
   const [categories, setCategories] = useState(normalizedCategories.join(', '));
   const [plainContent, setPlainContent] = useState(blog.content || '');
   const [htmlContent, setHtmlContent] = useState('');
   const [featuredImage, setFeaturedImage] = useState(blog.imageUrl || '');
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [showUnsavedImageWarning, setShowUnsavedImageWarning] = useState(false);
+  const [isSavingBeforeImage, setIsSavingBeforeImage] = useState(false);
   const [editorMode, setEditorMode] = useState('visual');
   const [localImagePath, setLocalImagePath] = useState('');
 
   const tinyTextareaRef = useRef(null);
   const tinyEditorRef = useRef(null);
   const syncingFromTinyRef = useRef(false);
+  const savedDraftRef = useRef(null);
   const [tinyLoaded, setTinyLoaded] = useState(Boolean(window.tinymce));
   const [tinyLoadError, setTinyLoadError] = useState('');
 
@@ -126,15 +129,29 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   useEffect(() => {
     const raw = blog.content || '';
     const hasHtml = /<\w+[^>]*>/.test(raw);
-    if (hasHtml) {
-      setHtmlContent(raw);
-      setPlainContent(htmlToPlain(raw));
-    } else {
-      setPlainContent(raw);
-      setHtmlContent(plainToHtml(raw));
-    }
+    const nextPlain = hasHtml ? htmlToPlain(raw) : raw;
+    const nextHtml = hasHtml ? raw : plainToHtml(raw);
+    const nextKeywords = normalizedKeywords.join(', ');
+    const nextCategories = normalizedCategories.join(', ');
+
+    setTitle(blog.title || '');
+    setMetaDescription(blog.metaDescription || '');
+    setKeywords(nextKeywords);
+    setCategories(nextCategories);
+    setPlainContent(nextPlain);
+    setHtmlContent(nextHtml);
     setFeaturedImage(blog.imageUrl || '');
-  }, [blog.content]);
+    setLocalImagePath('');
+
+    savedDraftRef.current = {
+      title: (blog.title || '').trim(),
+      metaDescription: (blog.metaDescription || '').trim(),
+      keywords: nextKeywords.trim(),
+      categories: nextCategories.trim(),
+      plainContent: (nextPlain || '').trim(),
+      htmlContent: (nextHtml || '').trim(),
+    };
+  }, [blog]);
 
   useEffect(() => {
     if (window.tinymce) {
@@ -222,6 +239,65 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     }
   }, [editorMode, htmlContent]);
 
+  const getCurrentDraftState = () => {
+    const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+    let nextHtml = htmlContent || '';
+    let nextPlain = plainContent || '';
+
+    if (editorMode === 'visual') {
+      nextHtml = visualHtml || '';
+      nextPlain = htmlToPlain(nextHtml);
+    } else if (editorMode === 'html') {
+      nextHtml = htmlContent || '';
+      nextPlain = htmlToPlain(nextHtml);
+    } else {
+      nextPlain = plainContent || '';
+      nextHtml = plainToHtml(nextPlain);
+    }
+
+    return {
+      title: title.trim(),
+      metaDescription: metaDescription.trim(),
+      keywords: keywords
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .join(', '),
+      categories: categories
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .join(', '),
+      plainContent: nextPlain.trim(),
+      htmlContent: nextHtml.trim(),
+    };
+  };
+
+  const hasUnsavedChanges = () => {
+    const saved = savedDraftRef.current;
+    if (!saved) return false;
+    const current = getCurrentDraftState();
+    return (
+      current.title !== (saved.title || '').trim() ||
+      current.metaDescription !== (saved.metaDescription || '').trim() ||
+      current.keywords !== (saved.keywords || '').trim() ||
+      current.categories !== (saved.categories || '').trim() ||
+      current.plainContent !== (saved.plainContent || '').trim() ||
+      current.htmlContent !== (saved.htmlContent || '').trim()
+    );
+  };
+
+  const applySavedDraft = () => {
+    const saved = savedDraftRef.current;
+    if (!saved) return;
+    setTitle(saved.title || '');
+    setMetaDescription(saved.metaDescription || '');
+    setKeywords(saved.keywords || '');
+    setCategories(saved.categories || '');
+    setPlainContent(saved.plainContent || '');
+    setHtmlContent(saved.htmlContent || '');
+  };
+
   const handleModeChange = (mode) => {
     if (mode === editorMode) return;
 
@@ -266,7 +342,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     });
   };
 
-  const handleGenerateImage = async () => {
+  const generateImageNow = async () => {
     if (isGeneratingImage) return;
     setIsGeneratingImage(true);
 
@@ -287,6 +363,62 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     }
 
     setIsGeneratingImage(false);
+  };
+
+  const handleGenerateImage = async () => {
+    if (hasUnsavedChanges()) {
+      setShowUnsavedImageWarning(true);
+      return;
+    }
+    await generateImageNow();
+  };
+
+  const handleSaveBeforeImage = async () => {
+    if (isSavingBeforeImage) return;
+    setIsSavingBeforeImage(true);
+    try {
+      const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+      const contentToSave = editorMode === 'html' ? htmlContent : editorMode === 'visual' ? visualHtml : plainContent;
+      const payload = {
+        ...blog,
+        title: title.trim(),
+        metaDescription: metaDescription.trim(),
+        keywords: keywords
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+        categories: categories
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+        content: contentToSave,
+        imageUrl: featuredImage || null,
+      };
+      const result = await window.electronAPI.updateBlog({ blog: payload });
+      if (!result.success) {
+        alert(result.error || 'Save failed');
+        return;
+      }
+      const latest = getCurrentDraftState();
+      savedDraftRef.current = {
+        title: latest.title,
+        metaDescription: latest.metaDescription,
+        keywords: latest.keywords,
+        categories: latest.categories,
+        plainContent: latest.plainContent,
+        htmlContent: latest.htmlContent,
+      };
+      setShowUnsavedImageWarning(false);
+      await generateImageNow();
+    } finally {
+      setIsSavingBeforeImage(false);
+    }
+  };
+
+  const handleDiscardBeforeImage = async () => {
+    applySavedDraft();
+    setShowUnsavedImageWarning(false);
+    await generateImageNow();
   };
 
   return (
@@ -362,44 +494,42 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
             className="w-full px-3 py-2 border border-slate-200 rounded-lg"
             placeholder={t.categoriesPlaceholder || 'marketing, tutorials, ai tools'}
           />
-          <p className="text-xs text-slate-500 mt-1">
-            {t.categoriesHint || 'Comma separated; sent to WordPress during publish.'}
-          </p>
+          <p className="text-xs text-slate-500 mt-1">{t.categoriesHint || 'Comma separated; sent to WordPress during publish.'}</p>
         </div>
 
         <div>
           <div className="sticky top-4 z-20 -mx-2 mb-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur">
             <div className="flex items-center justify-between gap-2">
-            <label className="block text-sm font-medium text-slate-700">{t.contentLabel}</label>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => handleModeChange('visual')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  editorMode === 'visual' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {t.editorModeVisual}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleModeChange('plain')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  editorMode === 'plain' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {t.editorModePlain}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleModeChange('html')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  editorMode === 'html' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {t.editorModeHtml || 'Code'}
-              </button>
-            </div>
+              <label className="block text-sm font-medium text-slate-700">{t.contentLabel}</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('visual')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    editorMode === 'visual' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {t.editorModeVisual}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('plain')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    editorMode === 'plain' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {t.editorModePlain}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('html')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    editorMode === 'html' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {t.editorModeHtml || 'Code'}
+                </button>
+              </div>
             </div>
             <p className="mt-2 text-xs text-slate-500">
               {t.editorHelp || 'Visual = WYSIWYG, Plain = text only, Code = raw HTML editor with monospaced view.'}
@@ -444,15 +574,49 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
 
         <div className="sticky bottom-4 z-20 -mx-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur">
           <div className="flex items-center gap-3">
-          <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-blue-500 text-white">
-            {t.saveChanges}
-          </button>
-          <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600">
-            {t.cancel}
-          </button>
+            <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-blue-500 text-white">
+              {t.saveChanges}
+            </button>
+            <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600">
+              {t.cancel}
+            </button>
           </div>
         </div>
       </div>
+
+      {showUnsavedImageWarning && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">{t.unsavedEditTitle || 'Unsaved changes'}</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.unsavedEditBeforeImageMessage || 'Please save or discard your edits before generating an image.'}
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowUnsavedImageWarning(false)}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardBeforeImage}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                {t.discardChanges || 'Discard changes'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveBeforeImage}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+              >
+                {isSavingBeforeImage ? (t.saving || 'Saving...') : t.saveAndGenerateImage || 'Save and generate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

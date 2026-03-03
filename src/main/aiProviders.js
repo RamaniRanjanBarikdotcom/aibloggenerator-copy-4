@@ -1,4 +1,6 @@
-const DEFAULT_TIMEOUT_MS = 60000;
+const DEFAULT_TIMEOUT_MS = 180000;
+const DEFAULT_MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 800;
 
 const PROVIDERS = {
   openai: {
@@ -15,6 +17,41 @@ const PROVIDERS = {
     name: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     supportsImages: true,
+  },
+  anthropic: {
+    name: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    supportsImages: false,
+  },
+  groq: {
+    name: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    supportsImages: false,
+  },
+  xai: {
+    name: 'xAI (Grok)',
+    baseUrl: 'https://api.x.ai/v1',
+    supportsImages: false,
+  },
+  huggingface: {
+    name: 'Hugging Face',
+    baseUrl: 'https://router.huggingface.co/v1',
+    supportsImages: false,
+  },
+  mistral: {
+    name: 'Mistral',
+    baseUrl: 'https://api.mistral.ai/v1',
+    supportsImages: false,
+  },
+  together: {
+    name: 'Together AI',
+    baseUrl: 'https://api.together.xyz/v1',
+    supportsImages: false,
+  },
+  fireworks: {
+    name: 'Fireworks',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    supportsImages: false,
   },
   perplexity: {
     name: 'Perplexity',
@@ -68,7 +105,7 @@ const IMAGE_DEFAULT_MODEL = {
 };
 
 function getProvider(providerId) {
-  return PROVIDERS[providerId] || PROVIDERS.openai;
+  return PROVIDERS[providerId] || null;
 }
 
 function estimateCost({ provider, model, usage, images = 0 }) {
@@ -165,6 +202,12 @@ function classifyModelId(modelId) {
   return isLikelyImageModel(modelId) ? 'image' : 'text';
 }
 
+function pickImageQuality(modelId) {
+  // Keep a single default quality across providers/models.
+  // Provider-specific mismatches are handled by runtime fallback.
+  return 'high';
+}
+
 function uniqueSorted(values = []) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) =>
     String(a).localeCompare(String(b))
@@ -207,34 +250,86 @@ function isOpenRouterImageModel(item, id) {
   return isLikelyImageModel(id);
 }
 
-async function requestJson(url, options) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    const json = await response.json();
-    if (!response.ok) {
-      const message = json?.error?.message || json?.message || 'Provider request failed';
-      throw new Error(message);
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function isRetryableNetworkError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.name === 'AbortError' ||
+    message.includes('request timed out') ||
+    message.includes('network') ||
+    message.includes('fetch failed') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout')
+  );
+}
+
+async function requestJson(url, options, meta = {}) {
+  const maxRetries =
+    Number.isFinite(meta?.maxRetries) && meta.maxRetries >= 0
+      ? Math.floor(meta.maxRetries)
+      : DEFAULT_MAX_RETRIES;
+
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      const raw = await response.text();
+      let json = {};
+      if (raw) {
+        try {
+          json = JSON.parse(raw);
+        } catch {
+          json = {};
+        }
+      }
+
+      if (!response.ok) {
+        const message = json?.error?.message || json?.message || `Provider request failed (${response.status})`;
+        const error = new Error(message);
+        error.status = response.status;
+        if (attempt < maxRetries && isRetryableStatus(response.status)) {
+          const delay = RETRY_BASE_DELAY_MS * (attempt + 1);
+          await sleep(delay);
+          continue;
+        }
+        throw error;
+      }
+      return json;
+    } catch (error) {
+      const normalizedError = error?.name === 'AbortError' ? new Error('Request timed out') : error;
+      lastError = normalizedError;
+      if (attempt < maxRetries && isRetryableNetworkError(normalizedError)) {
+        const delay = RETRY_BASE_DELAY_MS * (attempt + 1);
+        await sleep(delay);
+        continue;
+      }
+      throw normalizedError;
+    } finally {
+      clearTimeout(timeout);
     }
-    return json;
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('Request timed out');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastError || new Error('Provider request failed');
 }
 
 async function chatCompletion({ provider, apiKey, model, messages, temperature = 0.7, maxTokens = null }) {
   if (!apiKey) {
     throw new Error('Missing API key');
   }
+  const providerInfo = getProvider(provider);
+  if (!providerInfo) {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
 
   if (provider === 'google') {
-    const providerInfo = getProvider(provider);
     const normalizedModel = normalizeGoogleModelId(model);
     const url = `${providerInfo.baseUrl}/models/${normalizedModel}:generateContent?key=${apiKey}`;
     const body = {
@@ -266,7 +361,55 @@ async function chatCompletion({ provider, apiKey, model, messages, temperature =
     };
   }
 
-  const providerInfo = getProvider(provider);
+  if (provider === 'anthropic') {
+    const selectedModel = String(model || 'claude-3-5-sonnet-latest').trim();
+    const url = `${providerInfo.baseUrl}/messages`;
+    const systemMessages = messages
+      .filter((msg) => msg.role === 'system')
+      .map((msg) => String(msg.content || '').trim())
+      .filter(Boolean);
+    const chatMessages = messages
+      .filter((msg) => msg.role !== 'system')
+      .map((msg) => ({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: String(msg.content || ''),
+      }));
+    if (chatMessages.length === 0) {
+      chatMessages.push({ role: 'user', content: '' });
+    }
+    const body = {
+      model: selectedModel,
+      messages: chatMessages,
+      temperature,
+      max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : 4096,
+    };
+    if (systemMessages.length > 0) {
+      body.system = systemMessages.join('\n\n');
+    }
+    const json = await requestJson(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = Array.isArray(json?.content)
+      ? json.content
+          .filter((part) => part?.type === 'text')
+          .map((part) => String(part?.text || ''))
+          .join('')
+      : '';
+    return {
+      text,
+      usage: {
+        promptTokens: json?.usage?.input_tokens || 0,
+        completionTokens: json?.usage?.output_tokens || 0,
+      },
+    };
+  }
+
   const url = `${providerInfo.baseUrl}/chat/completions`;
   const body = {
     model,
@@ -306,6 +449,9 @@ async function generateImage({ provider, apiKey, model, prompt }) {
     throw new Error('Missing API key');
   }
   const providerInfo = getProvider(provider);
+  if (!providerInfo) {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
   if (!providerInfo.supportsImages) {
     return { imageUrl: null, cost: 0 };
   }
@@ -366,8 +512,7 @@ async function generateImage({ provider, apiKey, model, prompt }) {
     model: selectedModel,
     prompt,
     n: 1,
-    size: '1792x1024',
-    quality: 'hd',
+    quality: pickImageQuality(selectedModel),
   };
   const headers = {
     'Content-Type': 'application/json',
@@ -378,11 +523,57 @@ async function generateImage({ provider, apiKey, model, prompt }) {
     headers['X-Title'] = 'AI Blog Generator';
   }
 
-  const json = await requestJson(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let json;
+  try {
+    json = await requestJson(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    // Keep auto-size hidden from users: only add explicit sizes as internal fallbacks when required.
+    const message = String(error?.message || '').toLowerCase();
+    const retryableImageParamsError =
+      message.includes('invalid value') ||
+      message.includes('supported values') ||
+      message.includes('quality') ||
+      message.includes('size');
+    if (retryableImageParamsError) {
+      const fallbackBodies = [
+        { ...body, size: '1536x1024' },
+        { ...body, size: '1024x1536' },
+        { ...body, size: '1024x1024' },
+        { ...body, quality: 'auto', size: '1536x1024' },
+        { ...body, quality: 'auto', size: '1024x1024' },
+        { ...body, quality: 'auto', size: '1792x1024' },
+      ];
+      let lastError = error;
+      for (const fallbackBody of fallbackBodies) {
+        try {
+          json = await requestJson(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(fallbackBody),
+          });
+          if (json?.data?.[0]) break;
+        } catch (fallbackError) {
+          lastError = fallbackError;
+        }
+      }
+      if (!json?.data?.[0] && lastError) {
+        throw lastError;
+      }
+      if (!json?.data?.[0]) {
+        json = await requestJson(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ ...body, quality: 'auto', size: '1024x1024' }),
+        });
+      }
+    } else {
+      throw error;
+    }
+  }
   const first = json.data?.[0] || {};
   const imageUrl = first.url || (first.b64_json ? `data:image/png;base64,${first.b64_json}` : null);
   const pricing = PRICING.image[selectedModel] || PRICING.image[IMAGE_DEFAULT_MODEL.openai] || { perImage: 0 };
@@ -428,7 +619,22 @@ async function testConnection({ provider, apiKey }) {
     await requestJson(url, { method: 'GET' });
     return true;
   }
+  if (provider === 'anthropic') {
+    const providerInfo = getProvider(provider);
+    const url = `${providerInfo.baseUrl}/models`;
+    await requestJson(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    return true;
+  }
   const providerInfo = getProvider(provider);
+  if (!providerInfo) {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
   const url = `${providerInfo.baseUrl}/models`;
   await requestJson(url, {
     method: 'GET',
@@ -442,6 +648,9 @@ async function listProviderModels({ provider, apiKey }) {
     throw new Error('Missing API key');
   }
   const providerInfo = getProvider(provider);
+  if (!providerInfo) {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
 
   if (provider === 'google') {
     let pageToken = '';
@@ -476,6 +685,25 @@ async function listProviderModels({ provider, apiKey }) {
       provider,
       textModels: uniqueSorted(textModels),
       imageModels: uniqueSorted(imageModels),
+    };
+  }
+  if (provider === 'anthropic') {
+    const url = `${providerInfo.baseUrl}/models`;
+    const json = await requestJson(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    const rows = Array.isArray(json?.data) ? json.data : [];
+    const textModels = rows
+      .map((item) => String(item?.id || '').trim())
+      .filter(Boolean);
+    return {
+      provider,
+      textModels: uniqueSorted(textModels),
+      imageModels: [],
     };
   }
 
