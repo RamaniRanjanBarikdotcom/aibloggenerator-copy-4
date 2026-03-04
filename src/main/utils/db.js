@@ -1089,6 +1089,27 @@ async function listRemotePosts({ status = null, limit = 100, destinationId = nul
   }));
 }
 
+async function getBlogForRemotePost({ remotePostId, destinationId = null } = {}) {
+  await initDb();
+  if (!remotePostId) return null;
+  let query = 'SELECT blog_id FROM publish_history WHERE remote_post_id = ?';
+  const params = [remotePostId];
+  if (destinationId) {
+    query += ' AND destination_id = ?';
+    params.push(destinationId);
+  }
+  query += ' ORDER BY published_at DESC LIMIT 1';
+  const stmt = db.prepare(query);
+  stmt.bind(params);
+  let row = null;
+  if (stmt.step()) {
+    row = stmt.getAsObject();
+  }
+  stmt.free();
+  if (!row?.blog_id) return null;
+  return await getBlogById(row.blog_id);
+}
+
 async function getRemotePostAnalytics() {
   await initDb();
   const all = listRemotePosts({ limit: 1000 });
@@ -1428,6 +1449,7 @@ module.exports = {
   replaceRemotePosts,
   deleteRemotePost,
   listRemotePosts,
+  getBlogForRemotePost,
   getRemotePostAnalytics,
   addPublishHistory,
   getPublishHistoryByBlog,

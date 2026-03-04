@@ -723,6 +723,22 @@ async function listRemotePosts({ status = null, limit = 200, destinationId = nul
   }));
 }
 
+async function getBlogForRemotePost({ remotePostId, destinationId = null } = {}) {
+  await initDb();
+  if (!remotePostId) return null;
+  const filter = { remote_post_id: remotePostId };
+  if (destinationId) filter.destination_id = destinationId;
+  const historyEntry = await db
+    .collection('publish_history')
+    .find(filter)
+    .sort({ published_at: -1 })
+    .limit(1)
+    .toArray();
+  const blogId = historyEntry[0]?.blog_id;
+  if (!blogId) return null;
+  return await getBlogById(blogId);
+}
+
 /**
  * Record publish history
  */
@@ -1593,6 +1609,7 @@ module.exports = {
   replaceRemotePosts,
   deleteRemotePost,
   listRemotePosts,
+  getBlogForRemotePost,
   recordPublishHistory,
   addPublishHistory: recordPublishHistory, // Alias for compatibility
   getPublishHistory,

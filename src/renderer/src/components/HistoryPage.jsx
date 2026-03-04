@@ -23,6 +23,9 @@ function HistoryPage({
   const [selectedBlog, setSelectedBlog] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsExportFormat, setDetailsExportFormat] = useState('markdown');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingSelected, setDeletingSelected] = useState(false);
   const summarySafe = summary || { totalCount: 0, totalCost: 0 };
   const wpCountsSafe = wpCounts || null;
   const normalizeImageGallery = (galleryValue, imageUrl) => {
@@ -130,6 +133,34 @@ function HistoryPage({
     setDetailsExportFormat('markdown');
   };
 
+  const toggleSelectedId = (id) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const handleHistoryClick = (event, id) => {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSelectedId(id);
+      return;
+    }
+    if (selectedIds.length) {
+      setSelectedIds([]);
+    }
+    openDetails(id);
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!selectedIds.length) return;
+    setDeletingSelected(true);
+    for (const id of selectedIds) {
+      await onDeleteBlog(id);
+    }
+    setDeletingSelected(false);
+    setShowDeleteConfirm(false);
+    setSelectedIds([]);
+  };
+
   return (
     <div className="max-w-5xl mx-auto p-8">
       <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.historyTitle}</h2>
@@ -199,56 +230,109 @@ function HistoryPage({
           )}
           {canBulkExport && (
             <div className="ml-auto flex flex-wrap items-center gap-2">
-              <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
-                {t.exportFormat}
-              </label>
-              <select
-                value={bulkFormat}
-                onChange={(event) => setBulkFormat(event.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-              >
-                <option value="markdown">Markdown</option>
-                <option value="html">HTML</option>
-                <option value="pdf">PDF</option>
-                <option value="docx">DOCX</option>
-              </select>
-              <button
-                type="button"
-                onClick={async () => {
-                  const ids = filteredHistory.map((item) => item.id);
-                  const result = await window.electronAPI.exportBulk({
-                    blogIds: ids,
-                    format: bulkFormat,
-                  });
-                  if (!result.success && result.error !== 'Export cancelled') {
-                    alert(`Export failed: ${result.error}`);
-                  }
-                }}
-                className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                {t.exportBulk}
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const result = await window.electronAPI.exportHistoryCsv({
-                    rows: filteredHistory,
-                  });
-                  if (!result.success && result.error !== 'Export cancelled') {
-                    alert(`Export failed: ${result.error}`);
-                  }
-                }}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                {t.exportHistoryCsv}
-              </button>
-              <button
-                type="button"
-                onClick={onClearAll}
-                className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
-              >
-                {t.clearAllLabel}
-              </button>
+              {selectedIds.length > 0 ? (
+                <>
+                  <span className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
+                    {selectedIds.length} selected
+                  </span>
+                  <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
+                    {t.exportFormat}
+                  </label>
+                  <select
+                    value={bulkFormat}
+                    onChange={(event) => setBulkFormat(event.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="markdown">Markdown</option>
+                    <option value="html">HTML</option>
+                    <option value="pdf">PDF</option>
+                    <option value="docx">DOCX</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const result = await window.electronAPI.exportBulk({
+                        blogIds: selectedIds,
+                        format: bulkFormat,
+                      });
+                      if (!result.success && result.error !== 'Export cancelled') {
+                        alert(`Export failed: ${result.error}`);
+                      }
+                    }}
+                    className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    {t.exportBulk}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const rows = filteredHistory.filter((item) => selectedIds.includes(item.id));
+                      const result = await window.electronAPI.exportHistoryCsv({
+                        rows,
+                      });
+                      if (!result.success && result.error !== 'Export cancelled') {
+                        alert(`Export failed: ${result.error}`);
+                      }
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {t.exportHistoryCsv}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+                  >
+                    {t.deleteLabel || 'Delete'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
+                    {t.exportFormat}
+                  </label>
+                  <select
+                    value={bulkFormat}
+                    onChange={(event) => setBulkFormat(event.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="markdown">Markdown</option>
+                    <option value="html">HTML</option>
+                    <option value="pdf">PDF</option>
+                    <option value="docx">DOCX</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ids = filteredHistory.map((item) => item.id);
+                      const result = await window.electronAPI.exportBulk({
+                        blogIds: ids,
+                        format: bulkFormat,
+                      });
+                      if (!result.success && result.error !== 'Export cancelled') {
+                        alert(`Export failed: ${result.error}`);
+                      }
+                    }}
+                    className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    {t.exportBulk}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const result = await window.electronAPI.exportHistoryCsv({
+                        rows: filteredHistory,
+                      });
+                      if (!result.success && result.error !== 'Export cancelled') {
+                        alert(`Export failed: ${result.error}`);
+                      }
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {t.exportHistoryCsv}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -266,8 +350,12 @@ function HistoryPage({
             <button
               key={item.id}
               type="button"
-              onClick={() => openDetails(item.id)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-sm transition hover:border-blue-200 hover:bg-blue-50/40"
+              onClick={(event) => handleHistoryClick(event, item.id)}
+              className={`w-full rounded-lg border px-4 py-3 text-left text-sm transition ${
+                selectedIds.includes(item.id)
+                  ? 'border-blue-400 bg-blue-50/60'
+                  : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50/40'
+              }`}
             >
               <div className="flex items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
@@ -289,7 +377,10 @@ function HistoryPage({
                       {publishStatus.publishedUrl && (
                         <button
                           type="button"
-                          onClick={() => window.electronAPI.openExternal({ url: publishStatus.publishedUrl })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            window.electronAPI.openExternal({ url: publishStatus.publishedUrl });
+                          }}
                           className="text-blue-600 hover:text-blue-800 p-0.5"
                           title="View on site"
                         >
@@ -383,17 +474,7 @@ function HistoryPage({
                     )}
                   </div>
 
-                  {selectedBlog?.imageUrl ? (
-                    <div className="overflow-hidden rounded-lg border border-slate-200">
-                      <img src={selectedBlog.imageUrl} alt={selectedBlog.title || 'Blog image'} className="w-full object-cover" />
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
-                      No image available yet.
-                    </div>
-                  )}
-
-                  {selectedGallery.length > 0 && (
+                  {selectedGallery.length > 0 ? (
                     <div className="space-y-2">
                       <p className="text-xs font-semibold text-slate-600">
                         {t.generatedImagesLabel || 'Generated images'}
@@ -404,7 +485,7 @@ function HistoryPage({
                             key={url}
                             type="button"
                             onClick={() => handleSelectHistoryImage(url)}
-                            className={`h-16 w-20 overflow-hidden rounded-md border ${
+                            className={`h-20 w-28 overflow-hidden rounded-md border ${
                               url === selectedBlog?.imageUrl ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
                             }`}
                             title={t.selectImageLabel || 'Use as featured image'}
@@ -413,6 +494,10 @@ function HistoryPage({
                           </button>
                         ))}
                       </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                      No image available yet.
                     </div>
                   )}
 
@@ -502,6 +587,36 @@ function HistoryPage({
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.deleteConfirmTitle || 'Delete selected blogs'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.deleteConfirm || 'Delete selected blogs? This action cannot be undone.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                disabled={deletingSelected}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+              >
+                {deletingSelected ? (t.deletingLabel || 'Deleting...') : (t.deleteLabel || 'Delete')}
+              </button>
             </div>
           </div>
         </div>

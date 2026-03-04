@@ -65,6 +65,7 @@ const {
   replaceRemotePosts,
   deleteRemotePost,
   listRemotePosts,
+  getBlogForRemotePost,
   getRemotePostAnalytics,
   addPublishHistory,
   getPublishHistoryByBlog,
@@ -4066,7 +4067,7 @@ async function fetchWordpressPostDetail({ destination, postId }) {
   return response.data;
 }
 
-async function updateWordpressPost({ destination, postId, title, content, status, excerpt }) {
+async function updateWordpressPost({ destination, postId, title, content, status, excerpt, featuredImage, featuredImageAlt }) {
   const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
   const authHeader = buildWpAuthHeader(destination);
   const endpoint = `${baseUrl}/wp-json/aiblog/v1/post`;
@@ -4077,6 +4078,12 @@ async function updateWordpressPost({ destination, postId, title, content, status
     status,
     excerpt,
   };
+  if (featuredImage) {
+    payload.featuredImage = featuredImage;
+  }
+  if (featuredImageAlt) {
+    payload.featuredImageAlt = featuredImageAlt;
+  }
   const response = await axios.post(endpoint, payload, {
     timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
     headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
@@ -4118,6 +4125,7 @@ async function updateShopifyArticle({
   summaryHtml,
   tags,
   status,
+  imageSrc,
 }) {
   const domain = normalizeShopDomain(shopDomain);
   const version = (apiVersion || '2024-01').trim();
@@ -4130,6 +4138,9 @@ async function updateShopifyArticle({
     tags,
     published: status === 'publish',
   };
+  if (imageSrc) {
+    articlePayload.image = { src: imageSrc, alt: title || '' };
+  }
   const response = await axios.put(
     endpoint,
     { article: articlePayload },
@@ -4540,6 +4551,17 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
       throw new Error('Destination not found');
     }
 
+    const localBlog = await getBlogForRemotePost({
+      remotePostId: postId,
+      destinationId: destination.id || null,
+    });
+    const localGallery = Array.isArray(localBlog?.imageGallery)
+      ? localBlog.imageGallery
+      : Array.isArray(localBlog?.image_gallery)
+      ? localBlog.image_gallery
+      : [];
+    const localFeatured = localBlog?.imageUrl || localBlog?.image_url || '';
+
     if (destination.platform === 'shopify') {
       const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
       const accessToken = ensureValue('Shopify access token', destination.accessToken);
@@ -4573,6 +4595,9 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
           status: article.published_at ? 'publish' : 'draft',
           url: articleUrl || null,
           tags: article.tags || '',
+          featuredImage: article.image?.src || '',
+          imageGallery: localGallery,
+          localImageUrl: localFeatured || '',
           provider: 'shopify',
         },
       };
@@ -4597,6 +4622,9 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
         status: data.status || 'draft',
         url: data.url || data.link || null,
         tags: Array.isArray(data.tags) ? data.tags : [],
+        featuredImage: data.featuredImage || '',
+        imageGallery: localGallery,
+        localImageUrl: localFeatured || '',
         provider: 'wordpress',
       },
     };
@@ -4605,7 +4633,7 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
   }
 });
 
-ipcMain.handle('update-remote-post', async (event, { destinationId, postId, title, content, status }) => {
+ipcMain.handle('update-remote-post', async (event, { destinationId, postId, title, content, status, imageUrl }) => {
   try {
     requirePermission('history');
     if (!currentUser) {
@@ -4645,6 +4673,7 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
         summaryHtml: current.summary_html || '',
         tags: current.tags || '',
         status,
+        imageSrc: imageUrl || '',
       });
       const blogHandle =
         destination.blogHandle ||
@@ -4688,6 +4717,8 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
       content,
       status,
       excerpt: '',
+      featuredImage: imageUrl || '',
+      featuredImageAlt: title || '',
     });
     await upsertRemotePosts(
       [

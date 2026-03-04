@@ -17,6 +17,33 @@ import {
 } from 'recharts';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+const TINYMCE_SCRIPT_ID = 'tinymce-local-script';
+const TINYMCE_SCRIPT_SRC = './tinymce/tinymce.min.js';
+const TINYMCE_BASE_URL = './tinymce';
+
+const normalizeUrlKey = (value) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+};
+
+const dedupeUrls = (items = []) => {
+  const seen = new Set();
+  return items
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .filter((value) => {
+      const key = normalizeUrlKey(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
 
 function PostsPage({ t }) {
   const [posts, setPosts] = useState([]);
@@ -44,6 +71,15 @@ function PostsPage({ t }) {
     content: '',
     status: 'draft',
   });
+  const [editGallery, setEditGallery] = useState([]);
+  const [editImageUrl, setEditImageUrl] = useState('');
+  const [editEditorMode, setEditEditorMode] = useState('visual');
+  const [tinyLoaded, setTinyLoaded] = useState(false);
+  const [tinyLoadError, setTinyLoadError] = useState('');
+  const tinyTextareaRef = useRef(null);
+  const tinyEditorRef = useRef(null);
+  const syncingFromTinyRef = useRef(false);
+  const pendingTinyContentRef = useRef('');
   const selectedDestination = destinations.find((dest) => dest.id === destinationId) || null;
   const autoSyncInFlight = useRef(false);
   const lastAutoSyncAt = useRef(0);
@@ -203,26 +239,136 @@ function PostsPage({ t }) {
     setTesting(false);
   };
 
+  useEffect(() => {
+    if (window.tinymce) {
+      setTinyLoaded(true);
+      return;
+    }
+
+    const existingScript = document.getElementById(TINYMCE_SCRIPT_ID);
+    if (existingScript) {
+      existingScript.addEventListener('load', () => setTinyLoaded(true));
+      existingScript.addEventListener('error', () => setTinyLoadError('Failed to load local TinyMCE assets.'));
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = TINYMCE_SCRIPT_ID;
+    script.src = TINYMCE_SCRIPT_SRC;
+    script.onload = () => setTinyLoaded(true);
+    script.onerror = () => setTinyLoadError('Failed to load local TinyMCE assets.');
+    document.head.appendChild(script);
+  }, []);
+
+  useEffect(() => {
+    if (!editModalOpen || !tinyLoaded || editEditorMode !== 'visual' || !tinyTextareaRef.current || !window.tinymce) {
+      return;
+    }
+    if (editLoading) return;
+    if (tinyEditorRef.current) return;
+
+    window.tinymce
+      .init({
+        target: tinyTextareaRef.current,
+        license_key: 'gpl',
+        base_url: TINYMCE_BASE_URL,
+        suffix: '.min',
+        menubar: false,
+        branding: false,
+        promotion: false,
+        height: 360,
+        resize: true,
+        toolbar_sticky: true,
+        toolbar_sticky_offset: 8,
+        plugins: 'autolink lists link image charmap preview anchor searchreplace visualblocks code fullscreen insertdatetime table help wordcount',
+        toolbar:
+          'undo redo | blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist outdent indent | link image | blockquote code removeformat',
+        content_style:
+          'body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; padding: 8px; } img { max-width: 100%; height: auto; }',
+        setup: (editor) => {
+          tinyEditorRef.current = editor;
+          editor.on('init', () => {
+            const initial = pendingTinyContentRef.current || editForm.content || '';
+            editor.setContent(initial);
+            pendingTinyContentRef.current = '';
+          });
+          editor.on('change input undo redo setcontent', () => {
+            const nextHtml = editor.getContent();
+            syncingFromTinyRef.current = true;
+            setEditForm((prev) => ({ ...prev, content: nextHtml }));
+          });
+          editor.on('remove', () => {
+            tinyEditorRef.current = null;
+          });
+        },
+      })
+      .catch(() => {
+        setTinyLoadError('Failed to initialize TinyMCE.');
+      });
+
+    return () => {
+      if (tinyEditorRef.current) {
+        tinyEditorRef.current.remove();
+        tinyEditorRef.current = null;
+      }
+    };
+  }, [editModalOpen, tinyLoaded, editEditorMode, editLoading]);
+
+  useEffect(() => {
+    if (!editModalOpen || editEditorMode !== 'visual' || !tinyEditorRef.current) return;
+    if (editLoading) return;
+    if (syncingFromTinyRef.current) {
+      syncingFromTinyRef.current = false;
+      return;
+    }
+    const current = tinyEditorRef.current.getContent();
+    if (current !== editForm.content) {
+      tinyEditorRef.current.setContent(editForm.content || '');
+    }
+  }, [editEditorMode, editForm.content]);
+
   const openEditModal = async (post) => {
     if (!destinationId) {
       setError(t.publishDestinationRequired || 'Select a destination first.');
       return;
     }
+    setEditEditorMode('visual');
     setEditModalOpen(true);
     setEditLoading(true);
     setEditSaving(false);
     setEditError('');
+    setTinyLoadError('');
+    syncingFromTinyRef.current = false;
     const result = await window.electronAPI.getRemotePostDetail({
       destinationId,
       postId: post.id,
     });
     if (result.success) {
+      const remoteImage = result.post.featuredImage || '';
+      const localGallery = Array.isArray(result.post.imageGallery) ? result.post.imageGallery : [];
+      let mergedGallery = dedupeUrls([result.post.localImageUrl, ...localGallery]);
+      if (!mergedGallery.length && remoteImage) {
+        mergedGallery = dedupeUrls([remoteImage]);
+      }
+      const nextContent = result.post.content || result.post.summary || '';
       setEditForm({
         id: result.post.id,
         title: result.post.title || '',
-        content: result.post.content || '',
+        content: nextContent,
         status: result.post.status || 'draft',
       });
+      setEditGallery(mergedGallery);
+      pendingTinyContentRef.current = nextContent;
+      const normalizedRemote = normalizeUrlKey(remoteImage);
+      const galleryMatch =
+        mergedGallery.find((url) => normalizeUrlKey(url) === normalizedRemote) ||
+        mergedGallery[0] ||
+        '';
+      setEditImageUrl(galleryMatch);
+      if (tinyEditorRef.current && editEditorMode === 'visual') {
+        tinyEditorRef.current.setContent(nextContent);
+      }
+      setEditEditorMode('visual');
     } else {
       setEditError(result.error || 'Failed to load post');
     }
@@ -239,6 +385,7 @@ function PostsPage({ t }) {
       title: editForm.title,
       content: editForm.content,
       status: editForm.status,
+      imageUrl: editImageUrl || '',
     });
     if (!result.success) {
       setEditError(result.error || 'Update failed');
@@ -294,11 +441,13 @@ function PostsPage({ t }) {
   }, [activeTab, statusFilter, platformFilter, destinationId]);
 
   const formatDate = (dateStr) => {
-    if (!dateStr) return '—';
-    return new Date(dateStr).toLocaleDateString('en-US', {
+    if (!dateStr) return 'N/A';
+    return new Date(dateStr).toLocaleString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
     });
   };
 
@@ -950,15 +1099,13 @@ function PostsPage({ t }) {
       )}
       {editModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50">
-          <div className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-xl">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-900">{t.editPostTitle || 'Edit Remote Post'}</h3>
               <button
                 onClick={() => setEditModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600"
-              >
-                ✕
-              </button>
+              >X</button>
             </div>
             {editLoading ? (
               <div className="py-8 text-center text-slate-500">{t.loading || 'Loading...'}</div>
@@ -990,23 +1137,91 @@ function PostsPage({ t }) {
                     )}
                   </select>
                 </div>
+                                {editGallery.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-slate-700">
+                      {t.featuredImageLabel || 'Featured image'}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {editGallery.map((url) => (
+                        <button
+                          key={url}
+                          type="button"
+                          onClick={() => setEditImageUrl(url)}
+                          className={`h-20 w-28 overflow-hidden rounded-md border ${
+                            url === editImageUrl ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+                          }`}
+                          title={t.selectImageLabel || 'Use as featured image'}
+                        >
+                          <img src={url} alt="Generated" className="h-full w-full object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                    {editImageUrl && (
+                      <p className="text-xs text-slate-500">
+                        {t.selectedImageHint || 'Selected image will be used as the featured image.'}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                    {t.noImagesAvailable || 'No images available for this blog.'}
+                  </div>
+                )}
+
                 <div>
-                  <label className="text-sm font-medium text-slate-700">{t.colContent || 'Content'}</label>
-                  <textarea
-                    value={editForm.content}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, content: e.target.value }))}
-                    className="mt-1 h-60 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    placeholder="Post content (HTML supported)"
-                  />
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-slate-700">{t.colContent || 'Content'}</label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditEditorMode('visual')}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                          editEditorMode === 'visual' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {t.editorModeVisual || 'Visual'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditEditorMode('html')}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                          editEditorMode === 'html' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {t.editorModeHtml || 'HTML'}
+                      </button>
+                    </div>
+                  </div>
+                  {editEditorMode === 'visual' ? (
+                    <div className="mt-2 space-y-2">
+                      {tinyLoadError ? (
+                        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                          {tinyLoadError}
+                        </div>
+                      ) : null}
+                      {!tinyLoaded ? (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                          {t.loadingEditor || 'Loading editor...'}
+                        </div>
+                      ) : null}
+                      <textarea ref={tinyTextareaRef} defaultValue={editForm.content} className="hidden" />
+                    </div>
+                  ) : (
+                    <textarea
+                      value={editForm.content}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, content: e.target.value }))}
+                      className="mt-2 h-60 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      placeholder="Post content (HTML supported)"
+                    />
+                  )}
                 </div>
                 {editError && <p className="text-sm text-rose-600">{editError}</p>}
                 <div className="flex justify-end gap-2">
                   <button
                     onClick={() => setEditModalOpen(false)}
                     className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
-                  >
-                    {t.cancel || 'Cancel'}
-                  </button>
+                  >{t.cancel || 'Cancel'}</button>
                   <button
                     onClick={handleSaveEdit}
                     disabled={editSaving}
@@ -1025,3 +1240,11 @@ function PostsPage({ t }) {
 }
 
 export default PostsPage;
+
+
+
+
+
+
+
+

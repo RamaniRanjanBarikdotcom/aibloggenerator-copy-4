@@ -297,6 +297,9 @@ const translations = {
     editorModeHtml: 'HTML',
     editorHelp: 'Edit content below. Use Visual for rich edits, Plain text for clean text, or HTML for precise markup.',
     featuredImageLabel: 'Featured image',
+    selectedImageHint: 'Selected image will be used as the featured image.',
+    noImagesAvailable: 'No images available for this blog.',
+    loadingEditor: 'Loading editor...',
     featuredImageHint: 'Generate after final edit for best match.',
     generateImageLabel: 'Generate image',
     generatingImageLabel: 'Generating...',
@@ -671,6 +674,9 @@ const translations = {
     editorHelp:
       'Inhalt bearbeiten. Visuell für reiches Layout, Klartext für einfachen Text oder HTML für präzises Markup.',
     featuredImageLabel: 'Beitragsbild',
+    selectedImageHint: 'AusgewA/hltes Bild wird als Beitragsbild verwendet.',
+    noImagesAvailable: 'Keine Bilder fA/r diesen Blog verfA/gbar.',
+    loadingEditor: 'Editor wird geladen...',
     featuredImageHint: 'Nach dem finalen Edit erzeugen für beste Ergebnisse.',
     generateImageLabel: 'Bild erzeugen',
     generatingImageLabel: 'Wird erzeugt...',
@@ -764,3 +770,4 @@ function getTranslations(language) {
 }
 
 export { getTranslations, languageNames, normalizeLanguage, supportedLanguages };
+
