@@ -8,6 +8,7 @@ function HistoryPage({
   t,
   canExport,
   canBulkExport,
+  canDelete,
   onViewBlog,
   onEditBlog,
   onDeleteBlog,
@@ -26,6 +27,11 @@ function HistoryPage({
   const [selectedIds, setSelectedIds] = useState([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [removedImageUrls, setRemovedImageUrls] = useState([]);
+  const [showImageDeleteConfirm, setShowImageDeleteConfirm] = useState(false);
+  const [pageSize, setPageSize] = useState(10);
+  const [pageIndex, setPageIndex] = useState(1);
   const summarySafe = summary || { totalCount: 0, totalCost: 0 };
   const wpCountsSafe = wpCounts || null;
   const normalizeImageGallery = (galleryValue, imageUrl) => {
@@ -96,6 +102,16 @@ function HistoryPage({
     });
   }, [history, searchTerm, dateFilter]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredHistory.length / pageSize));
+  const safePageIndex = Math.min(pageIndex, totalPages);
+  const pageStart = (safePageIndex - 1) * pageSize;
+  const pageEnd = pageStart + pageSize;
+  const pagedHistory = filteredHistory.slice(pageStart, pageEnd);
+
+  useEffect(() => {
+    setPageIndex(1);
+  }, [searchTerm, dateFilter, pageSize]);
+
   const selectedPublishStatus = selectedBlogId ? publishStatuses[selectedBlogId] : null;
   const selectedGallery = useMemo(
     () => normalizeImageGallery(selectedBlog?.imageGallery || selectedBlog?.image_gallery, selectedBlog?.imageUrl),
@@ -104,6 +120,7 @@ function HistoryPage({
 
   const handleSelectHistoryImage = async (url) => {
     if (!selectedBlogId || !url || !selectedBlog) return;
+    if (removedImageUrls.includes(url)) return;
     setSelectedBlog((prev) => (prev ? { ...prev, imageUrl: url, imageGallery: selectedGallery } : prev));
     const result = await window.electronAPI.updateBlog({
       blog: { ...selectedBlog, imageUrl: url, imageGallery: selectedGallery },
@@ -119,6 +136,7 @@ function HistoryPage({
     setSelectedBlog(fallback);
     setDetailsExportFormat('markdown');
     setDetailsLoading(true);
+    setRemovedImageUrls([]);
     const result = await window.electronAPI.getBlog({ id });
     if (result.success && result.blog) {
       setSelectedBlog(result.blog);
@@ -151,14 +169,24 @@ function HistoryPage({
   };
 
   const handleDeleteSelected = async () => {
-    if (!selectedIds.length) return;
+    if (!canDelete) return;
+    const idsToDelete = selectedIds.length
+      ? selectedIds
+      : pendingDeleteId
+      ? [pendingDeleteId]
+      : [];
+    if (!idsToDelete.length) return;
     setDeletingSelected(true);
-    for (const id of selectedIds) {
+    for (const id of idsToDelete) {
       await onDeleteBlog(id);
     }
     setDeletingSelected(false);
     setShowDeleteConfirm(false);
     setSelectedIds([]);
+    if (pendingDeleteId) {
+      closeDetails();
+    }
+    setPendingDeleteId(null);
   };
 
   return (
@@ -207,6 +235,19 @@ function HistoryPage({
           </div>
           <div className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700">
             {t.historyShowing}: <strong>{filteredHistory.length}</strong>
+          </div>
+          <div className="rounded-lg bg-white px-3 py-2 text-slate-600 border border-slate-200">
+            {t.historyPerPage || 'Per page'}:{' '}
+            <select
+              value={pageSize}
+              onChange={(event) => setPageSize(Number(event.target.value))}
+              className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+            >
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
           </div>
           {wpCountsSafe && (
             <>
@@ -278,13 +319,15 @@ function HistoryPage({
                   >
                     {t.exportHistoryCsv}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowDeleteConfirm(true)}
-                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
-                  >
-                    {t.deleteLabel || 'Delete'}
-                  </button>
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+                    >
+                      {t.deleteLabel || 'Delete'}
+                    </button>
+                  )}
                 </>
               ) : (
                 <>
@@ -344,7 +387,7 @@ function HistoryPage({
         </div>
       ) : (
         <div className="space-y-3">
-          {filteredHistory.map((item) => {
+          {pagedHistory.map((item) => {
             const publishStatus = publishStatuses[item.id];
             return (
             <button
@@ -411,6 +454,48 @@ function HistoryPage({
             </button>
             );
           })}
+        </div>
+      )}
+
+      {filteredHistory.length > 0 && (
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
+          <div>
+            {t.historyPageLabel || 'Page'} {safePageIndex} {t.historyPageOf || 'of'} {totalPages}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPageIndex(1)}
+              disabled={safePageIndex === 1}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {t.historyFirst || 'First'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPageIndex((prev) => Math.max(1, prev - 1))}
+              disabled={safePageIndex === 1}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {t.historyPrev || 'Prev'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPageIndex((prev) => Math.min(totalPages, prev + 1))}
+              disabled={safePageIndex === totalPages}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {t.historyNext || 'Next'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPageIndex(totalPages)}
+              disabled={safePageIndex === totalPages}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {t.historyLast || 'Last'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -485,15 +570,39 @@ function HistoryPage({
                             key={url}
                             type="button"
                             onClick={() => handleSelectHistoryImage(url)}
-                            className={`h-20 w-28 overflow-hidden rounded-md border ${
+                            className={`relative h-20 w-28 overflow-hidden rounded-md border ${
                               url === selectedBlog?.imageUrl ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
-                            }`}
+                            } ${removedImageUrls.includes(url) ? 'opacity-40' : ''}`}
                             title={t.selectImageLabel || 'Use as featured image'}
                           >
                             <img src={url} alt="Generated" className="h-full w-full object-cover" />
+                            {canDelete && (
+                              <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow">
+                                <X
+                                  className="h-3 w-3"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setRemovedImageUrls((prev) =>
+                                      prev.includes(url) ? prev.filter((item) => item !== url) : [...prev, url]
+                                    );
+                                  }}
+                                />
+                              </span>
+                            )}
                           </button>
                         ))}
                       </div>
+                      {canDelete && removedImageUrls.length > 0 && (
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowImageDeleteConfirm(true)}
+                            className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700"
+                          >
+                            {t.saveChanges || 'Save changes'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
@@ -539,16 +648,18 @@ function HistoryPage({
                         {imageGeneratingId === selectedBlogId ? t.generatingImageLabel : t.generateImageLabel}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await onDeleteBlog(selectedBlogId);
-                        closeDetails();
-                      }}
-                      className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
-                    >
-                      {t.deleteLabel}
-                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPendingDeleteId(selectedBlogId);
+                          setShowDeleteConfirm(true);
+                        }}
+                        className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
+                      >
+                        {t.deleteLabel}
+                      </button>
+                    )}
                   </div>
 
                   {canExport && (
@@ -592,19 +703,24 @@ function HistoryPage({
         </div>
       )}
 
-      {showDeleteConfirm && (
+      {showDeleteConfirm && canDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
             <h3 className="text-lg font-semibold text-slate-900">
-              {t.deleteConfirmTitle || 'Delete selected blogs'}
+              {pendingDeleteId ? (t.deleteConfirmSingleTitle || 'Delete this blog') : (t.deleteConfirmTitle || 'Delete selected blogs')}
             </h3>
             <p className="mt-2 text-sm text-slate-600">
-              {t.deleteConfirm || 'Delete selected blogs? This action cannot be undone.'}
+              {pendingDeleteId
+                ? (t.deleteConfirmSingle || 'Delete this blog? This action cannot be undone.')
+                : (t.deleteConfirm || 'Delete selected blogs? This action cannot be undone.')}
             </p>
             <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setShowDeleteConfirm(false)}
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setPendingDeleteId(null);
+                }}
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
               >
                 {t.cancel || 'Cancel'}
@@ -616,6 +732,54 @@ function HistoryPage({
                 className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
               >
                 {deletingSelected ? (t.deletingLabel || 'Deleting...') : (t.deleteLabel || 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImageDeleteConfirm && canDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.deleteConfirmTitle || 'Delete selected images'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.deleteConfirm ||
+                'Delete selected images? This action cannot be undone.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowImageDeleteConfirm(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!selectedBlog) return;
+                  const nextGallery = selectedGallery.filter((url) => !removedImageUrls.includes(url));
+                  const nextImageUrl = removedImageUrls.includes(selectedBlog.imageUrl)
+                    ? nextGallery[0] || ''
+                    : selectedBlog.imageUrl || nextGallery[0] || '';
+                  const result = await window.electronAPI.updateBlog({
+                    blog: { ...selectedBlog, imageGallery: nextGallery, imageUrl: nextImageUrl || null },
+                  });
+                  if (!result.success) {
+                    alert(result.error || 'Failed to update images');
+                    return;
+                  }
+                  setSelectedBlog((prev) =>
+                    prev ? { ...prev, imageGallery: nextGallery, imageUrl: nextImageUrl || null } : prev
+                  );
+                  setRemovedImageUrls([]);
+                  setShowImageDeleteConfirm(false);
+                }}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+              >
+                {t.deleteLabel || 'Delete'}
               </button>
             </div>
           </div>

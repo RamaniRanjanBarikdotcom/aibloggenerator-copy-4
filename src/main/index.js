@@ -280,6 +280,36 @@ function buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle }) {
   return `https://${domain}/blogs/${blogHandle}/${articleHandle}`;
 }
 
+function parseListInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const raw = value.trim();
+    const tryParse = (input) => {
+      try {
+        const parsed = JSON.parse(input);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+        }
+        if (typeof parsed === 'string' && parsed.trim().startsWith('[')) {
+          return tryParse(parsed);
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    };
+    const parsed = tryParse(raw);
+    if (parsed) return parsed;
+    return raw
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 async function fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion = '2024-01', blogId }) {
   if (!shopDomain || !accessToken || !blogId) return '';
   const domain = normalizeShopDomain(shopDomain);
@@ -1779,19 +1809,8 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
     const metaDescription = blog.metaDescription || '';
     let imageUrl = blog.imageUrl || null;
     let localImagePath = blog.localImagePath || blog.local_image_path || null;
-    const keywords = Array.isArray(blog.keywords)
-      ? blog.keywords
-      : String(blog.keywords || '')
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean);
-    const categories =
-      Array.isArray(blog.categories) && blog.categories.length
-        ? blog.categories
-        : String(blog.categories || '')
-            .split(',')
-            .map((item) => item.trim())
-            .filter(Boolean);
+    const keywords = parseListInput(blog.keywords);
+    const categories = parseListInput(blog.categories);
 
     let result = null;
     let imageStorageUsed = false;

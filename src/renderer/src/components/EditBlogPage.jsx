@@ -5,22 +5,38 @@ const TINYMCE_SCRIPT_SRC = './tinymce/tinymce.min.js';
 const TINYMCE_BASE_URL = './tinymce';
 
 function EditBlogPage({ blog, t, onSave, onCancel }) {
-  const normalizedKeywords = Array.isArray(blog.keywords)
-    ? blog.keywords
-    : typeof blog.keywords === 'string'
-    ? blog.keywords
+  const normalizeList = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const raw = value.trim();
+      const tryParse = (input) => {
+        try {
+          const parsed = JSON.parse(input);
+          if (Array.isArray(parsed)) {
+            return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+          }
+          if (typeof parsed === 'string' && parsed.trim().startsWith('[')) {
+            return tryParse(parsed);
+          }
+        } catch {
+          return null;
+        }
+        return null;
+      };
+      const parsed = tryParse(raw);
+      if (parsed) return parsed;
+      return raw
         .split(',')
-        .map((k) => k.trim())
-        .filter(Boolean)
-    : [];
-  const normalizedCategories = Array.isArray(blog.categories)
-    ? blog.categories
-    : typeof blog.categories === 'string'
-    ? blog.categories
-        .split(',')
-        .map((k) => k.trim())
-        .filter(Boolean)
-    : [];
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+
+  const normalizedKeywords = normalizeList(blog.keywords);
+  const normalizedCategories = normalizeList(blog.categories);
 
   const [title, setTitle] = useState(blog.title || '');
   const [metaDescription, setMetaDescription] = useState(blog.metaDescription || '');
@@ -60,10 +76,28 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
 
   const tinyTextareaRef = useRef(null);
   const tinyEditorRef = useRef(null);
+  const tinyReadyRef = useRef(false);
   const syncingFromTinyRef = useRef(false);
   const savedDraftRef = useRef(null);
+  const pendingTinyContentRef = useRef(null);
+  const htmlContentRef = useRef(htmlContent);
   const [tinyLoaded, setTinyLoaded] = useState(Boolean(window.tinymce));
   const [tinyLoadError, setTinyLoadError] = useState('');
+
+  useEffect(() => {
+    htmlContentRef.current = htmlContent;
+  }, [htmlContent]);
+
+  const safeGetTinyContent = () => {
+    const editor = tinyEditorRef.current;
+    if (!editor || !tinyReadyRef.current) return htmlContentRef.current || '';
+    try {
+      if (editor.destroyed || !editor.initialized) return htmlContentRef.current || '';
+      return editor.getContent() || '';
+    } catch (error) {
+      return htmlContentRef.current || '';
+    }
+  };
 
   const escapeHtml = (value) =>
     value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -163,6 +197,11 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     setCategories(nextCategories);
     setPlainContent(nextPlain);
     setHtmlContent(nextHtml);
+    pendingTinyContentRef.current = nextHtml;
+    if (editorMode === 'visual' && tinyEditorRef.current) {
+      tinyEditorRef.current.setContent(nextHtml || '');
+      pendingTinyContentRef.current = null;
+    }
     const nextGallery = normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl);
     setImageGallery(nextGallery);
     setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
@@ -225,7 +264,11 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           tinyEditorRef.current = editor;
 
           editor.on('init', () => {
-            editor.setContent(htmlContent || '');
+            const initialContent =
+              pendingTinyContentRef.current ?? htmlContentRef.current ?? '';
+            editor.setContent(initialContent);
+            pendingTinyContentRef.current = null;
+            tinyReadyRef.current = true;
           });
 
           editor.on('change input undo redo setcontent', () => {
@@ -236,6 +279,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           });
 
           editor.on('remove', () => {
+            tinyReadyRef.current = false;
             tinyEditorRef.current = null;
           });
         },
@@ -249,23 +293,30 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         tinyEditorRef.current.remove();
         tinyEditorRef.current = null;
       }
+      tinyReadyRef.current = false;
     };
   }, [tinyLoaded, editorMode]);
 
   useEffect(() => {
     if (editorMode !== 'visual' || !tinyEditorRef.current) return;
+    const current = safeGetTinyContent();
     if (syncingFromTinyRef.current) {
       syncingFromTinyRef.current = false;
-      return;
+      if (current === (htmlContent || '')) return;
     }
-    const current = tinyEditorRef.current.getContent();
-    if (current !== htmlContent) {
-      tinyEditorRef.current.setContent(htmlContent || '');
+    if (current !== (htmlContent || '')) {
+      try {
+        if (!tinyEditorRef.current.destroyed) {
+          tinyEditorRef.current.setContent(htmlContent || '');
+        }
+      } catch (error) {
+        // ignore setContent if editor is torn down
+      }
     }
   }, [editorMode, htmlContent]);
 
   const getCurrentDraftState = () => {
-    const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+    const visualHtml = safeGetTinyContent();
     let nextHtml = htmlContent || '';
     let nextPlain = plainContent || '';
 
@@ -329,7 +380,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     let sourceHtml = htmlContent;
 
     if (editorMode === 'visual' && tinyEditorRef.current) {
-      const visualHtml = tinyEditorRef.current.getContent();
+      const visualHtml = safeGetTinyContent();
       sourceHtml = visualHtml;
       setHtmlContent(sourceHtml);
       setPlainContent(htmlToPlain(sourceHtml));
@@ -347,7 +398,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   };
 
   const handleSave = () => {
-    const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+    const visualHtml = safeGetTinyContent();
     const contentToSave = editorMode === 'html' ? htmlContent : editorMode === 'visual' ? visualHtml : plainContent;
 
     onSave({
@@ -372,7 +423,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     if (isGeneratingImage) return;
     setIsGeneratingImage(true);
 
-    const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+    const visualHtml = safeGetTinyContent();
     const contentSource = editorMode === 'html' ? htmlContent : editorMode === 'plain' ? plainContent : visualHtml;
 
     const result = await window.electronAPI.generateBlogImage({
@@ -408,7 +459,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     if (isSavingBeforeImage) return;
     setIsSavingBeforeImage(true);
     try {
-      const visualHtml = tinyEditorRef.current ? tinyEditorRef.current.getContent() : htmlContent;
+      const visualHtml = safeGetTinyContent();
       const contentToSave = editorMode === 'html' ? htmlContent : editorMode === 'visual' ? visualHtml : plainContent;
       const payload = {
         ...blog,

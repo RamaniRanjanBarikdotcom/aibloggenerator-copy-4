@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import MarkdownIt from 'markdown-it';
 import { Download, Copy, Sparkles, FileText, FileCode2, Send, X, ExternalLink, CheckCircle, Clock } from 'lucide-react';
 
@@ -18,6 +18,8 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
   const [selectedCategories, setSelectedCategories] = useState(blog.categories || []);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [newCategory, setNewCategory] = useState('');
+  const contentRef = useRef(null);
+  const [showFloatingBar, setShowFloatingBar] = useState(false);
   const normalizeImageGallery = (galleryValue, imageUrl) => {
     if (Array.isArray(galleryValue)) {
       const list = galleryValue.filter(Boolean);
@@ -63,6 +65,22 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
     setImageGallery(nextGallery);
     setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
   }, [blog]);
+
+  useEffect(() => {
+    const target = contentRef.current;
+    if (!target || typeof IntersectionObserver === 'undefined') {
+      setShowFloatingBar(false);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowFloatingBar(entry.isIntersecting);
+      },
+      { threshold: 0.12 }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [blog?.id]);
 
   const handleSelectImage = async (url) => {
     if (!url || url === featuredImage) return;
@@ -447,130 +465,209 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
             </div>
           )}
 
-          {looksLikeHtml && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setViewMode('plain')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  viewMode === 'plain' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {t.viewPlain}
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('rendered')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  viewMode === 'rendered'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {t.viewRendered}
-              </button>
-            </div>
-          )}
-
-          {viewMode === 'rendered' ? (
-            <div
-              className="blog-rendered"
-              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-              onClick={handleRenderedClick}
-              onContextMenu={handleRenderedContextMenu}
-            />
-          ) : (
-            <div className="whitespace-pre-wrap text-slate-700 leading-relaxed">
-              {rawContent}
-            </div>
-          )}
-
-          {keywords.length > 0 && (
-            <div className="border-t pt-6">
-              <h4 className="font-semibold text-slate-900 mb-2">{t.keywordsLabel}</h4>
-              <div className="flex flex-wrap gap-2">
-                {keywords.map((keyword, index) => (
-                  <span
-                    key={index}
-                    className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm"
-                  >
-                    {keyword}
-                  </span>
-                ))}
+          <div ref={contentRef} className="space-y-6">
+            {looksLikeHtml && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('plain')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    viewMode === 'plain' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {t.viewPlain}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('rendered')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    viewMode === 'rendered'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {t.viewRendered}
+                </button>
               </div>
-            </div>
-          )}
+            )}
+
+            {viewMode === 'rendered' ? (
+              <div
+                className="blog-rendered"
+                dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+                onClick={handleRenderedClick}
+                onContextMenu={handleRenderedContextMenu}
+              />
+            ) : (
+              <div className="whitespace-pre-wrap text-slate-700 leading-relaxed">
+                {rawContent}
+              </div>
+            )}
+
+            {keywords.length > 0 && (
+              <div className="border-t pt-6">
+                <h4 className="font-semibold text-slate-900 mb-2">{t.keywordsLabel}</h4>
+                <div className="flex flex-wrap gap-2">
+                  {keywords.map((keyword, index) => (
+                    <span
+                      key={index}
+                      className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm"
+                    >
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {canExport && (
-          <div className="border-t border-slate-200 bg-slate-50 px-8 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="inline-flex items-center gap-2">
-                <button
-                  onClick={handleCopy}
-                  className="inline-flex items-center space-x-2 px-4 py-2 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition"
-                >
-                  <Copy className="w-4 h-4" />
-                  <span>{t.copy}</span>
-                </button>
-                {onEdit && (
+          <>
+            <div
+              className={`border-t border-slate-200 bg-slate-50 px-8 py-4 ${
+                showFloatingBar ? 'opacity-0 pointer-events-none' : ''
+              }`}
+              aria-hidden={showFloatingBar}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="inline-flex items-center gap-2">
                   <button
-                    onClick={onEdit}
-                    className="inline-flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
+                    onClick={handleCopy}
+                    className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-200 bg-slate-200 text-slate-700 hover:bg-slate-300 transition dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>{t.copy}</span>
+                  </button>
+                  {onEdit && (
+                    <button
+                      onClick={onEdit}
+                      className="inline-flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>{t.editLabel}</span>
+                    </button>
+                  )}
+                </div>
+                <div className="inline-flex flex-wrap gap-2">
+                  <button
+                    onClick={handleOpenPublish}
+                    className="inline-flex items-center space-x-2 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+                    title={t.publishDraft}
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{t.publishDraft}</span>
+                  </button>
+                  <button
+                    onClick={() => handleExport('markdown')}
+                    disabled={exporting}
+                    className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={t.exportMarkdown}
                   >
                     <FileText className="w-4 h-4" />
-                    <span>{t.editLabel}</span>
+                    <span>MD</span>
                   </button>
-                )}
-              </div>
-              <div className="inline-flex flex-wrap gap-2">
-                <button
-                  onClick={handleOpenPublish}
-                  className="inline-flex items-center space-x-2 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
-                  title={t.publishDraft}
-                >
-                  <Send className="w-4 h-4" />
-                  <span>{t.publishDraft}</span>
-                </button>
-                <button
-                  onClick={() => handleExport('markdown')}
-                  disabled={exporting}
-                  className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  title={t.exportMarkdown}
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>MD</span>
-                </button>
-                <button
-                  onClick={() => handleExport('html')}
-                  disabled={exporting}
-                  className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  title={t.exportHtml}
-                >
-                  <FileCode2 className="w-4 h-4" />
-                  <span>HTML</span>
-                </button>
-                <button
-                  onClick={() => handleExport('pdf')}
-                  disabled={exporting}
-                  className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  title={t.exportPdf}
-                >
-                  <Download className={`w-4 h-4 ${exporting ? 'animate-pulse' : ''}`} />
-                  <span>{exporting ? 'Exporting...' : 'PDF'}</span>
-                </button>
-                <button
-                  onClick={() => handleExport('docx')}
-                  disabled={exporting}
-                  className={`inline-flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  title={t.exportDocx}
-                >
-                  <Download className="w-4 h-4" />
-                  <span>DOCX</span>
-                </button>
+                  <button
+                    onClick={() => handleExport('html')}
+                    disabled={exporting}
+                    className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={t.exportHtml}
+                  >
+                    <FileCode2 className="w-4 h-4" />
+                    <span>HTML</span>
+                  </button>
+                  <button
+                    onClick={() => handleExport('pdf')}
+                    disabled={exporting}
+                    className={`inline-flex items-center space-x-2 px-3 py-2 bg-white text-slate-700 rounded-lg border border-slate-200 hover:bg-slate-100 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={t.exportPdf}
+                  >
+                    <Download className={`w-4 h-4 ${exporting ? 'animate-pulse' : ''}`} />
+                    <span>{exporting ? 'Exporting...' : 'PDF'}</span>
+                  </button>
+                  <button
+                    onClick={() => handleExport('docx')}
+                    disabled={exporting}
+                    className={`inline-flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={t.exportDocx}
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>DOCX</span>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+            {showFloatingBar && (
+              <div className="fixed bottom-6 left-[calc(50%+8rem)] z-40 w-[min(1024px,calc(100%-20rem))] -translate-x-1/2 rounded-2xl border border-slate-700/60 bg-slate-900/90 px-4 py-3 shadow-2xl backdrop-blur">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="inline-flex items-center gap-2">
+                    <button
+                      onClick={handleCopy}
+                      className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 transition"
+                    >
+                      <Copy className="w-4 h-4" />
+                      <span>{t.copy}</span>
+                    </button>
+                    {onEdit && (
+                      <button
+                        onClick={onEdit}
+                        className="inline-flex items-center space-x-2 px-4 py-2 bg-slate-100 text-slate-900 rounded-lg hover:bg-white transition"
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>{t.editLabel}</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="inline-flex flex-wrap gap-2">
+                    <button
+                      onClick={handleOpenPublish}
+                      className="inline-flex items-center space-x-2 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+                      title={t.publishDraft}
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{t.publishDraft}</span>
+                    </button>
+                    <button
+                      onClick={() => handleExport('markdown')}
+                      disabled={exporting}
+                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title={t.exportMarkdown}
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>MD</span>
+                    </button>
+                    <button
+                      onClick={() => handleExport('html')}
+                      disabled={exporting}
+                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title={t.exportHtml}
+                    >
+                      <FileCode2 className="w-4 h-4" />
+                      <span>HTML</span>
+                    </button>
+                    <button
+                      onClick={() => handleExport('pdf')}
+                      disabled={exporting}
+                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title={t.exportPdf}
+                    >
+                      <Download className={`w-4 h-4 ${exporting ? 'animate-pulse' : ''}`} />
+                      <span>{exporting ? 'Exporting...' : 'PDF'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleExport('docx')}
+                      disabled={exporting}
+                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title={t.exportDocx}
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>DOCX</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 

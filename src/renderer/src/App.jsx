@@ -24,7 +24,24 @@ function App() {
   const [progress, setProgress] = useState({ step: 0, message: '' });
   const progressRef = useRef(progress);
   const [generatedBlog, setGeneratedBlog] = useState(null);
+  const [lastViewedBlog, setLastViewedBlog] = useState(null);
   const [editingBlog, setEditingBlog] = useState(null);
+  const [editSessionId, setEditSessionId] = useState(0);
+  const [activeBlogId, setActiveBlogId] = useState(null);
+  const [blogLoading, setBlogLoading] = useState(false);
+  const [blogLoadError, setBlogLoadError] = useState('');
+  const editReturnViewRef = useRef('history');
+  const openEditorWithBlog = (blog, returnView) => {
+    if (!blog) return;
+    editReturnViewRef.current = returnView || currentView || 'history';
+    setEditingBlog(blog);
+    setGeneratedBlog(blog);
+    setLastViewedBlog(blog);
+    setActiveBlogId(blog.id || null);
+    setBlogLoadError('');
+    setEditSessionId((prev) => prev + 1);
+    navigateTo('edit');
+  };
   const [language, setLanguage] = useState(() => {
     return normalizeLanguage(localStorage.getItem('app_language'));
   });
@@ -250,6 +267,52 @@ function App() {
     }
   }, [currentUser]);
 
+  useEffect(() => {
+    if (currentView !== 'edit') return;
+    if (editingBlog) return;
+    const fallbackBlog = generatedBlog || lastViewedBlog;
+    if (fallbackBlog) {
+      setEditingBlog(fallbackBlog);
+      setEditSessionId((prev) => prev + 1);
+      return;
+    }
+    if (!activeBlogId || blogLoading) return;
+    const fetchBlog = async () => {
+      setBlogLoading(true);
+      setBlogLoadError('');
+      const result = await window.electronAPI.getBlog({ id: activeBlogId });
+      if (result.success && result.blog) {
+        setEditingBlog(result.blog);
+        setGeneratedBlog(result.blog);
+        setLastViewedBlog(result.blog);
+        setEditSessionId((prev) => prev + 1);
+      } else {
+        setBlogLoadError(result.error || 'Blog not found');
+      }
+      setBlogLoading(false);
+    };
+    fetchBlog();
+  }, [currentView, editingBlog, generatedBlog, lastViewedBlog, activeBlogId, blogLoading]);
+
+  useEffect(() => {
+    if (currentView !== 'results') return;
+    if (generatedBlog || lastViewedBlog || blogLoading) return;
+    if (!activeBlogId) return;
+    const fetchBlog = async () => {
+      setBlogLoading(true);
+      setBlogLoadError('');
+      const result = await window.electronAPI.getBlog({ id: activeBlogId });
+      if (result.success && result.blog) {
+        setGeneratedBlog(result.blog);
+        setLastViewedBlog(result.blog);
+      } else {
+        setBlogLoadError(result.error || 'Blog not found');
+      }
+      setBlogLoading(false);
+    };
+    fetchBlog();
+  }, [currentView, generatedBlog, lastViewedBlog, activeBlogId, blogLoading]);
+
   const refreshHistory = async () => {
     const refreshed = await window.electronAPI.getHistory();
     if (refreshed.success) {
@@ -323,6 +386,7 @@ function App() {
         saveFailedDrafts(remaining);
       }
       setGeneratedBlog(result.blog);
+      setActiveBlogId(result.blog?.id || null);
       await refreshHistory();
       navigateTo('results');
     } else {
@@ -410,23 +474,31 @@ function App() {
   };
 
   const handleViewBlog = async (id) => {
+    setActiveBlogId(id);
+    setBlogLoadError('');
+    setBlogLoading(true);
     const result = await window.electronAPI.getBlog({ id });
     if (result.success) {
       setGeneratedBlog(result.blog);
+      setLastViewedBlog(result.blog);
       navigateTo('results');
     } else {
       alert(result.error || 'Blog not found');
     }
+    setBlogLoading(false);
   };
 
   const handleEditBlog = async (id) => {
+    setActiveBlogId(id);
+    setBlogLoadError('');
+    setBlogLoading(true);
     const result = await window.electronAPI.getBlog({ id });
     if (result.success) {
-      setEditingBlog(result.blog);
-      navigateTo('edit');
+      openEditorWithBlog(result.blog, currentView || 'history');
     } else {
       alert(result.error || 'Blog not found');
     }
+    setBlogLoading(false);
   };
 
   const handleSaveEdit = async (updated) => {
@@ -435,6 +507,8 @@ function App() {
       setEditingBlog(null);
       await refreshHistory();
       setGeneratedBlog(updated);
+      setLastViewedBlog(updated);
+      setActiveBlogId(updated.id || null);
       navigateTo('results');
     } else {
       alert(result.error || 'Save failed');
@@ -561,6 +635,7 @@ function App() {
           t={t}
           canExport={can('export')}
           canBulkExport={can('bulkExport')}
+          canDelete={currentUser?.role === 'admin'}
           onViewBlog={handleViewBlog}
           onEditBlog={handleEditBlog}
           onGenerateImage={handleGenerateImageFromHistory}
@@ -573,10 +648,20 @@ function App() {
       {currentView === 'logs' && <LogsPage t={t} />}
       {currentView === 'edit' && editingBlog && (
         <EditBlogPage
+          key={`${editingBlog.id}-${editSessionId}`}
           blog={editingBlog}
           t={t}
           onSave={handleSaveEdit}
-          onCancel={() => navigateTo('history')}
+          onCancel={() => {
+            const fallbackBlog = editingBlog;
+            setEditingBlog(null);
+            if (fallbackBlog) {
+              setGeneratedBlog(fallbackBlog);
+              setLastViewedBlog(fallbackBlog);
+            }
+            const returnView = editReturnViewRef.current || 'history';
+            navigateTo(returnView === 'edit' ? 'results' : returnView);
+          }}
         />
       )}
       {currentView === 'admin' && currentUser?.role === 'admin' && (
@@ -585,19 +670,43 @@ function App() {
       {currentView === 'progress' && <ProgressScreen progress={progress} t={t} />}
       {currentView === 'results' && generatedBlog && (
         <ResultsPage
-          blog={generatedBlog}
+          blog={generatedBlog || lastViewedBlog}
           onGenerateAnother={() => navigateTo('home')}
           t={t}
           canExport={can('export')}
           onEdit={
             generatedBlog?.id
               ? () => {
-                  setEditingBlog(generatedBlog);
-                  navigateTo('edit');
+                  handleEditBlog(generatedBlog.id);
                 }
               : null
           }
         />
+      )}
+      {currentView === 'results' && !generatedBlog && lastViewedBlog && (
+        <ResultsPage
+          blog={lastViewedBlog}
+          onGenerateAnother={() => navigateTo('home')}
+          t={t}
+          canExport={can('export')}
+          onEdit={
+            lastViewedBlog?.id
+              ? () => {
+                  handleEditBlog(lastViewedBlog.id);
+                }
+              : null
+          }
+        />
+      )}
+      {currentView === 'results' && !generatedBlog && !lastViewedBlog && (
+        <div className="max-w-3xl mx-auto p-8 text-slate-600">
+          {blogLoading ? 'Loading blog...' : blogLoadError || 'No blog selected.'}
+        </div>
+      )}
+      {currentView === 'edit' && !editingBlog && (
+        <div className="max-w-3xl mx-auto p-8 text-slate-600">
+          {blogLoading ? 'Loading editor...' : blogLoadError || 'No blog selected.'}
+        </div>
       )}
       {settingsLeaveModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
