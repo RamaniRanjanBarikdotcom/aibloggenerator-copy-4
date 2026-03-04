@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Sparkles, Globe, RefreshCw, Settings2, X, Save, RotateCcw, Trash2, History, Eye } from 'lucide-react';
+import { Sparkles, Globe, RefreshCw, Settings2, X, Save, RotateCcw, Trash2, History, Eye, HelpCircle } from 'lucide-react';
 import { languageNames } from '../i18n';
 
 const DEFAULT_PROMPTS = {
@@ -479,7 +479,16 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
         <div className="border border-slate-200 rounded-lg p-5 space-y-4 dark:border-slate-700 dark:bg-slate-950/30">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
-              {t.scraperUrlLabel}
+              <span className="inline-flex items-center gap-2">
+                {t.scraperUrlLabel}
+                <span className="relative inline-flex items-center group">
+                  <HelpCircle className="h-4 w-4 text-slate-400 dark:text-slate-400" />
+                  <span className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-72 -translate-x-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 opacity-0 shadow-lg transition group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                    {t.scraperUrlHelpText ||
+                      'Place your product link to identify product details and use them as a knowledge base for the blog.'}
+                  </span>
+                </span>
+              </span>
             </label>
             <div className="relative flex gap-2">
               <input

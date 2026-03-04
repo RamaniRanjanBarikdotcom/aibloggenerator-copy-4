@@ -253,6 +253,8 @@ const translations = {
     scraperTitle: 'Product Scraper',
     scraperSubtitle: 'Scrape your store and build a local product database.',
     scraperUrlLabel: 'Store URL',
+    scraperUrlHelpText:
+      'Place your product link to identify product details and use them as a knowledge base for the blog.',
     scraperPlatformLabel: 'Platform',
     scraperModeLabel: 'Mode',
     scraperModeStatic: 'Static',
@@ -636,6 +638,8 @@ const translations = {
     scraperTitle: 'Produkt-Scraper',
     scraperSubtitle: 'Shop scannen und lokale Produktdatenbank erstellen.',
     scraperUrlLabel: 'Shop-URL',
+    scraperUrlHelpText:
+      'Füge deinen Produktlink ein, um Produktdetails zu erkennen und sie als Wissensbasis für den Blog zu nutzen.',
     scraperPlatformLabel: 'Plattform',
     scraperModeLabel: 'Modus',
     scraperModeStatic: 'Statisch',
@@ -784,4 +788,3 @@ function getTranslations(language) {
 }
 
 export { getTranslations, languageNames, normalizeLanguage, supportedLanguages };
-
