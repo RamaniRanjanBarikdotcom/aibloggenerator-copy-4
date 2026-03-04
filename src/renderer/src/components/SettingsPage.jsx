@@ -348,6 +348,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [imageStorageToken, setImageStorageToken] = useState('');
   const [imageStorageTestStatus, setImageStorageTestStatus] = useState('');
   const [imageStorageTestMessage, setImageStorageTestMessage] = useState('');
+  const [publishingSection, setPublishingSection] = useState('overview');
   const [newDestination, setNewDestination] = useState({
     name: '',
     platform: 'wordpress',
@@ -1141,18 +1142,23 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       <p className="text-slate-600 mb-8 dark:text-slate-300">{t.settingsSubtitle}</p>
 
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-6 border-b border-slate-200 dark:border-slate-700">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2 text-sm font-semibold rounded-full border transition ${
+              className={`relative pb-3 text-sm font-semibold transition ${
                 activeTab === tab.id
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                  : 'bg-white text-slate-700 border-slate-300 hover:border-blue-300 hover:text-slate-900 dark:bg-slate-900 dark:text-slate-200 dark:border-slate-700 dark:hover:border-blue-500 dark:hover:text-slate-100'
+                  ? 'text-slate-900 dark:text-slate-100'
+                  : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
               }`}
             >
+              <span
+                className={`absolute left-0 -bottom-[1px] h-0.5 w-full rounded-full transition ${
+                  activeTab === tab.id ? 'bg-blue-500' : 'bg-transparent'
+                }`}
+              />
               {tab.label}
             </button>
           ))}
@@ -1520,6 +1526,8 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
           </div>
         )}
 
+
+
         {activeTab === 'publishing' && (
           <div className="bg-white rounded-xl shadow-sm p-8 space-y-6">
             <div>
@@ -1527,25 +1535,52 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
               <p className="text-sm text-slate-600">{t.publishingSubtitle}</p>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-              <p className="font-semibold text-slate-900">{t.jtlSectionTitle}</p>
-              <p className="mt-1">{t.jtlSectionBody}</p>
-              <p className="mt-2 text-xs text-slate-600">{t.jtlSectionHint}</p>
+            <div className="flex flex-wrap items-center gap-2 rounded-full bg-slate-100 p-2">
+              {[
+                { id: 'overview', label: t.publishingOverviewLabel || 'Overview' },
+                { id: 'shopifyOauth', label: t.shopifyOauthSectionTitle || 'Shopify OAuth' },
+                { id: 'destinations', label: t.publishingDestinationsTitle || 'Destinations' },
+                { id: 'addDestination', label: t.addDestination },
+              ].map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => setPublishingSection(section.id)}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
+                    publishingSection === section.id
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {section.label}
+                </button>
+              ))}
             </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">{t.jtlPluginSetupTitle}</p>
-                  <p className="mt-1">{t.jtlPluginSetupBody}</p>
-                  <p className="mt-2 text-xs text-slate-600">{t.jtlPluginSetupHint}</p>
+            {publishingSection === 'overview' && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">{t.jtlSectionTitle}</p>
+                  <p className="mt-1">{t.jtlSectionBody}</p>
+                  <p className="mt-2 text-xs text-slate-600">{t.jtlSectionHint}</p>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">{t.jtlPhpSetupTitle}</p>
-                  <p className="mt-1">{t.jtlPhpSetupBody}</p>
-                  <p className="mt-2 text-xs text-slate-600">{t.jtlPhpSetupHint}</p>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                    <p className="font-semibold text-slate-900">{t.jtlPluginSetupTitle}</p>
+                    <p className="mt-1">{t.jtlPluginSetupBody}</p>
+                    <p className="mt-2 text-xs text-slate-600">{t.jtlPluginSetupHint}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                    <p className="font-semibold text-slate-900">{t.jtlPhpSetupTitle}</p>
+                    <p className="mt-1">{t.jtlPhpSetupBody}</p>
+                    <p className="mt-2 text-xs text-slate-600">{t.jtlPhpSetupHint}</p>
+                  </div>
                 </div>
               </div>
+            )}
 
+            {publishingSection === 'shopifyOauth' && (
               <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 space-y-3">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -1603,475 +1638,455 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                   </div>
                 )}
               </div>
+            )}
 
+            {publishingSection === 'destinations' && (
               <div className="space-y-3">
                 {publishDestinations.length === 0 && (
                   <p className="text-sm text-slate-500">{t.destinationsEmpty}</p>
                 )}
-              {publishDestinations.map((destination) => (
-                <div
-                  key={destination.id}
-                  className="flex items-start justify-between rounded-lg border border-slate-200 p-4"
-                >
-                  <div>
-                    <p className="font-semibold text-slate-900">{destination.name}</p>
-                    <p className="text-xs text-slate-500">
-                      {platformLabels[destination.platform] || destination.platform} •{' '}
-                      {formatDestinationSummary(destination)}
-                    </p>
-                  </div>
-                  <div className="flex flex-col items-end gap-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleTestDestination(destination)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                        <span>{t.testDestinationLabel}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveDestination(destination.id)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-red-200 hover:text-red-600"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        <span>{t.removeLabel || 'Remove'}</span>
-                      </button>
-                    </div>
-                    {publishTestStatus[destination.id] && (
-                      <span
-                        className={`text-[11px] font-semibold uppercase ${
-                          publishTestStatus[destination.id] === 'success'
-                            ? 'text-emerald-600'
-                            : publishTestStatus[destination.id] === 'failed'
-                            ? 'text-red-600'
-                            : 'text-slate-500'
-                        }`}
-                      >
-                        {publishTestStatus[destination.id] === 'success'
-                          ? t.testSuccessLabel
-                          : publishTestStatus[destination.id] === 'failed'
-                          ? t.publishTestFailed
-                          : t.testingLabel}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="border-t border-slate-200 pt-6 space-y-4">
-              <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-600">
-                {t.addDestination}
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    {t.destinationNameLabel}
-                  </label>
-                  <input
-                    type="text"
-                    value={newDestination.name}
-                    onChange={(event) =>
-                      setNewDestination((prev) => ({ ...prev, name: event.target.value }))
-                    }
-                    placeholder={t.destinationNamePlaceholder}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    {t.platformLabel}
-                  </label>
-                  <select
-                    value={newDestination.platform}
-                    onChange={(event) =>
-                      setNewDestination((prev) => ({ ...prev, platform: event.target.value }))
-                    }
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                {publishDestinations.map((destination) => (
+                  <div
+                    key={destination.id}
+                    className="flex items-start justify-between rounded-lg border border-slate-200 p-4"
                   >
-                    <option value="wordpress">{platformLabels.wordpress}</option>
-                    <option value="shopify">{platformLabels.shopify}</option>
-                    <option value="custom">{platformLabels.custom}</option>
-                    <option value="jtl">{platformLabels.jtl}</option>
-                  </select>
-                </div>
-              </div>
-
-              {(newDestination.platform === 'wordpress' || newDestination.platform === 'wordpress-token') && (
-                <div className="space-y-4">
-                  {/* Requires plugin notice */}
-                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
-                    <p className="text-xs font-medium text-blue-800">
-                      Requires AI Blog Token Plugin (v3.0) installed on WordPress
-                    </p>
-                    <p className="text-xs text-blue-600 mt-1">
-                      Install the plugin from wp-token-endpoint folder, then choose your auth method below.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Site URL */}
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-slate-700 mb-2">
-                        {t.wordpressSiteUrlLabel || 'WordPress Site URL'}
-                      </label>
-                      <input
-                        type="url"
-                        value={newDestination.baseUrl}
-                        onChange={(event) =>
-                          setNewDestination((prev) => ({ ...prev, baseUrl: event.target.value }))
-                        }
-                        placeholder="https://your-wordpress-site.com"
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                      />
+                    <div>
+                      <p className="font-semibold text-slate-900">{destination.name}</p>
+                      <p className="text-xs text-slate-500">
+                        {platformLabels[destination.platform] || destination.platform} -{' '}
+                        {formatDestinationSummary(destination)}
+                      </p>
                     </div>
-
-                    {/* Auth Method Toggle */}
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-slate-700 mb-2">
-                        Authentication Method
-                      </label>
-                      <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => setNewDestination((prev) => ({ ...prev, authMethod: 'token' }))}
-                          className={`flex-1 px-4 py-2.5 text-sm font-medium transition ${
-                            newDestination.authMethod === 'token'
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white text-slate-600 hover:bg-slate-50'
-                          }`}
+                          onClick={() => handleTestDestination(destination)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700"
                         >
-                          API Token (Recommended)
+                          <RefreshCw className="h-3 w-3" />
+                          <span>{t.testDestinationLabel}</span>
                         </button>
                         <button
                           type="button"
-                          onClick={() => setNewDestination((prev) => ({ ...prev, authMethod: 'basic' }))}
-                          className={`flex-1 px-4 py-2.5 text-sm font-medium transition ${
-                            newDestination.authMethod === 'basic'
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white text-slate-600 hover:bg-slate-50'
-                          }`}
+                          onClick={() => handleRemoveDestination(destination.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-red-200 hover:text-red-600"
                         >
-                          Basic Auth (Username + Password)
+                          <Trash2 className="h-3 w-3" />
+                          <span>{t.removeLabel || 'Remove'}</span>
                         </button>
                       </div>
-                    </div>
-
-                    {/* Token auth fields */}
-                    {newDestination.authMethod === 'token' && (
-                      <div className="md:col-span-2">
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                          {t.wordpressTokenLabel || 'API Token'}
-                        </label>
-                        <input
-                          type="password"
-                          value={newDestination.apiToken}
-                          onChange={(event) =>
-                            setNewDestination((prev) => ({ ...prev, apiToken: event.target.value }))
-                          }
-                          placeholder="Paste token from WordPress → Settings → AI Blog Token"
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                        />
-                        <p className="mt-1 text-xs text-slate-500">
-                          Go to your WordPress admin → Settings → AI Blog Token → Copy the token
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Basic auth fields */}
-                    {newDestination.authMethod === 'basic' && (
-                      <>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-2">
-                            {t.wordpressUsernameLabel || 'WordPress Username'}
-                          </label>
-                          <input
-                            type="text"
-                            value={newDestination.username}
-                            onChange={(event) =>
-                              setNewDestination((prev) => ({ ...prev, username: event.target.value }))
-                            }
-                            placeholder="admin"
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-2">
-                            {t.wordpressAppPasswordLabel || 'Application Password'}
-                          </label>
-                          <input
-                            type="password"
-                            value={newDestination.appPassword}
-                            onChange={(event) =>
-                              setNewDestination((prev) => ({
-                                ...prev,
-                                appPassword: event.target.value,
-                              }))
-                            }
-                            placeholder="xxxx xxxx xxxx xxxx xxxx xxxx"
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                          />
-                          <p className="mt-1 text-xs text-slate-500">
-                            Generate at WordPress → Users → Profile → Application Passwords
-                          </p>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {newDestination.platform === 'shopify' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.shopifyOauthSelectLabel || 'Shopify OAuth app'}
-                    </label>
-                    <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                      <select
-                        value={newDestination.oauthClientId}
-                        onChange={(event) =>
-                          setNewDestination((prev) => ({
-                            ...prev,
-                            oauthClientId: event.target.value,
-                          }))
-                        }
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                      >
-                        <option value="">
-                          {t.shopifyOauthSelectPlaceholder || 'Select an OAuth app'}
-                        </option>
-                        {shopifyOauthClients.map((client) => (
-                          <option key={client.id} value={client.id}>
-                            {client.name || client.clientId}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={openShopifyOauthModal}
-                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:border-slate-300"
-                      >
-                        <Plus className="h-3 w-3" />
-                        <span>{t.shopifyOauthAddLabel || 'Add OAuth app'}</span>
-                      </button>
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      {(t.shopifyOauthRedirectLabel || 'Redirect URL') + ': '}
-                      <span className="font-mono">{shopifyOauthRedirectUrl || '-'}</span>
-                    </p>
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.shopifyShopDomainLabel}
-                    </label>
-                    <input
-                      type="text"
-                      value={newDestination.shopDomain}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({ ...prev, shopDomain: event.target.value }))
-                      }
-                      placeholder="your-shop.myshopify.com"
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                    <div className="mt-2 flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={handleShopifyOAuth}
-                        className="text-xs text-blue-600 hover:text-blue-700"
-                        disabled={shopifyOAuthLoading}
-                      >
-                        {shopifyOAuthLoading ? 'Connecting...' : 'Connect Shopify (OAuth)'}
-                      </button>
-                      {shopifyOAuthError && (
-                        <span className="text-xs text-rose-600">{shopifyOAuthError}</span>
+                      {publishTestStatus[destination.id] && (
+                        <span
+                          className={`text-[11px] font-semibold uppercase ${
+                            publishTestStatus[destination.id] === 'success'
+                              ? 'text-emerald-600'
+                              : publishTestStatus[destination.id] === 'failed'
+                              ? 'text-red-600'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {publishTestStatus[destination.id] === 'success'
+                            ? t.testSuccessLabel
+                            : publishTestStatus[destination.id] === 'failed'
+                            ? t.publishTestFailed
+                            : t.testingLabel}
+                        </span>
                       )}
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
+
+            {publishingSection === 'addDestination' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.shopifyAccessTokenLabel}
+                      {t.destinationNameLabel}
                     </label>
                     <input
-                      type="password"
-                      value={newDestination.accessToken}
+                      type="text"
+                      value={newDestination.name}
                       onChange={(event) =>
-                        setNewDestination((prev) => ({ ...prev, accessToken: event.target.value }))
+                        setNewDestination((prev) => ({ ...prev, name: event.target.value }))
                       }
+                      placeholder={t.destinationNamePlaceholder}
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     />
                   </div>
                   <div>
-                    <div className="flex items-center justify-between">
-                      <label className="block text-sm font-medium text-slate-700 mb-2">
-                        {t.shopifyBlogIdLabel}
-                      </label>
-                      <button
-                        type="button"
-                        onClick={fetchShopifyBlogs}
-                        className="text-xs text-blue-600 hover:text-blue-700"
-                        disabled={shopifyBlogsLoading}
-                      >
-                        {shopifyBlogsLoading ? 'Loading...' : 'Fetch blogs'}
-                      </button>
-                    </div>
-                    <input
-                      type="text"
-                      value={newDestination.blogId}
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                      {t.platformLabel}
+                    </label>
+                    <select
+                      value={newDestination.platform}
                       onChange={(event) =>
-                        setNewDestination((prev) => ({ ...prev, blogId: event.target.value }))
+                        setNewDestination((prev) => ({ ...prev, platform: event.target.value }))
                       }
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                    {shopifyBlogsError && (
-                      <p className="mt-1 text-xs text-rose-600">{shopifyBlogsError}</p>
-                    )}
-                      {shopifyBlogs.length > 0 && (
+                    >
+                      <option value="wordpress">{platformLabels.wordpress}</option>
+                      <option value="shopify">{platformLabels.shopify}</option>
+                      <option value="custom">{platformLabels.custom}</option>
+                      <option value="jtl">{platformLabels.jtl}</option>
+                    </select>
+                  </div>
+                </div>
+
+                {(newDestination.platform === 'wordpress' || newDestination.platform === 'wordpress-token') && (
+                  <div className="space-y-4">
+                    {/* Requires plugin notice */}
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+                      <p className="text-xs font-medium text-blue-800">
+                        Requires AI Blog Token Plugin (v3.0) installed on WordPress
+                      </p>
+                      <p className="text-xs text-blue-600 mt-1">
+                        Install the plugin from wp-token-endpoint folder, then choose your auth method below.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {/* Site URL */}
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          {t.wordpressSiteUrlLabel || 'WordPress Site URL'}
+                        </label>
+                        <input
+                          type="url"
+                          value={newDestination.baseUrl}
+                          onChange={(event) =>
+                            setNewDestination((prev) => ({ ...prev, baseUrl: event.target.value }))
+                          }
+                          placeholder="https://your-wordpress-site.com"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        />
+                      </div>
+
+                      {/* Auth Method Toggle */}
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          Authentication Method
+                        </label>
+                        <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => setNewDestination((prev) => ({ ...prev, authMethod: 'token' }))}
+                            className={`flex-1 px-4 py-2.5 text-sm font-medium transition ${
+                              newDestination.authMethod === 'token'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            API Token (Recommended)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewDestination((prev) => ({ ...prev, authMethod: 'basic' }))}
+                            className={`flex-1 px-4 py-2.5 text-sm font-medium transition ${
+                              newDestination.authMethod === 'basic'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            Basic Auth (Username + Password)
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Token auth fields */}
+                      {newDestination.authMethod === 'token' && (
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-medium text-slate-700 mb-2">
+                            {t.wordpressTokenLabel || 'API Token'}
+                          </label>
+                          <input
+                            type="password"
+                            value={newDestination.apiToken}
+                            onChange={(event) =>
+                              setNewDestination((prev) => ({ ...prev, apiToken: event.target.value }))
+                            }
+                            placeholder={t.wordpressTokenPlaceholder || 'Paste the token from the plugin'}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                          />
+                        </div>
+                      )}
+
+                      {/* Basic auth fields */}
+                      {newDestination.authMethod === 'basic' && (
+                        <>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                              {t.wordpressUsernameLabel || 'WordPress username'}
+                            </label>
+                            <input
+                              type="text"
+                              value={newDestination.username}
+                              onChange={(event) =>
+                                setNewDestination((prev) => ({ ...prev, username: event.target.value }))
+                              }
+                              placeholder={t.wordpressUsernamePlaceholder || 'admin'}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                              {t.wordpressPasswordLabel || 'WordPress app password'}
+                            </label>
+                            <input
+                              type="password"
+                              value={newDestination.appPassword}
+                              onChange={(event) =>
+                                setNewDestination((prev) => ({ ...prev, appPassword: event.target.value }))
+                              }
+                              placeholder={t.wordpressPasswordPlaceholder || 'xxxx xxxx xxxx xxxx'}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+
+                {newDestination.platform === 'shopify' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          {t.shopifyDomainLabel || 'Shopify domain'}
+                        </label>
+                        <input
+                          type="text"
+                          value={newDestination.shopDomain}
+                          onChange={(event) =>
+                            setNewDestination((prev) => ({ ...prev, shopDomain: event.target.value }))
+                          }
+                          placeholder="your-store.myshopify.com"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          {t.shopifyOauthSelectLabel || 'OAuth app'}
+                        </label>
+                        <select
+                          value={newDestination.oauthClientId}
+                          onChange={(event) =>
+                            setNewDestination((prev) => ({ ...prev, oauthClientId: event.target.value }))
+                          }
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        >
+                          <option value="">{t.shopifyOauthSelectPlaceholder || 'Select OAuth app'}</option>
+                          {shopifyOauthClients.map((client) => (
+                            <option key={client.id} value={client.id}>
+                              {client.name || client.clientId}
+                            </option>
+                          ))}
+                        </select>
+                        {shopifyOauthClients.length === 0 && (
+                          <p className="text-xs text-slate-500 mt-1">
+                            {t.shopifyOauthEmpty || 'No Shopify OAuth apps saved yet.'}
+                          </p>
+                        )}
+                      </div>
+                      <div className="md:col-span-2 flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={handleShopifyOAuth}
+                          disabled={shopifyOAuthLoading}
+                          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-60"
+                        >
+                          <span>
+                            {shopifyOAuthLoading
+                              ? t.loadingLabel || 'Connecting...'
+                              : t.shopifyOauthActionLabel || 'Connect Shopify'}
+                          </span>
+                        </button>
+                        {shopifyOAuthError && (
+                          <span className="text-xs text-red-600">{shopifyOAuthError}</span>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          {t.shopifyTokenLabel || 'Admin API access token'}
+                        </label>
+                        <input
+                          type="password"
+                          value={newDestination.accessToken}
+                          onChange={(event) =>
+                            setNewDestination((prev) => ({ ...prev, accessToken: event.target.value }))
+                          }
+                          placeholder={t.shopifyTokenPlaceholder}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          {t.shopifyApiVersionLabel || 'Shopify API version'}
+                        </label>
+                        <input
+                          type="text"
+                          value={newDestination.apiVersion}
+                          onChange={(event) =>
+                            setNewDestination((prev) => ({ ...prev, apiVersion: event.target.value }))
+                          }
+                          placeholder="2024-01"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-slate-700">
+                            {t.shopifyBlogIdLabel || 'Blog ID'}
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => fetchShopifyBlogs()}
+                            className="text-xs text-blue-600 hover:text-blue-700"
+                          >
+                            {t.shopifyBlogRefreshLabel || 'Refresh blogs'}
+                          </button>
+                        </div>
                         <select
                           value={newDestination.blogId}
                           onChange={(event) => {
                             const selectedId = event.target.value;
-                            const selectedBlog = shopifyBlogs.find(
-                              (blog) => String(blog.id) === String(selectedId)
-                            );
+                            const selected = shopifyBlogs.find((blog) => String(blog.id) === selectedId);
                             setNewDestination((prev) => ({
                               ...prev,
                               blogId: selectedId,
-                              blogHandle: selectedBlog?.handle || prev.blogHandle,
+                              blogHandle: selected?.handle || prev.blogHandle,
                             }));
                           }}
-                          className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                         >
-                        <option value="">Select a blog</option>
-                        {shopifyBlogs.map((blog) => (
-                          <option key={blog.id} value={String(blog.id)}>
-                            {blog.title || blog.handle || blog.id}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.shopifyApiVersionLabel}
-                    </label>
-                    <input
-                      type="text"
-                      value={newDestination.apiVersion}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({ ...prev, apiVersion: event.target.value }))
-                      }
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {(newDestination.platform === 'custom' || newDestination.platform === 'jtl') && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.customEndpointUrlLabel}
-                    </label>
-                    <input
-                      type="url"
-                      value={newDestination.endpointUrl}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({ ...prev, endpointUrl: event.target.value }))
-                      }
-                      placeholder="https://api.example.com/posts"
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.authHeaderNameLabel}
-                    </label>
-                    <input
-                      type="text"
-                      value={newDestination.authHeaderName}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({
-                          ...prev,
-                          authHeaderName: event.target.value,
-                        }))
-                      }
-                      placeholder={
-                        newDestination.platform === 'jtl' ? 'X-JTL-Token' : 'Authorization'
-                      }
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.authHeaderValueLabel}
-                    </label>
-                    <input
-                      type="password"
-                      value={newDestination.authHeaderValue}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({
-                          ...prev,
-                          authHeaderValue: event.target.value,
-                        }))
-                      }
-                      placeholder={
-                        newDestination.platform === 'jtl' ? t.jtlTokenPlaceholder : 'Bearer ...'
-                      }
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </div>
-                  {newDestination.platform === 'jtl' && (
-                    <div className="md:col-span-2">
-                      <button
-                        type="button"
-                        onClick={applyJtlDefaults}
-                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-slate-300"
-                      >
-                        <span>{t.jtlApplyDefaults}</span>
-                      </button>
+                          <option value="">{t.shopifyBlogIdPlaceholder}</option>
+                          {shopifyBlogs.map((blog) => (
+                            <option key={blog.id} value={String(blog.id)}>
+                              {blog.title} (ID: {blog.id})
+                            </option>
+                          ))}
+                        </select>
+                        {shopifyBlogsLoading && (
+                          <p className="text-xs text-slate-500 mt-1">{t.loadingLabel}</p>
+                        )}
+                        {shopifyBlogsError && (
+                          <p className="text-xs text-red-600 mt-1">{shopifyBlogsError}</p>
+                        )}
+                      </div>
                     </div>
-                  )}
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      {t.extraPayloadLabel}
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={newDestination.extraPayloadJson}
-                      onChange={(event) =>
-                        setNewDestination((prev) => ({
-                          ...prev,
-                          extraPayloadJson: event.target.value,
-                        }))
-                      }
-                      placeholder={t.extraPayloadPlaceholder}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono"
-                    />
                   </div>
-                </div>
-              )}
+                )}
 
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleAddDestination}
-                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800"
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>{t.addDestination}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={resetNewDestination}
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:border-slate-300"
-                >
-                  <span>{t.resetLabel || 'Reset'}</span>
-                </button>
+                {(newDestination.platform === 'custom' || newDestination.platform === 'jtl') && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
+                        {t.customEndpointUrlLabel}
+                      </label>
+                      <input
+                        type="url"
+                        value={newDestination.endpointUrl}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({ ...prev, endpointUrl: event.target.value }))
+                        }
+                        placeholder="https://api.example.com/posts"
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
+                        {t.authHeaderNameLabel}
+                      </label>
+                      <input
+                        type="text"
+                        value={newDestination.authHeaderName}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({
+                            ...prev,
+                            authHeaderName: event.target.value,
+                          }))
+                        }
+                        placeholder={
+                          newDestination.platform === 'jtl' ? 'X-JTL-Token' : 'Authorization'
+                        }
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
+                        {t.authHeaderValueLabel}
+                      </label>
+                      <input
+                        type="password"
+                        value={newDestination.authHeaderValue}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({
+                            ...prev,
+                            authHeaderValue: event.target.value,
+                          }))
+                        }
+                        placeholder={
+                          newDestination.platform === 'jtl'
+                            ? t.jtlTokenPlaceholder
+                            : 'Bearer ...'
+                        }
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    {newDestination.platform === 'jtl' && (
+                      <div className="md:col-span-2">
+                        <button
+                          type="button"
+                          onClick={applyJtlDefaults}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-slate-300"
+                        >
+                          <span>{t.jtlApplyDefaults}</span>
+                        </button>
+                      </div>
+                    )}
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
+                        {t.extraPayloadLabel}
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={newDestination.extraPayloadJson}
+                        onChange={(event) =>
+                          setNewDestination((prev) => ({
+                            ...prev,
+                            extraPayloadJson: event.target.value,
+                          }))
+                        }
+                        placeholder={t.extraPayloadPlaceholder}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleAddDestination}
+                    className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>{t.addDestination}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetNewDestination}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:border-slate-300"
+                  >
+                    <span>{t.resetLabel || 'Reset'}</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 

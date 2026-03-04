@@ -226,51 +226,41 @@ function HistoryPage({
             </select>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
-          <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
-            {t.historyTotalBlogs}: <strong>{summarySafe.totalCount || 0}</strong>
-          </div>
-          <div className="rounded-lg bg-purple-50 px-3 py-2 text-purple-700">
-            {t.historyTotalCost}: <strong>${(summarySafe.totalCost || 0).toFixed(2)}</strong>
-          </div>
-          <div className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700">
-            {t.historyShowing}: <strong>{filteredHistory.length}</strong>
-          </div>
-          <div className="rounded-lg bg-white px-3 py-2 text-slate-600 border border-slate-200">
-            {t.historyPerPage || 'Per page'}:{' '}
-            <select
-              value={pageSize}
-              onChange={(event) => setPageSize(Number(event.target.value))}
-              className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
-            >
-              <option value={5}>5</option>
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-            </select>
-          </div>
-          {wpCountsSafe && (
-            <>
-                  <div className="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
-                    Published: <strong>{wpCountsSafe.published ?? '-'}</strong>
+        <div className="flex flex-col gap-3 text-sm text-slate-600">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
+              {t.historyTotalBlogs}: <strong>{summarySafe.totalCount || 0}</strong>
+            </div>
+            <div className="rounded-lg bg-purple-50 px-3 py-2 text-purple-700">
+              {t.historyTotalCost}: <strong>${(summarySafe.totalCost || 0).toFixed(2)}</strong>
+            </div>
+            <div className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700">
+              {t.historyShowing}: <strong>{filteredHistory.length}</strong>
+            </div>
+            {wpCountsSafe && (
+              <>
+                <div className="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
+                  Published: <strong>{wpCountsSafe.published ?? '-'}</strong>
+                </div>
+                <div className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
+                  Draft: <strong>{wpCountsSafe.draft ?? '-'}</strong>
+                </div>
+                {wpCountsSafe.scheduled !== undefined && (
+                  <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
+                    Scheduled: <strong>{wpCountsSafe.scheduled ?? '-'}</strong>
                   </div>
-                  <div className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
-                    Draft: <strong>{wpCountsSafe.draft ?? '-'}</strong>
+                )}
+                {wpCountsSafe.pending !== undefined && (
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-700">
+                    Pending: <strong>{wpCountsSafe.pending ?? '-'}</strong>
                   </div>
-                  {wpCountsSafe.scheduled !== undefined && (
-                    <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
-                      Scheduled: <strong>{wpCountsSafe.scheduled ?? '-'}</strong>
-                    </div>
-                  )}
-                  {wpCountsSafe.pending !== undefined && (
-                    <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-700">
-                      Pending: <strong>{wpCountsSafe.pending ?? '-'}</strong>
-                    </div>
-                  )}
-                </>
-          )}
-          {canBulkExport && (
-            <div className="ml-auto flex flex-wrap items-center gap-2">
+                )}
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {canBulkExport && (
+              <div className="flex flex-wrap items-center gap-2">
               {selectedIds.length > 0 ? (
                 <>
                   <span className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
@@ -376,8 +366,22 @@ function HistoryPage({
                   </button>
                 </>
               )}
+              </div>
+            )}
+            <div className="ml-auto rounded-lg bg-white px-3 py-2 text-slate-600 border border-slate-200">
+              {t.historyPerPage || 'Per page'}:{' '}
+              <select
+                value={pageSize}
+                onChange={(event) => setPageSize(Number(event.target.value))}
+                className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
             </div>
-          )}
+          </div>
         </div>
       </div>
 

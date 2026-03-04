@@ -43,8 +43,10 @@ function Layout({
 }) {
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [isHeaderFloating, setIsHeaderFloating] = useState(false);
   const languageMenuRef = useRef(null);
   const accountMenuRef = useRef(null);
+  const contentRef = useRef(null);
   const languageOptions = useMemo(
     () => [
       { code: 'en', label: 'English' },
@@ -67,6 +69,18 @@ function Layout({
     document.addEventListener('mousedown', onPointerDown);
     return () => document.removeEventListener('mousedown', onPointerDown);
   }, []);
+
+  useEffect(() => {
+    const target = contentRef.current;
+    if (!target) return;
+    const handleScroll = () => {
+      setIsHeaderFloating(target.scrollTop > 8);
+    };
+    handleScroll();
+    target.addEventListener('scroll', handleScroll);
+    return () => target.removeEventListener('scroll', handleScroll);
+  }, []);
+
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-100 dark:from-[#050b18] dark:via-[#07132a] dark:to-[#081835]">
@@ -184,187 +198,204 @@ function Layout({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto">
-        <div className="flex items-center justify-end gap-3 px-8 py-4">
-          <button
-            type="button"
-            onClick={onBack}
-            disabled={!canGoBack}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm shadow-sm transition ${
-              canGoBack
-                ? 'border-slate-200 bg-white/80 text-slate-700 hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900'
-                : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-600'
+      <div ref={contentRef} className="flex-1 overflow-auto">
+        <div
+          className={`sticky top-0 z-20 px-8 py-2 backdrop-blur transition ${
+            isHeaderFloating
+              ? 'bg-white/65 shadow-sm dark:bg-slate-950/55'
+              : 'bg-transparent'
+          }`}
+        >
+          <div
+            className={`flex items-center justify-between gap-3 border-b pb-3 transition ${
+              isHeaderFloating
+                ? 'border-transparent'
+                : 'border-transparent'
             }`}
           >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-xs font-semibold uppercase tracking-wide">{t.backLabel}</span>
-          </button>
-          {canNotifications && (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={onToggleNotifications}
-                className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white/80 p-2 text-slate-700 hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
-              >
-                <Bell className="h-4 w-4" />
-              </button>
-              {notificationsOpen && (
-                <div className="absolute right-0 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold uppercase text-slate-600 dark:text-slate-300">
-                      {t.notificationsTitle}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await window.electronAPI.clearNotifications();
-                        onToggleNotifications();
-                      }}
-                      className="text-[10px] text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                    >
-                      {t.clearLabel}
-                    </button>
-                  </div>
-                  <div className="mt-2 space-y-2 max-h-64 overflow-auto">
-                    {notifications.length === 0 ? (
-                      <p className="text-xs text-slate-600 dark:text-slate-300">
-                        {t.notificationsEmpty}
-                      </p>
-                    ) : (
-                      notifications.map((note) => (
-                        <div
-                          key={note.id}
-                          className="rounded-lg bg-slate-50 p-2 text-xs dark:bg-slate-800/70"
-                        >
-                          <div className="flex items-center justify-between">
-                            <p className="font-semibold text-slate-800 dark:text-slate-100">
-                              {(note.type || 'info').toUpperCase()}
-                            </p>
-                            {!note.isRead && (
-                              <span className="rounded-full bg-blue-200 px-2 py-0.5 text-[10px] font-semibold text-blue-800">
-                                NEW
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-slate-700 dark:text-slate-200">
-                            {note.message}
-                          </p>
-                          {!note.isRead && (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await window.electronAPI.markNotificationRead({ id: note.id });
-                                onToggleNotifications();
-                              }}
-                              className="text-[10px] text-blue-600 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
-                            >
-                              {t.markReadLabel}
-                            </button>
-                          )}
-                          <p className="text-[10px] text-slate-500 mt-1 dark:text-slate-400">
-                            {new Date(note.createdAt).toLocaleString()}
-                          </p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => onToggleTheme()}
-            title={theme === 'dark' ? t.lightMode : t.darkMode}
-            className={`relative flex h-10 w-16 items-center rounded-full border p-1 shadow-sm transition ${
-              theme === 'dark'
-                ? 'border-slate-600 bg-slate-800 hover:bg-slate-700'
-                : 'border-amber-200 bg-amber-100 hover:bg-amber-200'
-            }`}
-          >
-            <span
-              className={`absolute inline-flex h-7 w-7 items-center justify-center rounded-full transition ${
-                theme === 'dark'
-                  ? 'translate-x-7 bg-slate-950 text-blue-300'
-                  : 'translate-x-0 bg-yellow-400 text-amber-900'
-              }`}
-            >
-              {theme === 'dark' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-            </span>
-          </button>
-
-          <div className="relative" ref={languageMenuRef}>
             <button
               type="button"
-              onClick={() => setLanguageMenuOpen((prev) => !prev)}
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 shadow-sm transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
+              onClick={onBack}
+              disabled={!canGoBack}
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm shadow-sm transition ${
+                canGoBack
+                  ? 'border-slate-200 bg-white/80 text-slate-700 hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900'
+                  : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-600'
+              }`}
             >
-              <span>{activeLanguageLabel}</span>
-              <ChevronDown className="h-4 w-4" />
+              <ArrowLeft className="h-4 w-4" />
+              <span className="text-xs font-semibold uppercase tracking-wide">{t.backLabel}</span>
             </button>
 
-            {languageMenuOpen && (
-              <div className="absolute right-0 mt-2 w-36 rounded-xl border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900">
-                {languageOptions.map((option) => (
+            <div className="flex items-center gap-3">
+              {canNotifications && (
+                <div className="relative">
                   <button
-                    key={option.code}
                     type="button"
-                    onClick={() => {
-                      setLanguage(option.code);
-                      setLanguageMenuOpen(false);
-                    }}
-                    className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                      language === option.code
-                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                        : 'text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800'
-                    }`}
+                    onClick={onToggleNotifications}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white/80 p-2 text-slate-700 hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
                   >
-                    {option.label}
+                    <Bell className="h-4 w-4" />
                   </button>
-                ))}
-              </div>
-            )}
-          </div>
+                  {notificationsOpen && (
+                    <div className="absolute right-0 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold uppercase text-slate-600 dark:text-slate-300">
+                          {t.notificationsTitle}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await window.electronAPI.clearNotifications();
+                            onToggleNotifications();
+                          }}
+                          className="text-[10px] text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        >
+                          {t.clearLabel}
+                        </button>
+                      </div>
+                      <div className="mt-2 space-y-2 max-h-64 overflow-auto">
+                        {notifications.length === 0 ? (
+                          <p className="text-xs text-slate-600 dark:text-slate-300">
+                            {t.notificationsEmpty}
+                          </p>
+                        ) : (
+                          notifications.map((note) => (
+                            <div
+                              key={note.id}
+                              className="rounded-lg bg-slate-50 p-2 text-xs dark:bg-slate-800/70"
+                            >
+                              <div className="flex items-center justify-between">
+                                <p className="font-semibold text-slate-800 dark:text-slate-100">
+                                  {(note.type || 'info').toUpperCase()}
+                                </p>
+                                {!note.isRead && (
+                                  <span className="rounded-full bg-blue-200 px-2 py-0.5 text-[10px] font-semibold text-blue-800">
+                                    NEW
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-slate-700 dark:text-slate-200">
+                                {note.message}
+                              </p>
+                              {!note.isRead && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await window.electronAPI.markNotificationRead({ id: note.id });
+                                    onToggleNotifications();
+                                  }}
+                                  className="text-[10px] text-blue-600 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
+                                >
+                                  {t.markReadLabel}
+                                </button>
+                              )}
+                              <p className="text-[10px] text-slate-500 mt-1 dark:text-slate-400">
+                                {new Date(note.createdAt).toLocaleString()}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
-          {currentUser && (
-            <div className="relative" ref={accountMenuRef}>
               <button
                 type="button"
-                onClick={() => setAccountMenuOpen((prev) => !prev)}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
+                onClick={() => onToggleTheme()}
+                title={theme === 'dark' ? t.lightMode : t.darkMode}
+                className={`relative flex h-10 w-16 items-center rounded-full border p-1 shadow-sm transition ${
+                  theme === 'dark'
+                    ? 'border-slate-600 bg-slate-800 hover:bg-slate-700'
+                    : 'border-amber-200 bg-amber-100 hover:bg-amber-200'
+                }`}
               >
-                <User className="h-4 w-4" />
-                <span>{currentUser.username}</span>
-                <ChevronDown className="h-4 w-4" />
+                <span
+                  className={`absolute inline-flex h-7 w-7 items-center justify-center rounded-full transition ${
+                    theme === 'dark'
+                      ? 'translate-x-7 bg-slate-950 text-blue-300'
+                      : 'translate-x-0 bg-yellow-400 text-amber-900'
+                  }`}
+                >
+                  {theme === 'dark' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                </span>
               </button>
 
-              {accountMenuOpen && (
-                <div className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    {t.signedInAs}
-                  </p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    {currentUser.username}
-                  </p>
-                  <p className="text-xs text-blue-700 dark:text-blue-300">
-                    {currentUser.role === 'admin' ? t.roleAdmin : t.roleUser}
-                  </p>
+              <div className="relative" ref={languageMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setLanguageMenuOpen((prev) => !prev)}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 shadow-sm transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
+                >
+                  <span>{activeLanguageLabel}</span>
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+
+                {languageMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-36 rounded-xl border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                    {languageOptions.map((option) => (
+                      <button
+                        key={option.code}
+                        type="button"
+                        onClick={() => {
+                          setLanguage(option.code);
+                          setLanguageMenuOpen(false);
+                        }}
+                        className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
+                          language === option.code
+                            ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                            : 'text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {currentUser && (
+                <div className="relative" ref={accountMenuRef}>
                   <button
                     type="button"
-                    onClick={() => {
-                      setAccountMenuOpen(false);
-                      onLogout();
-                    }}
-                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    onClick={() => setAccountMenuOpen((prev) => !prev)}
+                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
                   >
-                    <LogOut className="h-4 w-4" />
-                    <span>{t.logoutButton}</span>
+                    <User className="h-4 w-4" />
+                    <span>{currentUser.username}</span>
+                    <ChevronDown className="h-4 w-4" />
                   </button>
+
+                  {accountMenuOpen && (
+                    <div className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {t.signedInAs}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        {currentUser.username}
+                      </p>
+                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                        {currentUser.role === 'admin' ? t.roleAdmin : t.roleUser}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          onLogout();
+                        }}
+                        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        <span>{t.logoutButton}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
+          </div>
         </div>
         {children}
       </div>

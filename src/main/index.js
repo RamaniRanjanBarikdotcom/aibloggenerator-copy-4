@@ -1806,7 +1806,12 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
     const publishStatus = status || 'draft';
     const title = blog.title || 'Untitled';
     let content = blog.content || '';
-    const metaDescription = blog.metaDescription || '';
+    const metaDescription = (
+      blog.metaDescription ||
+      blog.meta_description ||
+      blog?.meta?.description ||
+      ''
+    ).trim();
     let imageUrl = blog.imageUrl || null;
     let localImagePath = blog.localImagePath || blog.local_image_path || null;
     const keywords = parseListInput(blog.keywords);
@@ -1854,6 +1859,11 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       return imageHtml + htmlContent;
     };
 
+    const stripLeadingH1 = (htmlContent) => {
+      if (!htmlContent) return htmlContent;
+      return String(htmlContent).replace(/^\s*<h1[^>]*>[\s\S]*?<\/h1>\s*/i, '');
+    };
+
     const stripLeadingTitleFromContent = (htmlContent, pageTitle) => {
       if (!htmlContent || !pageTitle) return htmlContent;
       const normalizeText = (value) =>
@@ -1865,6 +1875,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
           .replace(/&lt;/gi, '<')
           .replace(/&gt;/gi, '>')
           .replace(/<[^>]*>/g, ' ')
+          .replace(/[^\p{L}\p{N}\s]/gu, ' ')
           .replace(/\s+/g, ' ')
           .trim()
           .toLowerCase();
@@ -1995,19 +2006,21 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       }
 
       // WordPress already renders the title + featured image, so avoid duplicating in body content.
-      let contentWithImage = stripLeadingTitleFromContent(content, title);
+      let contentWithImage = stripLeadingTitleFromContent(stripLeadingH1(content), title);
 
       // Build payload - plugin handles everything (image download, SEO, categories, etc.)
       const postPayload = {
         title,
         content: contentWithImage,
-        excerpt: metaDescription,
         status: publishStatus,
         keywords,
         categories,
-        metaDescription,
         focusKeyword: keywords[0] || '',
       };
+      if (metaDescription) {
+        postPayload.excerpt = metaDescription;
+        postPayload.metaDescription = metaDescription;
+      }
 
       // Include featured image URL for plugin to process (it will set featured image)
       if (mediaUrl) {
@@ -2080,15 +2093,17 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       }
 
       // Shopify already displays the title + featured image, so avoid duplicating them in body_html.
-      let contentWithImage = stripLeadingTitleFromContent(content, title);
+      let contentWithImage = stripLeadingTitleFromContent(stripLeadingH1(content), title);
 
       const articlePayload = {
         title,
         body_html: contentWithImage,
-        summary_html: metaDescription,
         tags: normalizeShopifyTags([...keywords, ...categories]).join(', '),
         published: publishStatus === 'publish',
       };
+      if (metaDescription) {
+        articlePayload.summary_html = metaDescription;
+      }
 
       // Add featured image for Shopify (separate from content image)
       if (mediaUrl) {
@@ -2128,27 +2143,29 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       }
 
       // Insert image into content body for custom/JTL
-      let contentWithImage = content;
+      let contentWithImage = stripLeadingTitleFromContent(stripLeadingH1(content), title);
       if (imageUrl) {
-        contentWithImage = insertImageIntoContent(imageUrl, title, content);
+        contentWithImage = insertImageIntoContent(imageUrl, title, contentWithImage);
         console.log('[Publish] Image inserted into blog content for custom/JTL');
       }
 
-      const response = await axios.post(
-        endpointUrl,
-        {
-          title,
-          content: contentWithImage,
-          metaDescription,
-          status: publishStatus,
-          keywords,
-          categories,
-          featuredImage: imageUrl,
-          source: 'aibloggenerator',
-          ...extraPayload,
-        },
-        { headers: reqHeaders, timeout: PUBLISH_AXIOS_DEFAULTS.timeout }
-      );
+      const payload = {
+        title,
+        content: contentWithImage,
+        status: publishStatus,
+        keywords,
+        categories,
+        featuredImage: imageUrl,
+        source: 'aibloggenerator',
+        ...extraPayload,
+      };
+      if (metaDescription) {
+        payload.metaDescription = metaDescription;
+      }
+      const response = await axios.post(endpointUrl, payload, {
+        headers: reqHeaders,
+        timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+      });
       result = response.data || null;
     } else {
       throw new Error(`Unsupported platform: ${platform}`);

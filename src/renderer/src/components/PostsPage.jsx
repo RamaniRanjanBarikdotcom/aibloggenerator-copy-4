@@ -719,17 +719,22 @@ function PostsPage({ t }) {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-slate-200">
+      <div className="flex flex-wrap items-center gap-6 mb-6 border-b border-slate-200 dark:border-slate-700/60">
         {['overview', 'history', 'posts'].map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
+            className={`relative pb-3 text-sm font-semibold transition ${
               activeTab === tab
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
+                ? 'text-slate-900 dark:text-slate-100'
+                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
+            <span
+              className={`absolute left-0 -bottom-[1px] h-0.5 w-full rounded-full transition ${
+                activeTab === tab ? 'bg-blue-500' : 'bg-transparent'
+              }`}
+            />
             {tab === 'overview' && (t.tabOverview || 'Overview')}
             {tab === 'history' && (t.tabHistory || 'Publishing History')}
             {tab === 'posts' && (t.tabPosts || 'Remote Posts')}
