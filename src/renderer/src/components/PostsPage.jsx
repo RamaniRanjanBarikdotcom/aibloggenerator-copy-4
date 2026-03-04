@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { RefreshCw, ExternalLink, Globe, TrendingUp, FileText, Eye, Calendar, BarChart3, AlertCircle, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { RefreshCw, ExternalLink, Globe, TrendingUp, FileText, Eye, Calendar, BarChart3, AlertCircle, CheckCircle, XCircle, Clock, Pencil, Trash2 } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -34,6 +34,17 @@ function PostsPage({ t }) {
   const [syncMessage, setSyncMessage] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
   const [autoSynced, setAutoSynced] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editForm, setEditForm] = useState({
+    id: null,
+    title: '',
+    content: '',
+    status: 'draft',
+  });
+  const selectedDestination = destinations.find((dest) => dest.id === destinationId) || null;
   const autoSyncInFlight = useRef(false);
   const lastAutoSyncAt = useRef(0);
 
@@ -144,9 +155,118 @@ function PostsPage({ t }) {
     setError('');
     setSyncMessage('');
     setTestResult(null);
-    const result = await window.electronAPI.testWordpressSync({ destinationId });
-    setTestResult(result);
+    const selectedDestination = destinations.find((dest) => dest.id === destinationId) || null;
+    if (!selectedDestination) {
+      setTesting(false);
+      setError(t.publishDestinationRequired || 'Select a destination first.');
+      return;
+    }
+    if (selectedDestination.platform === 'shopify') {
+      const apiVersion = selectedDestination.apiVersion || '2024-01';
+      const shopDomain = selectedDestination.shopDomain || '';
+      const accessToken = selectedDestination.accessToken || '';
+      const endpoint = shopDomain
+        ? `https://${shopDomain}/admin/api/${apiVersion}/shop.json`
+        : '';
+      const response = await window.electronAPI.testPublishDestination({
+        destination: selectedDestination,
+      });
+      setTestResult({
+        success: response?.success,
+        error: response?.error,
+        result: {
+          destination: {
+            name: selectedDestination.name,
+            platform: selectedDestination.platform,
+            baseUrl: shopDomain,
+            hasApiToken: accessToken.length > 0,
+            hasUsername: false,
+            hasAppPassword: false,
+            apiTokenLength: accessToken.length,
+            apiTokenFirst10: accessToken.substring(0, 10),
+          },
+          tests: [
+            {
+              name: 'Shopify Admin API',
+              endpoint,
+              success: response?.success,
+              status: response?.success ? 'OK' : 'Failed',
+              siteName: response?.result?.name,
+            },
+          ],
+        },
+      });
+    } else {
+      const result = await window.electronAPI.testWordpressSync({ destinationId });
+      setTestResult(result);
+    }
     setTesting(false);
+  };
+
+  const openEditModal = async (post) => {
+    if (!destinationId) {
+      setError(t.publishDestinationRequired || 'Select a destination first.');
+      return;
+    }
+    setEditModalOpen(true);
+    setEditLoading(true);
+    setEditSaving(false);
+    setEditError('');
+    const result = await window.electronAPI.getRemotePostDetail({
+      destinationId,
+      postId: post.id,
+    });
+    if (result.success) {
+      setEditForm({
+        id: result.post.id,
+        title: result.post.title || '',
+        content: result.post.content || '',
+        status: result.post.status || 'draft',
+      });
+    } else {
+      setEditError(result.error || 'Failed to load post');
+    }
+    setEditLoading(false);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editForm.id) return;
+    setEditSaving(true);
+    setEditError('');
+    const result = await window.electronAPI.updateRemotePost({
+      destinationId,
+      postId: editForm.id,
+      title: editForm.title,
+      content: editForm.content,
+      status: editForm.status,
+    });
+    if (!result.success) {
+      setEditError(result.error || 'Update failed');
+      setEditSaving(false);
+      return;
+    }
+    setEditSaving(false);
+    setEditModalOpen(false);
+    await Promise.all([loadPosts(), loadAnalytics(), loadPublishHistory()]);
+  };
+
+  const handleDeletePost = async (post) => {
+    if (!destinationId) {
+      setError(t.publishDestinationRequired || 'Select a destination first.');
+      return;
+    }
+    const confirmed = window.confirm(t.deleteConfirm || 'Delete this post from the remote platform?');
+    if (!confirmed) return;
+    const result = await window.electronAPI.deleteRemotePost({
+      destinationId,
+      postId: post.id,
+      force: false,
+    });
+    if (!result.success) {
+      setError(result.error || 'Delete failed');
+      return;
+    }
+    await Promise.all([loadPosts(), loadAnalytics(), loadPublishHistory()]);
   };
 
   useEffect(() => {
@@ -794,9 +914,11 @@ function PostsPage({ t }) {
                   <p className="text-xs text-slate-600">{formatDate(post.publishedAt)}</p>
                 </div>
                 <div className="col-span-2">
-                  <span className="text-sm font-semibold">{post.views?.toLocaleString() ?? '—'}</span>
+                  <span className="text-sm font-semibold">
+                    {typeof post.views === 'number' ? post.views.toLocaleString() : 'N/A'}
+                  </span>
                 </div>
-                <div className="col-span-2 text-right">
+                <div className="col-span-2 flex items-center justify-end gap-2">
                   {post.url && (
                     <button
                       onClick={() => window.electronAPI.openExternal({ url: post.url })}
@@ -806,10 +928,96 @@ function PostsPage({ t }) {
                       {t.viewLabel || 'Open'}
                     </button>
                   )}
+                  <button
+                    onClick={() => openEditModal(post)}
+                    className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 text-sm"
+                  >
+                    <Pencil className="h-4 w-4" />
+                    {t.editLabel || 'Edit'}
+                  </button>
+                  <button
+                    onClick={() => handleDeletePost(post)}
+                    className="inline-flex items-center gap-1 text-rose-600 hover:text-rose-800 text-sm"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t.deleteLabel || 'Delete'}
+                  </button>
                 </div>
               </div>
             ))
           )}
+        </div>
+      )}
+      {editModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50">
+          <div className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">{t.editPostTitle || 'Edit Remote Post'}</h3>
+              <button
+                onClick={() => setEditModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                ✕
+              </button>
+            </div>
+            {editLoading ? (
+              <div className="py-8 text-center text-slate-500">{t.loading || 'Loading...'}</div>
+            ) : (
+              <div className="mt-4 space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-slate-700">{t.colTitle || 'Title'}</label>
+                  <input
+                    value={editForm.title}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                    placeholder="Post title"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700">{t.colStatus || 'Status'}</label>
+                  <select
+                    value={editForm.status}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, status: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  >
+                    <option value="publish">{t.statusPublish || 'Published'}</option>
+                    <option value="draft">{t.statusDraft || 'Draft'}</option>
+                    {selectedDestination?.platform !== 'shopify' && (
+                      <option value="pending">{t.statusPending || 'Pending'}</option>
+                    )}
+                    {selectedDestination?.platform !== 'shopify' && (
+                      <option value="private">{t.statusPrivate || 'Private'}</option>
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700">{t.colContent || 'Content'}</label>
+                  <textarea
+                    value={editForm.content}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, content: e.target.value }))}
+                    className="mt-1 h-60 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                    placeholder="Post content (HTML supported)"
+                  />
+                </div>
+                {editError && <p className="text-sm text-rose-600">{editError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setEditModalOpen(false)}
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+                  >
+                    {t.cancel || 'Cancel'}
+                  </button>
+                  <button
+                    onClick={handleSaveEdit}
+                    disabled={editSaving}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {editSaving ? (t.saving || 'Saving...') : (t.save || 'Save')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

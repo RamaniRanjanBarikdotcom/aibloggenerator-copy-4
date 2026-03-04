@@ -9,6 +9,9 @@ const envPath = app?.isPackaged
   ? path.join(process.resourcesPath, '.env')
   : path.join(process.cwd(), '.env');
 require('dotenv').config({ path: envPath });
+
+// Reduce GPU-related black screens on some Windows setups.
+app.disableHardwareAcceleration();
 const Store = require('electron-store');
 const FormData = require('form-data');
 const mime = require('mime-types');
@@ -59,6 +62,8 @@ const {
   updateApiUsage,
   getApiUsage,
   upsertRemotePosts,
+  replaceRemotePosts,
+  deleteRemotePost,
   listRemotePosts,
   getRemotePostAnalytics,
   addPublishHistory,
@@ -133,6 +138,23 @@ function normalizeImageGallery(gallery, imageUrl = null) {
     list.unshift(imageUrl);
   }
   return list;
+}
+
+function slugifyFilename(value) {
+  const base = String(value || '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return base || 'image';
+}
+
+function buildImageFilename({ title, blogId, mimeType, originalName }) {
+  const base = slugifyFilename(title || blogId);
+  const extFromMime = mime.extension(mimeType || '') || '';
+  const extFromName = originalName && path.extname(originalName).replace('.', '');
+  const ext = extFromMime || extFromName || 'jpg';
+  return `${base}-${Date.now()}.${ext}`;
 }
 
 function appendImageToGallery(gallery, imageUrl) {
@@ -251,6 +273,28 @@ function verifyShopifyHmac(params, secret) {
   return crypto.timingSafeEqual(digestBuf, hmacBuf);
 }
 
+function buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle }) {
+  const domain = normalizeShopDomain(shopDomain);
+  if (!domain || !blogHandle || !articleHandle) return null;
+  return `https://${domain}/blogs/${blogHandle}/${articleHandle}`;
+}
+
+async function fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion = '2024-01', blogId }) {
+  if (!shopDomain || !accessToken || !blogId) return '';
+  const domain = normalizeShopDomain(shopDomain);
+  const version = (apiVersion || '2024-01').trim();
+  try {
+    const response = await axios.get(`https://${domain}/admin/api/${version}/blogs/${blogId}.json`, {
+      headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
+      timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    });
+    return response.data?.blog?.handle || '';
+  } catch (error) {
+    console.warn('[Shopify] Failed to fetch blog handle:', error?.response?.status || '', error?.message || '');
+    return '';
+  }
+}
+
 async function loadImageBuffer({ imageUrl, localImagePath }) {
   // Prefer local file if present
   if (localImagePath && fs.existsSync(localImagePath)) {
@@ -318,14 +362,20 @@ const PUBLISH_AXIOS_DEFAULTS = {
   },
 };
 
-async function uploadImageToStorage({ blog, imageUrl, localImagePath, storage }) {
+async function uploadImageToStorage({ blog, imageUrl, localImagePath, storage, filenameBase = '' }) {
   if (!storage?.enabled) return null;
   const endpointUrl = ensureValue('Image storage endpoint', storage.endpointUrl);
   const token = String(storage.authToken || '').trim();
   const img = await loadImageBuffer({ imageUrl, localImagePath });
+  const filename = buildImageFilename({
+    title: filenameBase || blog?.title,
+    blogId: blog?.id,
+    mimeType: img.mimeType,
+    originalName: img.filename,
+  });
   const form = new FormData();
   form.append('file', img.buffer, {
-    filename: img.filename || 'blog-image.jpg',
+    filename,
     contentType: img.mimeType || 'image/jpeg',
   });
   if (blog?.id) form.append('blog_id', String(blog.id));
@@ -1064,10 +1114,12 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
     },
   });
 
@@ -1077,6 +1129,31 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/dist/index.html'));
   }
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow?.isDestroyed()) {
+      mainWindow.show();
+    }
+  });
+
+  let reloadAttempts = 0;
+  const maxReloadAttempts = 2;
+
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('[Renderer] Process gone:', details?.reason || 'unknown');
+    if (!mainWindow?.isDestroyed() && reloadAttempts < maxReloadAttempts) {
+      reloadAttempts += 1;
+      mainWindow.reload();
+    }
+  });
+
+  mainWindow.on('unresponsive', () => {
+    console.warn('[Renderer] Window unresponsive, attempting reload...');
+    if (!mainWindow?.isDestroyed() && reloadAttempts < maxReloadAttempts) {
+      reloadAttempts += 1;
+      mainWindow.reload();
+    }
+  });
 }
 
 app.whenReady().then(async () => {
@@ -1730,6 +1807,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
           imageUrl,
           localImagePath,
           storage: userSettings.imageStorage,
+          filenameBase: blog?.title || title,
         });
         if (uploadedUrl) {
           imageUrl = uploadedUrl;
@@ -1878,6 +1956,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
 
       // Upload image to WordPress media (via plugin endpoint) so it's in Media Library
       let mediaUrl = imageUrl;
+      const imageAltText = title || keywords?.[0] || '';
       if (imageAsset) {
         try {
           const uploaded = await uploadImageViaPlugin({
@@ -1886,7 +1965,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
             buffer: imageAsset.buffer,
             filename: imageAsset.filename,
             mimeType: imageAsset.mimeType,
-            altText: title,
+            altText: imageAltText,
           });
           mediaUrl = uploaded.fullUrl || uploaded.url || mediaUrl;
           console.log('[Publish] Image uploaded to WordPress media library:', mediaUrl);
@@ -1915,6 +1994,9 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
         postPayload.featuredImage = mediaUrl;
         console.log('[Publish] Including media library URL as featured image');
       }
+      if (imageAltText) {
+        postPayload.featuredImageAlt = imageAltText;
+      }
 
       // Fallback for servers that cannot download remote URLs:
       // send the image binary directly so WordPress can save it to Media Library.
@@ -1942,6 +2024,9 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       const accessToken = ensureValue('Shopify access token', destination.accessToken);
       const blogId = ensureValue('Shopify blog ID', destination.blogId);
       const apiVersion = (destination.apiVersion || '2024-01').trim();
+      const blogHandle =
+        destination.blogHandle ||
+        (await fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion, blogId }));
 
       let mediaUrl = isPublicHttpUrl(imageUrl) ? imageUrl : null;
       if (!imageStorageUsed && (imageUrl || localImagePath)) {
@@ -1987,20 +2072,27 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
 
       // Add featured image for Shopify (separate from content image)
       if (mediaUrl) {
-        articlePayload.image = { src: mediaUrl };
+        articlePayload.image = {
+          src: mediaUrl,
+          alt: title || '',
+        };
         console.log('[Publish] Including featured image for Shopify article');
       }
 
-      const response = await axios.post(
-        `https://${shopDomain}/admin/api/${apiVersion}/blogs/${blogId}/articles.json`,
-        { article: articlePayload },
-        {
-          timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
-          headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken, 'Content-Type': 'application/json' },
-        }
-      );
-      result = { id: response.data?.article?.id, url: response.data?.article?.url };
-    } else if (platform === 'custom' || platform === 'jtl') {
+        const response = await axios.post(
+          `https://${shopDomain}/admin/api/${apiVersion}/blogs/${blogId}/articles.json`,
+          { article: articlePayload },
+          {
+            timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+            headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken, 'Content-Type': 'application/json' },
+          }
+        );
+        const articleHandle = response.data?.article?.handle || '';
+        const articleUrl =
+          response.data?.article?.url ||
+          buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
+        result = { id: response.data?.article?.id, url: articleUrl };
+      } else if (platform === 'custom' || platform === 'jtl') {
       const endpointUrl = requireHttps(ensureValue('Endpoint URL', destination.endpointUrl));
       const reqHeaders = { ...PUBLISH_AXIOS_DEFAULTS.headers, 'Content-Type': 'application/json' };
       if (destination.authHeaderName && destination.authHeaderValue) {
@@ -2409,12 +2501,13 @@ ipcMain.handle('upload-image-storage', async (event, { blogId = null, title = ''
     if (blogId) {
       blog = await getBlogById(blogId, { userId: currentUser.id, isAdmin: isAdmin() });
     }
-    const uploadedUrl = await uploadImageToStorage({
-      blog: blog || { id: blogId, title },
-      imageUrl,
-      localImagePath,
-      storage: userSettings.imageStorage,
-    });
+      const uploadedUrl = await uploadImageToStorage({
+        blog: blog || { id: blogId, title },
+        imageUrl,
+        localImagePath,
+        storage: userSettings.imageStorage,
+        filenameBase: title || blog?.title || 'blog-image',
+      });
     if (!uploadedUrl) {
       throw new Error('Image storage did not return a URL.');
     }
@@ -2448,12 +2541,13 @@ ipcMain.handle('test-image-storage', async (event, { imageStorage } = {}) => {
     const tinyPng =
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
 
-    const url = await uploadImageToStorage({
-      blog: { title: 'storage-test' },
-      imageUrl: tinyPng,
-      localImagePath: '',
-      storage,
-    });
+      const url = await uploadImageToStorage({
+        blog: { title: 'storage-test' },
+        imageUrl: tinyPng,
+        localImagePath: '',
+        storage,
+        filenameBase: 'storage-test',
+      });
 
     return { success: true, url };
   } catch (error) {
@@ -2551,14 +2645,15 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
     let finalImageUrl = imageResult.imageUrl;
     let finalLocalPath = savedLocalPath;
 
-    try {
-      if (imageStorageEnabled) {
-        const uploadedUrl = await uploadImageToStorage({
-          blog: blogId ? { id: blogId, title: title || topic } : { title: title || topic },
-          imageUrl: imageResult.imageUrl,
-          localImagePath: savedLocalPath,
-          storage: storedSettings.imageStorage,
-        });
+      try {
+        if (imageStorageEnabled) {
+          const uploadedUrl = await uploadImageToStorage({
+            blog: blogId ? { id: blogId, title: title || topic } : { title: title || topic },
+            imageUrl: imageResult.imageUrl,
+            localImagePath: savedLocalPath,
+            storage: storedSettings.imageStorage,
+            filenameBase: title || topic,
+          });
         if (uploadedUrl) {
           finalImageUrl = uploadedUrl;
           finalLocalPath = '';
@@ -3960,6 +4055,103 @@ async function fetchShopifyPosts({ shopDomain, accessToken, apiVersion = '2024-0
   throw new Error('Shopify sync failed after retries');
 }
 
+async function fetchWordpressPostDetail({ destination, postId }) {
+  const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
+  const authHeader = buildWpAuthHeader(destination);
+  const endpoint = `${baseUrl}/wp-json/aiblog/v1/post/${postId}`;
+  const response = await axios.get(endpoint, {
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
+  });
+  return response.data;
+}
+
+async function updateWordpressPost({ destination, postId, title, content, status, excerpt }) {
+  const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
+  const authHeader = buildWpAuthHeader(destination);
+  const endpoint = `${baseUrl}/wp-json/aiblog/v1/post`;
+  const payload = {
+    id: postId,
+    title,
+    content,
+    status,
+    excerpt,
+  };
+  const response = await axios.post(endpoint, payload, {
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
+  });
+  return response.data;
+}
+
+async function deleteWordpressPost({ destination, postId, force = false }) {
+  const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
+  const authHeader = buildWpAuthHeader(destination);
+  const endpoint = `${baseUrl}/wp-json/aiblog/v1/post/${postId}`;
+  const response = await axios.delete(endpoint, {
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
+    params: force ? { force: true } : undefined,
+  });
+  return response.data;
+}
+
+async function fetchShopifyArticleDetail({ shopDomain, accessToken, apiVersion = '2024-01', blogId, articleId }) {
+  const domain = normalizeShopDomain(shopDomain);
+  const version = (apiVersion || '2024-01').trim();
+  const endpoint = `https://${domain}/admin/api/${version}/blogs/${blogId}/articles/${articleId}.json`;
+  const response = await axios.get(endpoint, {
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
+  });
+  return response.data?.article || null;
+}
+
+async function updateShopifyArticle({
+  shopDomain,
+  accessToken,
+  apiVersion = '2024-01',
+  blogId,
+  articleId,
+  title,
+  bodyHtml,
+  summaryHtml,
+  tags,
+  status,
+}) {
+  const domain = normalizeShopDomain(shopDomain);
+  const version = (apiVersion || '2024-01').trim();
+  const endpoint = `https://${domain}/admin/api/${version}/blogs/${blogId}/articles/${articleId}.json`;
+  const articlePayload = {
+    id: articleId,
+    title,
+    body_html: bodyHtml,
+    summary_html: summaryHtml,
+    tags,
+    published: status === 'publish',
+  };
+  const response = await axios.put(
+    endpoint,
+    { article: articlePayload },
+    {
+      timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+      headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken, 'Content-Type': 'application/json' },
+    }
+  );
+  return response.data?.article || null;
+}
+
+async function deleteShopifyArticle({ shopDomain, accessToken, apiVersion = '2024-01', blogId, articleId }) {
+  const domain = normalizeShopDomain(shopDomain);
+  const version = (apiVersion || '2024-01').trim();
+  const endpoint = `https://${domain}/admin/api/${version}/blogs/${blogId}/articles/${articleId}.json`;
+  await axios.delete(endpoint, {
+    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
+  });
+  return { success: true };
+}
+
 // Debug endpoint to test WordPress connection
 ipcMain.handle('test-wordpress-sync', async (event, { destinationId = null } = {}) => {
   try {
@@ -4239,7 +4431,7 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
 
       console.log('[Sync] Received posts:', posts.length);
 
-      await upsertRemotePosts(
+      await replaceRemotePosts(
         posts.map((item) => ({
           id: item.id,
           destination_id: destination.id || null,
@@ -4254,7 +4446,8 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
           time_spent: typeof item.timeSpent === 'number' ? item.timeSpent : null,
           topics: [...(item.tags || []), ...(item.categories || [])],
         })),
-        'wordpress'
+        'wordpress',
+        destination.id || null
       );
 
       console.log('[Sync] Sync complete, saved posts:', posts.length);
@@ -4277,28 +4470,40 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
 
       console.log('[Sync] Received posts:', articles.length);
 
-      await upsertRemotePosts(
-        articles.map((item) => ({
-          id: item.id,
-          destination_id: destination.id || null,
-          title: item.title || 'Untitled',
-          status: item.published_at ? 'publish' : 'draft',
-          url: item.url || item.handle || null,
-          created_at: item.created_at,
-          updated_at: item.updated_at,
-          published_at: item.published_at,
-          views: null,
-          last_viewed: null,
-          time_spent: null,
-          topics: Array.isArray(item.tags)
-            ? item.tags
-            : String(item.tags || '')
-                .split(',')
-                .map((tag) => tag.trim())
-                .filter(Boolean),
-        })),
-        'shopify'
-      );
+        const blogHandle =
+          destination.blogHandle ||
+          (await fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion, blogId }));
+
+        await replaceRemotePosts(
+          articles.map((item) => {
+            const articleHandle = item.handle || '';
+            const candidateUrl = item.url || '';
+            const articleUrl = isPublicHttpUrl(candidateUrl)
+              ? candidateUrl
+              : buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
+            return {
+              id: item.id,
+              destination_id: destination.id || null,
+              title: item.title || 'Untitled',
+              status: item.published_at ? 'publish' : 'draft',
+              url: articleUrl || null,
+              created_at: item.created_at,
+              updated_at: item.updated_at,
+              published_at: item.published_at,
+              views: null,
+              last_viewed: null,
+              time_spent: null,
+              topics: Array.isArray(item.tags)
+                ? item.tags
+                : String(item.tags || '')
+                    .split(',')
+                    .map((tag) => tag.trim())
+                    .filter(Boolean),
+            };
+          }),
+          'shopify',
+          destination.id || null
+        );
 
       console.log('[Sync] Sync complete, saved posts:', articles.length);
       return { success: true, count: articles.length };
@@ -4316,6 +4521,226 @@ ipcMain.handle('get-remote-posts', async (event, { status = null, limit = 200, d
     requirePermission('history');
     const posts = await listRemotePosts({ status, limit, destinationId });
     return { success: true, posts };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }) => {
+  try {
+    requirePermission('history');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!destinationId || !postId) {
+      throw new Error('Destination and post ID are required');
+    }
+    const destination = await getPublishDestination(destinationId, currentUser.id);
+    if (!destination) {
+      throw new Error('Destination not found');
+    }
+
+    if (destination.platform === 'shopify') {
+      const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
+      const accessToken = ensureValue('Shopify access token', destination.accessToken);
+      const blogId = ensureValue('Shopify blog ID', destination.blogId);
+      const apiVersion = (destination.apiVersion || '2024-01').trim();
+      const article = await fetchShopifyArticleDetail({
+        shopDomain,
+        accessToken,
+        apiVersion,
+        blogId,
+        articleId: postId,
+      });
+      if (!article) {
+        throw new Error('Shopify article not found');
+      }
+      const blogHandle =
+        destination.blogHandle ||
+        (await fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion, blogId }));
+      const articleHandle = article.handle || '';
+      const articleUrl =
+        isPublicHttpUrl(article.url || '')
+          ? article.url
+          : buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
+      return {
+        success: true,
+        post: {
+          id: article.id,
+          title: article.title || '',
+          content: article.body_html || '',
+          summary: article.summary_html || '',
+          status: article.published_at ? 'publish' : 'draft',
+          url: articleUrl || null,
+          tags: article.tags || '',
+          provider: 'shopify',
+        },
+      };
+    }
+
+    const data = await fetchWordpressPostDetail({ destination, postId });
+    const content =
+      typeof data?.content === 'string'
+        ? data.content
+        : data?.content?.rendered || '';
+    const summary =
+      typeof data?.excerpt === 'string'
+        ? data.excerpt
+        : data?.excerpt?.rendered || '';
+    return {
+      success: true,
+      post: {
+        id: data.id || postId,
+        title: data.title || data?.title?.rendered || '',
+        content,
+        summary,
+        status: data.status || 'draft',
+        url: data.url || data.link || null,
+        tags: Array.isArray(data.tags) ? data.tags : [],
+        provider: 'wordpress',
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('update-remote-post', async (event, { destinationId, postId, title, content, status }) => {
+  try {
+    requirePermission('history');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!destinationId || !postId) {
+      throw new Error('Destination and post ID are required');
+    }
+    const destination = await getPublishDestination(destinationId, currentUser.id);
+    if (!destination) {
+      throw new Error('Destination not found');
+    }
+
+    if (destination.platform === 'shopify') {
+      const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
+      const accessToken = ensureValue('Shopify access token', destination.accessToken);
+      const blogId = ensureValue('Shopify blog ID', destination.blogId);
+      const apiVersion = (destination.apiVersion || '2024-01').trim();
+      const current = await fetchShopifyArticleDetail({
+        shopDomain,
+        accessToken,
+        apiVersion,
+        blogId,
+        articleId: postId,
+      });
+      if (!current) {
+        throw new Error('Shopify article not found');
+      }
+      const updated = await updateShopifyArticle({
+        shopDomain,
+        accessToken,
+        apiVersion,
+        blogId,
+        articleId: postId,
+        title,
+        bodyHtml: content,
+        summaryHtml: current.summary_html || '',
+        tags: current.tags || '',
+        status,
+      });
+      const blogHandle =
+        destination.blogHandle ||
+        (await fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion, blogId }));
+      const articleHandle = updated?.handle || current.handle || '';
+      const articleUrl =
+        isPublicHttpUrl(updated?.url || '')
+          ? updated.url
+          : buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
+      await upsertRemotePosts(
+        [
+          {
+            id: updated?.id || postId,
+            destination_id: destination.id || null,
+            title: updated?.title || title || 'Untitled',
+            status: updated?.published_at ? 'publish' : 'draft',
+            url: articleUrl || null,
+            created_at: updated?.created_at || current?.created_at,
+            updated_at: updated?.updated_at || new Date().toISOString(),
+            published_at: updated?.published_at || null,
+            views: null,
+            last_viewed: null,
+            time_spent: null,
+            topics: Array.isArray(updated?.tags)
+              ? updated.tags
+              : String(updated?.tags || current?.tags || '')
+                  .split(',')
+                  .map((tag) => tag.trim())
+                  .filter(Boolean),
+          },
+        ],
+        'shopify'
+      );
+      return { success: true, postId };
+    }
+
+    const updated = await updateWordpressPost({
+      destination,
+      postId,
+      title,
+      content,
+      status,
+      excerpt: '',
+    });
+    await upsertRemotePosts(
+      [
+        {
+          id: updated.id || postId,
+          destination_id: destination.id || null,
+          title: updated.title || updated?.title?.rendered || title || 'Untitled',
+          status: updated.status || status || 'draft',
+          url: updated.url || updated.link,
+          created_at: updated.created_at || updated.date,
+          updated_at: updated.updated_at || updated.modified,
+          published_at: updated.status === 'publish' ? (updated.created_at || updated.date) : null,
+          views: typeof updated.views === 'number' ? updated.views : null,
+          last_viewed: updated.last_viewed || null,
+          time_spent: typeof updated.timeSpent === 'number' ? updated.timeSpent : null,
+          topics: [...(updated.tags || []), ...(updated.categories || [])],
+        },
+      ],
+      'wordpress'
+    );
+    return { success: true, postId };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('delete-remote-post', async (event, { destinationId, postId, force = false }) => {
+  try {
+    requirePermission('history');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!destinationId || !postId) {
+      throw new Error('Destination and post ID are required');
+    }
+    const destination = await getPublishDestination(destinationId, currentUser.id);
+    if (!destination) {
+      throw new Error('Destination not found');
+    }
+
+    if (destination.platform === 'shopify') {
+      const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
+      const accessToken = ensureValue('Shopify access token', destination.accessToken);
+      const blogId = ensureValue('Shopify blog ID', destination.blogId);
+      const apiVersion = (destination.apiVersion || '2024-01').trim();
+      await deleteShopifyArticle({ shopDomain, accessToken, apiVersion, blogId, articleId: postId });
+      await deleteRemotePost({ id: postId, provider: 'shopify', destinationId: destination.id || null });
+      return { success: true };
+    }
+
+    await deleteWordpressPost({ destination, postId, force });
+    await deleteRemotePost({ id: postId, provider: 'wordpress', destinationId: destination.id || null });
+    return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }

@@ -390,6 +390,7 @@ add_action('rest_api_init', function () {
             $featured_image_url  = esc_url_raw($req['featuredImage'] ?? '');
             $featured_image_data = $req['featuredImageData'] ?? '';
             $featured_image_name = sanitize_file_name($req['featuredImageName'] ?? '');
+            $featured_image_alt  = sanitize_text_field($req['featuredImageAlt'] ?? ($req['featured_image_alt'] ?? ($req['alt'] ?? '')));
 
             // Custom fields
             $custom_fields = $req['customFields'] ?? null;
@@ -495,8 +496,11 @@ add_action('rest_api_init', function () {
                 if ($attach_id && !is_wp_error($attach_id)) {
                     set_post_thumbnail($post_id, $attach_id);
                     $media_url = wp_get_attachment_url($attach_id);
+                    if (!empty($featured_image_alt)) {
+                        update_post_meta($attach_id, '_wp_attachment_image_alt', $featured_image_alt);
+                    }
                     // Ensure the uploaded media is also used inside blog content.
-                    aiblog_ensure_featured_image_in_content($post_id, $media_url, $title);
+                    aiblog_ensure_featured_image_in_content($post_id, $media_url, $featured_image_alt ?: $title);
                     $featured_image_result = [
                         'attachmentId' => $attach_id,
                         'url'          => $media_url,

@@ -666,6 +666,23 @@ async function upsertRemotePosts(posts, provider = 'wordpress') {
   }
 }
 
+async function replaceRemotePosts(posts, provider = 'wordpress', destinationId = null) {
+  await initDb();
+  if (destinationId) {
+    await db.collection('remote_posts').deleteMany({ provider, destination_id: destinationId });
+  }
+  await upsertRemotePosts(posts, provider);
+}
+
+async function deleteRemotePost({ id, provider = null, destinationId = null }) {
+  await initDb();
+  if (!id) return;
+  const filter = { id };
+  if (provider) filter.provider = provider;
+  if (destinationId) filter.destination_id = destinationId;
+  await db.collection('remote_posts').deleteOne(filter);
+}
+
 /**
  * Get remote posts
  */
@@ -695,14 +712,14 @@ async function listRemotePosts({ status = null, limit = 200, destinationId = nul
     title: doc.title,
     status: doc.status,
     url: doc.url,
-    created_at: doc.created_at?.toISOString(),
-    updated_at: doc.updated_at?.toISOString(),
-    published_at: doc.published_at?.toISOString(),
-    views: doc.views || 0,
-    last_viewed: doc.last_viewed?.toISOString(),
-    timeSpent: doc.time_spent || 0,
+    createdAt: doc.created_at?.toISOString(),
+    updatedAt: doc.updated_at?.toISOString(),
+    publishedAt: doc.published_at?.toISOString(),
+    views: typeof doc.views === 'number' ? doc.views : null,
+    lastViewed: doc.last_viewed?.toISOString(),
+    timeSpent: typeof doc.time_spent === 'number' ? doc.time_spent : null,
     topics: doc.topics || [],
-    synced_at: doc.synced_at?.toISOString(),
+    syncedAt: doc.synced_at?.toISOString(),
   }));
 }
 
@@ -1573,6 +1590,8 @@ module.exports = {
   markNotificationRead,
   clearNotifications,
   upsertRemotePosts,
+  replaceRemotePosts,
+  deleteRemotePost,
   listRemotePosts,
   recordPublishHistory,
   addPublishHistory: recordPublishHistory, // Alias for compatibility

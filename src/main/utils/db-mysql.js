@@ -647,6 +647,30 @@ async function upsertRemotePosts(posts, provider = 'wordpress') {
   }
 }
 
+async function replaceRemotePosts(posts, provider = 'wordpress', destinationId = null) {
+  await initDb();
+  if (destinationId) {
+    await query('DELETE FROM remote_posts WHERE provider = ? AND destination_id = ?', [provider, destinationId]);
+  }
+  await upsertRemotePosts(posts, provider);
+}
+
+async function deleteRemotePost({ id, provider = null, destinationId = null }) {
+  await initDb();
+  if (!id) return;
+  let sql = 'DELETE FROM remote_posts WHERE id = ?';
+  const params = [id];
+  if (provider) {
+    sql += ' AND provider = ?';
+    params.push(provider);
+  }
+  if (destinationId) {
+    sql += ' AND destination_id = ?';
+    params.push(destinationId);
+  }
+  await query(sql, params);
+}
+
 /**
  * Get remote posts
  */
@@ -671,9 +695,20 @@ async function listRemotePosts({ status = null, limit = 200, destinationId = nul
   const results = await query(sql, params);
 
   return results.map((row) => ({
-    ...row,
+    id: row.id,
+    provider: row.provider,
+    destinationId: row.destination_id || null,
+    title: row.title,
+    status: row.status,
+    url: row.url,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    publishedAt: row.published_at,
+    views: typeof row.views === 'number' ? row.views : null,
+    lastViewed: row.last_viewed,
+    timeSpent: typeof row.time_spent === 'number' ? row.time_spent : null,
     topics: JSON.parse(row.topics || '[]'),
-    timeSpent: row.time_spent,
+    syncedAt: row.synced_at,
   }));
 }
 
@@ -938,6 +973,8 @@ module.exports = {
   trackApiUsage,
   getApiUsage,
   upsertRemotePosts,
+  replaceRemotePosts,
+  deleteRemotePost,
   listRemotePosts,
   recordPublishHistory,
   getPublishHistory,

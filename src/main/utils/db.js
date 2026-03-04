@@ -1023,6 +1023,31 @@ async function upsertRemotePosts(posts = [], provider = 'wordpress') {
   persistDb();
 }
 
+async function replaceRemotePosts(posts = [], provider = 'wordpress', destinationId = null) {
+  await initDb();
+  if (destinationId) {
+    db.run('DELETE FROM remote_posts WHERE provider = ? AND destination_id = ?', [provider, destinationId]);
+  }
+  await upsertRemotePosts(posts, provider);
+}
+
+async function deleteRemotePost({ id, provider = null, destinationId = null }) {
+  await initDb();
+  if (!id) return;
+  let query = 'DELETE FROM remote_posts WHERE id = ?';
+  const params = [id];
+  if (provider) {
+    query += ' AND provider = ?';
+    params.push(provider);
+  }
+  if (destinationId) {
+    query += ' AND destination_id = ?';
+    params.push(destinationId);
+  }
+  db.run(query, params);
+  persistDb();
+}
+
 async function listRemotePosts({ status = null, limit = 100, destinationId = null } = {}) {
   await initDb();
   let query = 'SELECT * FROM remote_posts';
@@ -1049,6 +1074,7 @@ async function listRemotePosts({ status = null, limit = 100, destinationId = nul
   return rows.map((row) => ({
     id: row.id,
     provider: row.provider,
+    destinationId: row.destination_id || null,
     title: row.title,
     status: row.status,
     url: row.url,
@@ -1399,6 +1425,8 @@ module.exports = {
   updateApiUsage,
   getApiUsage,
   upsertRemotePosts,
+  replaceRemotePosts,
+  deleteRemotePost,
   listRemotePosts,
   getRemotePostAnalytics,
   addPublishHistory,

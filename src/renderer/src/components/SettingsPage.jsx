@@ -359,6 +359,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     shopDomain: '',
     accessToken: '',
     blogId: '',
+    blogHandle: '',
     apiVersion: '2024-01',
     oauthClientId: '',
     endpointUrl: '',
@@ -397,7 +398,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       const blogs = Array.isArray(result.blogs) ? result.blogs : [];
       setShopifyBlogs(blogs);
       if (!newDestination.blogId && blogs.length === 1) {
-        setNewDestination((prev) => ({ ...prev, blogId: String(blogs[0].id) }));
+        setNewDestination((prev) => ({
+          ...prev,
+          blogId: String(blogs[0].id),
+          blogHandle: blogs[0].handle || prev.blogHandle,
+        }));
       }
     } catch (error) {
       setShopifyBlogs([]);
@@ -510,6 +515,16 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     }));
   };
 
+  const buildShopifyOauthPayload = (clients) =>
+    Array.isArray(clients)
+      ? clients.map((client) => ({
+          id: client.id,
+          name: client.name || '',
+          clientId: client.clientId || '',
+          clientSecret: client.clientSecret || '',
+        }))
+      : [];
+
   const buildSettingsPayload = () => {
     const nextApiKeys = Array.isArray(apiKeys) ? [...apiKeys] : [];
     const upsertKey = (providerId, keyValue, label) => {
@@ -532,14 +547,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     };
     upsertKey('tavily', tavilyKey, 'Tavily Key');
     upsertKey('perplexity', perplexityKey, 'Perplexity Key');
-    const oauthClientsPayload = Array.isArray(shopifyOauthClients)
-      ? shopifyOauthClients.map((client) => ({
-          id: client.id,
-          name: client.name || '',
-          clientId: client.clientId || '',
-          clientSecret: client.clientSecret || '',
-        }))
-      : [];
+    const oauthClientsPayload = buildShopifyOauthPayload(shopifyOauthClients);
     const payload = {
       aiProvider,
       imageProvider,
@@ -666,10 +674,10 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         setImageStorageEndpoint(storage.endpointUrl || '');
         setImageStorageToken(storage.authToken || '');
         const payloadForFingerprint = {
-        aiProvider: settings.aiProvider || 'openai',
-        imageProvider: settings.imageProvider || settings.aiProvider || 'openai',
-        aiModel: settings.aiModel || 'gpt-4o',
-        imageModel: settings.imageModel || 'dall-e-3',
+          aiProvider: settings.aiProvider || 'openai',
+          imageProvider: settings.imageProvider || settings.aiProvider || 'openai',
+          aiModel: settings.aiModel || 'gpt-4o',
+          imageModel: settings.imageModel || 'dall-e-3',
         maxTokens:
           settings.maxTokens === null || settings.maxTokens === undefined
             ? null
@@ -684,7 +692,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
           promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
           publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
-          shopifyOauthClients: oauthClients,
+          shopifyOauthClients: buildShopifyOauthPayload(oauthClients),
           imageStorage: {
             enabled: storage.enabled === true,
             endpointUrl: storage.endpointUrl || '',
@@ -793,23 +801,24 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   };
 
   const resetNewDestination = () => {
-    setNewDestination({
-      name: '',
-      platform: 'wordpress',
-      baseUrl: '',
-      apiToken: '',
-      username: '',
-      appPassword: '',
-      shopDomain: '',
-      accessToken: '',
-      blogId: '',
-      apiVersion: '2024-01',
-      oauthClientId: '',
-      endpointUrl: '',
-      authHeaderName: '',
-      authHeaderValue: '',
-      extraPayloadJson: '',
-    });
+      setNewDestination({
+        name: '',
+        platform: 'wordpress',
+        baseUrl: '',
+        apiToken: '',
+        username: '',
+        appPassword: '',
+        shopDomain: '',
+        accessToken: '',
+        blogId: '',
+        blogHandle: '',
+        apiVersion: '2024-01',
+        oauthClientId: '',
+        endpointUrl: '',
+        authHeaderName: '',
+        authHeaderValue: '',
+        extraPayloadJson: '',
+      });
   };
 
   const handleAddDestination = () => {
@@ -864,6 +873,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
           shopDomain: newDestination.shopDomain.trim(),
           accessToken: newDestination.accessToken.trim(),
           blogId: newDestination.blogId.trim(),
+          blogHandle: newDestination.blogHandle?.trim() || '',
           apiVersion: newDestination.apiVersion.trim() || '2024-01',
           oauthClientId: newDestination.oauthClientId || '',
           endpointUrl: newDestination.endpointUrl.trim(),
@@ -1918,14 +1928,22 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                     {shopifyBlogsError && (
                       <p className="mt-1 text-xs text-rose-600">{shopifyBlogsError}</p>
                     )}
-                    {shopifyBlogs.length > 0 && (
-                      <select
-                        value={newDestination.blogId}
-                        onChange={(event) =>
-                          setNewDestination((prev) => ({ ...prev, blogId: event.target.value }))
-                        }
-                        className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                      >
+                      {shopifyBlogs.length > 0 && (
+                        <select
+                          value={newDestination.blogId}
+                          onChange={(event) => {
+                            const selectedId = event.target.value;
+                            const selectedBlog = shopifyBlogs.find(
+                              (blog) => String(blog.id) === String(selectedId)
+                            );
+                            setNewDestination((prev) => ({
+                              ...prev,
+                              blogId: selectedId,
+                              blogHandle: selectedBlog?.handle || prev.blogHandle,
+                            }));
+                          }}
+                          className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        >
                         <option value="">Select a blog</option>
                         {shopifyBlogs.map((blog) => (
                           <option key={blog.id} value={String(blog.id)}>
