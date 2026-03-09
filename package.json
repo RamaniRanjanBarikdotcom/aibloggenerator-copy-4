@@ -1,7 +1,7 @@
 {
-  "name": "ai-blog-generator",
+  "name": "Blog-generator",
   "version": "1.0.0",
-  "description": "AI-powered blog generator with OpenAI GPT and DALL-E",
+  "description": "AI-powered blog generator built by List and Sell Ecomerce team",
   "main": "src/main/index.js",
   "private": true,
   "scripts": {
@@ -22,8 +22,8 @@
     "build:installer": "npm run build && electron-builder --win nsis",
     "build:portable": "npm run build && electron-builder --win portable"
   },
-  "keywords": ["blog", "ai", "generator", "openai"],
-  "author": "Your Name",
+  "keywords": ["blog", "ai", "generator", "List and Sell", "ecommerce"],
+  "author": "List and Sell Ecomerce Team",
   "license": "MIT",
   "dependencies": {
     "axios": "^1.7.9",
@@ -56,8 +56,9 @@
     "wait-on": "^8.0.2"
   },
   "build": {
-    "appId": "com.yourbrand.aibloggen",
-    "productName": "AI Blog Generator",
+    "appId": "com.listandsell.aibloggen",
+    "productName": "Blog Generator",
+    "copyright": "Copyright © 2026 List and Sell Ecomerce Team",
     "asar": true,
     "directories": {
       "output": "dist",
@@ -91,8 +92,8 @@
       "uninstallerIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AI Blog Generator",
-      "uninstallDisplayName": "AI Blog Generator"
+      "shortcutName": "Blog Generator",
+      "uninstallDisplayName": "Blog Generator"
     }
   }
 }
