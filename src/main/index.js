@@ -158,6 +158,20 @@ function buildImageFilename({ title, blogId, mimeType, originalName }) {
   return `${base}-${Date.now()}.${ext}`;
 }
 
+function isStorageImageUrl(imageUrl, storage) {
+  if (!imageUrl) return false;
+  const urlString = String(imageUrl);
+  if (urlString.includes('/blog-bild/')) return true;
+  if (!storage?.endpointUrl) return false;
+  try {
+    const imgUrl = new URL(urlString);
+    const endpointUrl = new URL(storage.endpointUrl);
+    return imgUrl.origin === endpointUrl.origin && imgUrl.pathname.includes('/blog-bild/');
+  } catch (error) {
+    return false;
+  }
+}
+
 function appendImageToGallery(gallery, imageUrl) {
   const list = normalizeImageGallery(gallery);
   if (imageUrl && !list.includes(imageUrl)) {
@@ -1827,18 +1841,22 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       });
       const userSettings = rawSettings ? JSON.parse(rawSettings) : {};
       if (userSettings.imageStorage?.enabled && (imageUrl || localImagePath)) {
-        const uploadedUrl = await uploadImageToStorage({
-          blog,
-          imageUrl,
-          localImagePath,
-          storage: userSettings.imageStorage,
-          filenameBase: blog?.title || title,
-        });
-        if (uploadedUrl) {
-          imageUrl = uploadedUrl;
-          localImagePath = null;
+        if (isStorageImageUrl(imageUrl, userSettings.imageStorage)) {
           imageStorageUsed = true;
-          console.log('[Publish] Image uploaded to external storage:', uploadedUrl);
+        } else {
+          const uploadedUrl = await uploadImageToStorage({
+            blog,
+            imageUrl,
+            localImagePath,
+            storage: userSettings.imageStorage,
+            filenameBase: blog?.title || title,
+          });
+          if (uploadedUrl) {
+            imageUrl = uploadedUrl;
+            localImagePath = null;
+            imageStorageUsed = true;
+            console.log('[Publish] Image uploaded to external storage:', uploadedUrl);
+          }
         }
       }
     } catch (err) {
