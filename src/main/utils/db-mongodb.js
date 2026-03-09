@@ -1,4 +1,5 @@
 const { MongoClient, ObjectId } = require('mongodb');
+const dns = require('node:dns');
 
 let client;
 let db;
@@ -94,6 +95,29 @@ function buildIdFilter(id) {
   return { _id: { $in: candidates } };
 }
 
+function configureDns() {
+  const rawServers = process.env.MONGODB_DNS_SERVERS;
+  if (rawServers) {
+    const servers = rawServers
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (servers.length > 0) {
+      dns.setServers(servers);
+      console.log('[MongoDB] DNS override:', servers.join(', '));
+    }
+  }
+
+  if (process.env.MONGODB_DNS_IPV4FIRST === 'true' && dns.setDefaultResultOrder) {
+    try {
+      dns.setDefaultResultOrder('ipv4first');
+      console.log('[MongoDB] DNS result order set to ipv4first');
+    } catch (error) {
+      console.warn('[MongoDB] Failed to set DNS result order:', error.message);
+    }
+  }
+}
+
 /**
  * Set the electron-store instance for accessing persisted MongoDB config
  * This allows the database to work in built executables where .env is not available
@@ -146,6 +170,8 @@ async function initDb() {
     if (!dbName) {
       dbName = 'aiblog_generator';
     }
+
+    configureDns();
 
     console.log('[MongoDB] Connecting to database...');
     console.log('[MongoDB] Database name:', dbName);

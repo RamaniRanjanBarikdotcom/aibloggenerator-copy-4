@@ -26,7 +26,7 @@ function LoginPage({ t, onLogin }) {
         rawError.includes('TLSV1')
       ) {
         setError(
-          ' connect to database. Please check your internet connection and ensure MongoDB Atlas cluster is active and your IP is whitelisted.'
+          'Cannot connect to database. Please check your internet connection and ensure MongoDB Atlas is active and your IP is whitelisted.'
         );
       } else {
         setError(rawError);

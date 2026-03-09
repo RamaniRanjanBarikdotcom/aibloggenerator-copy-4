@@ -49,7 +49,7 @@ function AdminSetupPage({ t, onSetup }) {
     if (!result.success) {
       const rawError = result.error || 'Setup failed';
       if (rawError.includes('Database connection failed') || rawError.includes('SSL') || rawError.includes('TLSV1')) {
-        setError('Cannot connect to database. Please check your internet connection and ensure MongoDB Atlas cluster is active and your IP is whitelisted.');
+        setError('Cannot connect to database. Please check your internet connection and ensure MongoDB Atlas is active and your IP is whitelisted.');
       } else {
         setError(rawError);
       }
