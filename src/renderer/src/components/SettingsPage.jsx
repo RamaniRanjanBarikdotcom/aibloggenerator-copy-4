@@ -1,5 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Save, Eye, EyeOff, Plus, Trash2, CheckCircle, RefreshCw, ChevronDown } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+} from 'recharts';
+import { DateRange } from 'react-date-range';
+import { format as formatDate } from 'date-fns';
+import 'react-date-range/dist/styles.css';
+import 'react-date-range/dist/theme/default.css';
 
 const PROVIDERS = [
   {
@@ -328,6 +342,26 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [publishTestStatus, setPublishTestStatus] = useState({});
   const [promptTemplates, setPromptTemplates] = useState(DEFAULT_PROMPTS);
   const [usage, setUsage] = useState({ totalCost: 0, totalTokens: 0, blogsGenerated: 0 });
+  const [usageSearch, setUsageSearch] = useState('');
+  const [usageDateRange, setUsageDateRange] = useState({
+    startDate: new Date(),
+    endDate: new Date(),
+    key: 'selection',
+  });
+  const [usageDateRangeEnabled, setUsageDateRangeEnabled] = useState(false);
+  const [usageDatePickerOpen, setUsageDatePickerOpen] = useState(false);
+  const usageDatePickerRef = useRef(null);
+  const usageDateButtonRef = useRef(null);
+  const [imageTrend, setImageTrend] = useState([]);
+  const [usageTrend, setUsageTrend] = useState([]);
+  const [usageLogStats, setUsageLogStats] = useState({
+    total: 0,
+    errors: 0,
+    totalTokens: 0,
+    totalCost: 0,
+    imageCount: 0,
+  });
+  const [usageLogs, setUsageLogs] = useState([]);
   const [providerCatalog, setProviderCatalog] = useState({});
   const [providerCatalogStatus, setProviderCatalogStatus] = useState({});
   const [providerCatalogError, setProviderCatalogError] = useState({});
@@ -587,6 +621,30 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   }, []);
 
   useEffect(() => {
+    if (activeTab === 'usage') {
+      loadUsageMonitoring();
+    }
+  }, [activeTab, usageSearch, usageDateRange, usageDateRangeEnabled]);
+
+  useEffect(() => {
+    if (activeTab === 'usage') {
+      loadImageMonitoring();
+    }
+  }, [activeTab, usageSearch, usageDateRange, usageDateRangeEnabled]);
+
+  useEffect(() => {
+    if (!usageDatePickerOpen) return;
+    const handleClick = (event) => {
+      if (usageDatePickerRef.current?.contains(event.target)) return;
+      if (usageDateButtonRef.current?.contains(event.target)) return;
+      setUsageDatePickerOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [usageDatePickerOpen]);
+
+
+  useEffect(() => {
     if (isAdmin) {
       loadUsers();
     }
@@ -712,6 +770,57 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     const result = await window.electronAPI.getApiUsage();
     if (result.success) {
       setUsage(result.usage || { totalCost: 0, totalTokens: 0, blogsGenerated: 0 });
+    }
+  };
+
+  const formatDateInput = (value) => {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return formatDate(date, 'yyyy-MM-dd');
+  };
+
+  const formatDateLabel = (value) => formatDateInput(value) || '--';
+
+  const loadUsageMonitoring = async () => {
+    const from = usageDateRangeEnabled ? formatDateInput(usageDateRange.startDate) : null;
+    const to = usageDateRangeEnabled ? formatDateInput(usageDateRange.endDate) : null;
+    const payload = {
+      search: usageSearch || null,
+      dateFrom: from,
+      dateTo: to,
+    };
+    const [statsResult, trendResult, logsResult] = await Promise.all([
+      window.electronAPI.getLogsStats(payload),
+      window.electronAPI.getLogsTrend(payload),
+      window.electronAPI.getLogs({ ...payload, limit: 200, offset: 0 }),
+    ]);
+    if (statsResult?.success) {
+      setUsageLogStats(statsResult.stats || usageLogStats);
+    }
+    if (trendResult?.success) {
+      setUsageTrend(trendResult.trend || []);
+    }
+    if (logsResult?.success) {
+      const filtered = (logsResult.logs || []).filter(
+        (log) => log.category === 'generation' || log.category === 'image'
+      );
+      setUsageLogs(filtered);
+    }
+  };
+
+  const loadImageMonitoring = async () => {
+    const from = usageDateRangeEnabled ? formatDateInput(usageDateRange.startDate) : null;
+    const to = usageDateRangeEnabled ? formatDateInput(usageDateRange.endDate) : null;
+    const payload = {
+      search: usageSearch || null,
+      dateFrom: from,
+      dateTo: to,
+      category: 'image',
+    };
+    const result = await window.electronAPI.getLogsTrend(payload);
+    if (result?.success) {
+      setImageTrend(result.trend || []);
     }
   };
 
@@ -2328,22 +2437,217 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         )}
 
         {activeTab === 'usage' && (
-          <div className="bg-white rounded-xl shadow-sm p-8 space-y-4">
-            <h3 className="text-xl font-semibold text-slate-900">{t.usageTitle}</h3>
+          <div className="bg-white rounded-xl shadow-sm p-8 space-y-4 dark:bg-slate-900">
+            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{t.usageTitle}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="rounded-lg bg-slate-50 p-4">
-                <p className="text-xs text-slate-500">{t.usageBlogs}</p>
-                <p className="text-lg font-semibold text-slate-800">{usage.blogsGenerated || 0}</p>
+              <div className="rounded-lg bg-slate-50 p-4 dark:bg-slate-800">
+                <p className="text-xs text-slate-500 dark:text-slate-400">{t.usageBlogs}</p>
+                <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">{usage.blogsGenerated || 0}</p>
               </div>
-              <div className="rounded-lg bg-slate-50 p-4">
-                <p className="text-xs text-slate-500">{t.usageTokens}</p>
-                <p className="text-lg font-semibold text-slate-800">{usage.totalTokens || 0}</p>
+              <div className="rounded-lg bg-slate-50 p-4 dark:bg-slate-800">
+                <p className="text-xs text-slate-500 dark:text-slate-400">{t.usageTokens}</p>
+                <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">{usage.totalTokens || 0}</p>
               </div>
-              <div className="rounded-lg bg-slate-50 p-4">
-                <p className="text-xs text-slate-500">{t.usageCost}</p>
-                <p className="text-lg font-semibold text-slate-800">
+              <div className="rounded-lg bg-slate-50 p-4 dark:bg-slate-800">
+                <p className="text-xs text-slate-500 dark:text-slate-400">{t.usageCost}</p>
+                <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">
                   ${(usage.totalCost || 0).toFixed(2)}
                 </p>
+              </div>
+            </div>
+
+            <div className="mt-4 border border-slate-100 rounded-lg p-4 bg-slate-50/50 space-y-4 dark:border-slate-700 dark:bg-slate-900/40">
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="text"
+                  value={usageSearch}
+                  onChange={(event) => setUsageSearch(event.target.value)}
+                  placeholder={t.logsSearchPlaceholder || 'Search by blog title or message'}
+                  className="px-3 py-2 border border-slate-200 rounded-lg text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+                />
+                <div className="relative">
+                  <button
+                    ref={usageDateButtonRef}
+                    type="button"
+                    onClick={() => setUsageDatePickerOpen((prev) => !prev)}
+                    className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-700 bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  >
+                    {usageDateRangeEnabled
+                      ? `${formatDateLabel(usageDateRange.startDate)} - ${formatDateLabel(usageDateRange.endDate)}`
+                      : t.logsAllDatesLabel || 'All dates'}
+                  </button>
+                  {usageDatePickerOpen && (
+                    <div
+                      ref={usageDatePickerRef}
+                      className="absolute z-30 mt-2 rounded-lg border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+                    >
+                      <DateRange
+                        editableDateInputs
+                        onChange={(item) => {
+                          setUsageDateRange(item.selection);
+                          setUsageDateRangeEnabled(true);
+                        }}
+                        moveRangeOnFirstSelection={false}
+                        ranges={[usageDateRange]}
+                        months={1}
+                        direction="horizontal"
+                        showDateDisplay={false}
+                      />
+                      <div className="flex items-center justify-between px-2 pb-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUsageDateRangeEnabled(false);
+                            setUsageDatePickerOpen(false);
+                          }}
+                          className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        >
+                          {t.logsAllDatesLabel || 'All dates'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setUsageDatePickerOpen(false)}
+                          className="px-3 py-1 rounded-md bg-slate-900 text-white text-xs dark:bg-blue-600"
+                        >
+                          {t.doneLabel || 'Done'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={loadUsageMonitoring}
+                  className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+                >
+                  {t.logsRefresh}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="rounded-lg bg-white p-4 border border-slate-100 dark:border-slate-700 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t.logsTokens || 'Tokens (filtered)'}</p>
+                  <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">{usageLogStats.totalTokens || 0}</p>
+                </div>
+                <div className="rounded-lg bg-white p-4 border border-slate-100 dark:border-slate-700 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t.logsCost || 'Cost (filtered)'}</p>
+                  <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+                    ${(usageLogStats.totalCost || 0).toFixed(2)}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-white p-4 border border-slate-100 dark:border-slate-700 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t.logsImagesGenerated || 'Images generated'}</p>
+                  <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">{usageLogStats.imageCount || 0}</p>
+                </div>
+              </div>
+
+              <div className="border border-slate-100 rounded-lg p-4 bg-white dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t.logsMonitoringTitle || 'Monitoring'}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t.logsMonitoringSubtitle || 'Daily tokens and cost'}</p>
+                </div>
+                {usageTrend.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-6 text-center dark:text-slate-400">{t.logsEmpty || 'No logs yet'}</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <LineChart data={usageTrend}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#64748b" />
+                      <YAxis yAxisId="left" tick={{ fontSize: 12 }} stroke="#64748b" />
+                      <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} stroke="#64748b" />
+                      <Tooltip contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }} />
+                      <Legend />
+                      <Line yAxisId="left" type="monotone" dataKey="totalTokens" stroke="#2563eb" name="Tokens" />
+                      <Line yAxisId="right" type="monotone" dataKey="totalCost" stroke="#10b981" name="Cost" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              <div className="border border-slate-100 rounded-lg p-4 bg-white dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    {t.imageMonitoringTitle || 'Image monitoring'}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {t.imageMonitoringSubtitle || 'Daily images generated'}
+                  </p>
+                </div>
+                {imageTrend.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-6 text-center dark:text-slate-400">{t.logsEmpty || 'No logs yet'}</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={imageTrend}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#64748b" />
+                      <YAxis tick={{ fontSize: 12 }} stroke="#64748b" allowDecimals={false} />
+                      <Tooltip contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }} />
+                      <Legend />
+                      <Line type="monotone" dataKey="imageCount" stroke="#f97316" name="Images" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              <div className="border border-slate-100 rounded-lg bg-white dark:border-slate-700 dark:bg-slate-900">
+                <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    {t.usageDetailTitle || 'Usage details'}
+                  </p>
+                </div>
+                {usageLogs.length === 0 ? (
+                  <p className="text-sm text-slate-500 px-4 py-6 dark:text-slate-400">
+                    {t.logsEmpty || 'No logs yet'}
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <div className="hidden md:grid grid-cols-12 gap-3 px-4 py-2 text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      <span className="col-span-2">{t.logsTypeLabel || 'Type'}</span>
+                      <span className="col-span-5">{t.logsTitleLabel || 'Title'}</span>
+                      <span className="col-span-1">{t.logsTokens || 'Tokens'}</span>
+                      <span className="col-span-1">{t.logsCost || 'Cost'}</span>
+                      <span className="col-span-2">{t.logsBlogId || 'Blog ID'}</span>
+                      <span className="col-span-1">{t.logsTimeLabel || 'Time'}</span>
+                    </div>
+                    {usageLogs.map((log) => {
+                      const categoryLabel = log.category || 'log';
+                      const timeLabel = log.timestamp
+                        ? new Date(log.timestamp).toLocaleString()
+                        : '';
+                      const tokenValue =
+                        typeof log.tokensUsed === 'number' ? log.tokensUsed : '-';
+                      const costValue =
+                        typeof log.cost === 'number' ? `$${log.cost.toFixed(4)}` : '-';
+                      return (
+                        <div
+                          key={log.id}
+                          className="grid grid-cols-1 md:grid-cols-12 gap-3 px-4 py-3 text-sm"
+                        >
+                          <div className="md:col-span-2">
+                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-200">
+                              {categoryLabel}
+                            </span>
+                          </div>
+                          <div className="md:col-span-5 text-slate-800 dark:text-slate-100">
+                            {log.message || '-'}
+                          </div>
+                          <div className="md:col-span-1 text-slate-500 dark:text-slate-400">
+                            {tokenValue}
+                          </div>
+                          <div className="md:col-span-1 text-slate-500 dark:text-slate-400">
+                            {costValue}
+                          </div>
+                          <div className="md:col-span-2 text-slate-500 dark:text-slate-400 break-all">
+                            {log.blogId || '-'}
+                          </div>
+                          <div className="md:col-span-1 text-slate-400 dark:text-slate-500">
+                            {timeLabel}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>

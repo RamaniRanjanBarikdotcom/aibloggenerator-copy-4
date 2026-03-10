@@ -2,6 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Dark mode overrides for react-date-range calendar */
+.dark .rdrCalendarWrapper {
+  background-color: #0f172a;
+  color: #e2e8f0;
+}
+.dark .rdrMonth {
+  background-color: #0f172a;
+}
+.dark .rdrMonthAndYearPickers select {
+  color: #e2e8f0;
+  background-color: #0b1220;
+}
+.dark .rdrWeekDay {
+  color: #94a3b8;
+}
+.dark .rdrDayNumber span {
+  color: #e2e8f0;
+}
+.dark .rdrDayPassive .rdrDayNumber span {
+  color: #475569;
+}
+.dark .rdrDayDisabled .rdrDayNumber span {
+  color: #334155;
+}
+.dark .rdrNextPrevButton {
+  background-color: #1e293b;
+}
+.dark .rdrInRange,
+.dark .rdrStartEdge,
+.dark .rdrEndEdge {
+  background-color: #2563eb;
+}
+.dark .rdrDayToday .rdrDayNumber span:after {
+  background: #38bdf8;
+}
+
 :root {
   --color-ink: #0f172a;
   --color-surface: #ffffff;

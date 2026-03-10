@@ -5,9 +5,13 @@ function LogsPage({ t }) {
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const loadLogs = async () => {
-    const result = await window.electronAPI.getLogs({ level: level || null, category: category || null });
+    const result = await window.electronAPI.getLogs({
+      level: level || null,
+      category: category || null,
+    });
     if (result.success) {
       setLogs(result.logs || []);
     }
@@ -78,13 +82,16 @@ function LogsPage({ t }) {
             className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
           />
           <button
-            onClick={loadLogs}
+            onClick={() => {
+              loadLogs();
+              loadStats();
+            }}
             className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm"
           >
             {t.logsRefresh}
           </button>
           <button
-            onClick={handleClear}
+            onClick={() => setShowClearConfirm(true)}
             className="px-4 py-2 rounded-lg border border-slate-200 text-sm"
           >
             {t.logsClear}
@@ -102,6 +109,17 @@ function LogsPage({ t }) {
                   <p className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</p>
                 </div>
                 <p className="text-slate-600">{log.message}</p>
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
+                  {typeof log.tokensUsed === 'number' && (
+                    <span>{t.logsTokens || 'Tokens'}: {log.tokensUsed}</span>
+                  )}
+                  {typeof log.cost === 'number' && (
+                    <span>{t.logsCost || 'Cost'}: ${log.cost.toFixed(4)}</span>
+                  )}
+                  {log.blogId && (
+                    <span>{t.logsBlogId || 'Blog ID'}: {log.blogId}</span>
+                  )}
+                </div>
                 {log.details && (
                   <pre className="mt-2 text-xs text-slate-500 whitespace-pre-wrap">{log.details}</pre>
                 )}
@@ -110,6 +128,49 @@ function LogsPage({ t }) {
           )}
         </div>
       </div>
+
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h4 className="text-lg font-semibold text-slate-900">
+                  {t.logsClearConfirmTitle || 'Clear logs?'}
+                </h4>
+                <p className="text-sm text-slate-500 mt-1">
+                  {t.logsClearConfirmBody || 'This will permanently delete all log entries.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="px-4 py-2 rounded-lg border border-slate-200 text-sm"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleClear();
+                  setShowClearConfirm(false);
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700"
+              >
+                {t.logsClearConfirmAction || 'Clear logs'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

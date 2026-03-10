@@ -15,6 +15,7 @@ app.disableHardwareAcceleration();
 const Store = require('electron-store');
 const FormData = require('form-data');
 const mime = require('mime-types');
+const { encryptForStore, decryptFromStore } = require('./utils/secure-store');
 const {
   chatCompletion,
   generateImage,
@@ -54,6 +55,7 @@ const {
   addLog,
   listLogs,
   getLogStats,
+  getLogTrend,
   clearLogs,
   addNotification,
   listNotifications,
@@ -89,6 +91,21 @@ const store = new Store({
 // Pass store instance to database module so it can access MongoDB credentials
 // This is crucial for built executables where .env file is not available
 setStore(store);
+
+function seedMongoConfigFromEnv() {
+  if (!app.isPackaged) return;
+  const storedUri = store.get('mongodb_uri');
+  if (storedUri) return;
+  if (process.env.MONGODB_URI) {
+    store.set('mongodb_uri', encryptForStore(process.env.MONGODB_URI));
+    if (process.env.MONGODB_DB_NAME) {
+      store.set('mongodb_db_name', encryptForStore(process.env.MONGODB_DB_NAME));
+    }
+    console.log('[MongoDB] Seeded encrypted config from packaged .env');
+  }
+}
+
+seedMongoConfigFromEnv();
 
 let mainWindow;
 let currentUser = null;
@@ -1408,9 +1425,9 @@ ipcMain.handle('save-mongodb-config', async (event, { uri, dbName }) => {
       throw new Error('Database name is required');
     }
 
-    // Save to electron-store (persists across restarts and in built .exe)
-    store.set('mongodb_uri', uri.trim());
-    store.set('mongodb_db_name', dbName.trim());
+    // Save encrypted at rest
+    store.set('mongodb_uri', encryptForStore(uri.trim()));
+    store.set('mongodb_db_name', encryptForStore(dbName.trim()));
 
     console.log('[IPC] MongoDB config saved successfully');
     return { success: true, message: 'MongoDB configuration saved successfully' };
@@ -1423,8 +1440,30 @@ ipcMain.handle('save-mongodb-config', async (event, { uri, dbName }) => {
 ipcMain.handle('get-mongodb-config', async () => {
   try {
     console.log('[IPC] get-mongodb-config called');
-    const uri = store.get('mongodb_uri') || process.env.MONGODB_URI || '';
-    const dbName = store.get('mongodb_db_name') || process.env.MONGODB_DB_NAME || 'aiblog_generator';
+    let uri = '';
+    let dbName = '';
+    const storedUri = store.get('mongodb_uri');
+    const storedDbName = store.get('mongodb_db_name');
+
+    const isEncryptedValue = (value) =>
+      typeof value === 'string' && (value.startsWith('ss:') || value.startsWith('enc:'));
+
+    if (storedUri && !isEncryptedValue(storedUri)) {
+      store.set('mongodb_uri', encryptForStore(storedUri));
+      if (storedDbName) {
+        store.set('mongodb_db_name', encryptForStore(storedDbName));
+      }
+    }
+
+    if (storedUri) {
+      uri = decryptFromStore(storedUri);
+      dbName = storedDbName ? decryptFromStore(storedDbName) : '';
+    }
+
+    if (!uri) {
+      uri = process.env.MONGODB_URI || '';
+      dbName = process.env.MONGODB_DB_NAME || 'aiblog_generator';
+    }
 
     // Return masked URI for security (don't expose password in frontend)
     const maskedUri = uri ? uri.replace(/:([^:@]+)@/, ':****@') : '';
@@ -1451,8 +1490,8 @@ ipcMain.handle('test-mongodb-connection', async (event, { uri, dbName }) => {
     const originalUri = store.get('mongodb_uri');
     const originalDbName = store.get('mongodb_db_name');
 
-    if (uri) store.set('mongodb_uri', uri);
-    if (dbName) store.set('mongodb_db_name', dbName);
+    if (uri) store.set('mongodb_uri', encryptForStore(uri));
+    if (dbName) store.set('mongodb_db_name', encryptForStore(dbName));
 
     try {
       // Try to initialize database with new config
@@ -2747,7 +2786,16 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       level: 'info',
       category: 'image',
       message: `Generated blog image${title ? ` for "${title}"` : ''}`,
-      details: { cost: imageResult.cost || 0 },
+      details: {
+        cost: imageResult.cost || 0,
+        tokensUsed: 0,
+        blogId: blogId || null,
+        blogTitle: title || topic || '',
+        imagesGenerated: 1,
+      },
+      blogId: blogId || null,
+      tokensUsed: 0,
+      cost: imageResult.cost || 0,
       userId: currentUser.id,
     });
 
@@ -3406,7 +3454,15 @@ ipcMain.handle(
       level: 'info',
       category: 'generation',
       message: `Completed generation for "${result.title}"`,
-      details: { cost: estimatedCost },
+      details: {
+        cost: estimatedCost,
+        tokensUsed: usage.promptTokens + usage.completionTokens,
+        blogId: result.id || null,
+        blogTitle: result.title,
+      },
+      blogId: result.id || null,
+      tokensUsed: usage.promptTokens + usage.completionTokens,
+      cost: estimatedCost,
       userId: currentUser.id,
     });
 
@@ -3736,7 +3792,9 @@ ipcMain.handle('get-activities', async () => {
   }
 });
 
-ipcMain.handle('get-logs', async (event, { limit = 100, offset = 0, level = null, category = null } = {}) => {
+ipcMain.handle(
+  'get-logs',
+  async (event, { limit = 100, offset = 0, level = null, category = null, dateFrom = null, dateTo = null, search = null } = {}) => {
   try {
     if (!currentUser) {
       throw new Error('Not authenticated');
@@ -3748,6 +3806,9 @@ ipcMain.handle('get-logs', async (event, { limit = 100, offset = 0, level = null
       offset,
       level,
       category,
+      dateFrom,
+      dateTo,
+      search,
     });
     return { success: true, logs };
   } catch (error) {
@@ -3755,13 +3816,40 @@ ipcMain.handle('get-logs', async (event, { limit = 100, offset = 0, level = null
   }
 });
 
-ipcMain.handle('get-logs-stats', async () => {
+ipcMain.handle('get-logs-stats', async (event, { dateFrom = null, dateTo = null, search = null } = {}) => {
   try {
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    const stats = await getLogStats({ userId: currentUser.id, isAdmin: isAdmin() });
+    const stats = await getLogStats({
+      userId: currentUser.id,
+      isAdmin: isAdmin(),
+      dateFrom,
+      dateTo,
+      search,
+    });
     return { success: true, stats };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle(
+  'get-logs-trend',
+  async (event, { dateFrom = null, dateTo = null, search = null, category = null } = {}) => {
+  try {
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const trend = await getLogTrend({
+      userId: currentUser.id,
+      isAdmin: isAdmin(),
+      dateFrom,
+      dateTo,
+      search,
+      category,
+    });
+    return { success: true, trend };
   } catch (error) {
     return { success: false, error: error.message };
   }

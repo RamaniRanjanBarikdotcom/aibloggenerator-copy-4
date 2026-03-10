@@ -38,6 +38,8 @@
     "openai": "^4.77.3",
     "puppeteer": "^23.10.1",
     "recharts": "^3.7.0",
+    "react-date-range": "^1.4.0",
+    "date-fns": "^2.30.0",
     "sql.js": "^1.10.3",
     "tinymce": "^8.3.2"
   },
@@ -76,8 +78,7 @@
       "package.json"
     ],
     "win": {
-      //"signAndEditExecutable": false,
-      "target": [
+          "target": [
         {
           "target": "nsis",
           "arch": ["x64"]

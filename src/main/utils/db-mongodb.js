@@ -1,5 +1,6 @@
 const { MongoClient, ObjectId } = require('mongodb');
 const dns = require('node:dns');
+const { decryptFromStore } = require('./secure-store');
 
 let client;
 let db;
@@ -144,10 +145,18 @@ async function initDb() {
     let dbName = null;
 
     if (storeInstance) {
-      uri = storeInstance.get('mongodb_uri');
-      dbName = storeInstance.get('mongodb_db_name');
-      if (uri) {
-        console.log('[MongoDB] Using credentials from electron-store (persistent storage)');
+      const storedUri = storeInstance.get('mongodb_uri');
+      const storedDbName = storeInstance.get('mongodb_db_name');
+      if (storedUri) {
+        uri = decryptFromStore(storedUri);
+        dbName = storedDbName ? decryptFromStore(storedDbName) : null;
+        if (uri) {
+          console.log('[MongoDB] Using credentials from electron-store (persistent storage)');
+        } else {
+          console.warn('[MongoDB] Stored credentials could not be decrypted, falling back to env');
+          uri = null;
+          dbName = null;
+        }
       }
     }
 
@@ -1369,7 +1378,7 @@ async function addLog({ level = 'info', category = 'general', message, details, 
 /**
  * List logs
  */
-async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, category }) {
+async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, category, dateFrom, dateTo, search }) {
   await initDb();
 
   const filter = {};
@@ -1380,6 +1389,26 @@ async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, categ
 
   if (category) {
     filter.category = category;
+  }
+
+  if (search) {
+    const searchValue = String(search);
+    filter.$or = [
+      { message: { $regex: searchValue, $options: 'i' } },
+      { blog_id: { $regex: searchValue, $options: 'i' } },
+    ];
+  }
+
+  if (dateFrom || dateTo) {
+    filter.timestamp = {};
+    if (dateFrom) {
+      filter.timestamp.$gte = new Date(dateFrom);
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      filter.timestamp.$lte = end;
+    }
   }
 
   if (!isAdmin && userId) {
@@ -1394,57 +1423,188 @@ async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, categ
     .limit(limit)
     .toArray();
 
-  return results.map((doc) => ({
-    id: doc._id.toString(),
-    timestamp: doc.timestamp?.toISOString(),
-    level: doc.level,
-    category: doc.category,
-    message: doc.message,
-    details: doc.details,
-    blogId: doc.blog_id,
-    tokensUsed: doc.tokens_used,
-    cost: doc.cost,
-    userId: doc.user_id,
-  }));
+  return results.map((doc) => {
+    let parsedDetails = null;
+    if (doc.details) {
+      try {
+        parsedDetails = JSON.parse(doc.details);
+      } catch (error) {
+        parsedDetails = null;
+      }
+    }
+
+    const tokensUsed =
+      typeof doc.tokens_used === 'number'
+        ? doc.tokens_used
+        : typeof parsedDetails?.tokensUsed === 'number'
+          ? parsedDetails.tokensUsed
+          : undefined;
+
+    const cost =
+      typeof doc.cost === 'number'
+        ? doc.cost
+        : typeof parsedDetails?.cost === 'number'
+          ? parsedDetails.cost
+          : undefined;
+
+    const blogId = doc.blog_id || parsedDetails?.blogId || null;
+
+    return {
+      id: doc._id.toString(),
+      timestamp: doc.timestamp?.toISOString(),
+      level: doc.level,
+      category: doc.category,
+      message: doc.message,
+      details: doc.details,
+      blogId,
+      tokensUsed,
+      cost,
+      userId: doc.user_id,
+    };
+  });
 }
 
 /**
  * Get log statistics
  */
-async function getLogStats({ userId, isAdmin }) {
+async function getLogStats({ userId, isAdmin, dateFrom, dateTo, search }) {
   await initDb();
 
   const matchFilter = {};
   if (!isAdmin && userId) {
     matchFilter.user_id = userId;
   }
+  if (search) {
+    const searchValue = String(search);
+    matchFilter.$or = [
+      { message: { $regex: searchValue, $options: 'i' } },
+      { blog_id: { $regex: searchValue, $options: 'i' } },
+    ];
+  }
+  if (dateFrom || dateTo) {
+    matchFilter.timestamp = {};
+    if (dateFrom) {
+      matchFilter.timestamp.$gte = new Date(dateFrom);
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      matchFilter.timestamp.$lte = end;
+    }
+  }
 
   const total = await db.collection('logs').countDocuments(matchFilter);
 
   const errors = await db.collection('logs').countDocuments({ ...matchFilter, level: 'error' });
+  let totalTokens = 0;
+  let totalCost = 0;
+  let imageCount = 0;
 
-  const tokenResult = await db
+  const cursor = db
     .collection('logs')
-    .aggregate([
-      { $match: { ...matchFilter, tokens_used: { $ne: null } } },
-      { $group: { _id: null, total: { $sum: '$tokens_used' } } },
-    ])
-    .toArray();
+    .find(matchFilter)
+    .project({ tokens_used: 1, cost: 1, details: 1, category: 1 });
 
-  const costResult = await db
-    .collection('logs')
-    .aggregate([
-      { $match: { ...matchFilter, cost: { $ne: null } } },
-      { $group: { _id: null, total: { $sum: '$cost' } } },
-    ])
-    .toArray();
+  for await (const doc of cursor) {
+    if (doc.category === 'image') {
+      imageCount += 1;
+    }
+
+    let parsedDetails = null;
+    if (doc.details) {
+      try {
+        parsedDetails = JSON.parse(doc.details);
+      } catch (error) {
+        parsedDetails = null;
+      }
+    }
+
+    const tokensValue =
+      typeof doc.tokens_used === 'number'
+        ? doc.tokens_used
+        : typeof parsedDetails?.tokensUsed === 'number'
+          ? parsedDetails.tokensUsed
+          : 0;
+    totalTokens += tokensValue;
+
+    const costValue =
+      typeof doc.cost === 'number'
+        ? doc.cost
+        : typeof parsedDetails?.cost === 'number'
+          ? parsedDetails.cost
+          : 0;
+    totalCost += costValue;
+  }
 
   return {
     total,
     errors,
-    totalTokens: tokenResult[0]?.total || 0,
-    totalCost: costResult[0]?.total || 0,
+    totalTokens,
+    totalCost,
+    imageCount,
   };
+}
+
+/**
+ * Get log trend grouped by day
+ */
+async function getLogTrend({ userId, isAdmin, dateFrom, dateTo, search, category }) {
+  await initDb();
+
+  const matchFilter = {};
+  if (!isAdmin && userId) {
+    matchFilter.user_id = userId;
+  }
+  if (category) {
+    matchFilter.category = category;
+  }
+  if (search) {
+    const searchValue = String(search);
+    matchFilter.$or = [
+      { message: { $regex: searchValue, $options: 'i' } },
+      { blog_id: { $regex: searchValue, $options: 'i' } },
+    ];
+  }
+  if (dateFrom || dateTo) {
+    matchFilter.timestamp = {};
+    if (dateFrom) {
+      matchFilter.timestamp.$gte = new Date(dateFrom);
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      matchFilter.timestamp.$lte = end;
+    }
+  }
+
+  const results = await db
+    .collection('logs')
+    .aggregate([
+      { $match: matchFilter },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
+          count: { $sum: 1 },
+          totalTokens: { $sum: '$tokens_used' },
+          totalCost: { $sum: '$cost' },
+          imageCount: {
+            $sum: {
+              $cond: [{ $eq: ['$category', 'image'] }, 1, 0],
+            },
+          },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ])
+    .toArray();
+
+  return results.map((row) => ({
+    date: row._id,
+    count: row.count || 0,
+    totalTokens: row.totalTokens || 0,
+    totalCost: row.totalCost || 0,
+    imageCount: row.imageCount || 0,
+  }));
 }
 
 /**
@@ -1626,6 +1786,7 @@ module.exports = {
   addLog,
   listLogs,
   getLogStats,
+  getLogTrend,
   clearLogs,
   addNotification,
   listNotifications,
