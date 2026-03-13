@@ -66,12 +66,6 @@
       "output": "dist",
       "buildResources": "build"
     },
-    "extraResources": [
-      {
-        "from": ".env",
-        "to": ".env"
-      }
-    ],
     "files": [
       "src/main/**/*",
       "src/renderer/dist/**/*",

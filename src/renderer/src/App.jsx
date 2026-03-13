@@ -8,10 +8,10 @@ import HistoryPage from './components/HistoryPage';
 import LoginPage from './components/LoginPage';
 import AdminSetupPage from './components/AdminSetupPage';
 import AdminPanelPage from './components/AdminPanelPage';
-import MongoDBSetupPage from './components/MongoDBSetupPage';
 import ProductScraperPage from './components/ProductScraperPage';
 import LogsPage from './components/LogsPage';
 import EditBlogPage from './components/EditBlogPage';
+import SchedulerPage from './components/SchedulerPage';
 import { getTranslations, normalizeLanguage } from './i18n';
 import PostsPage from './components/PostsPage';
 
@@ -52,7 +52,6 @@ function App() {
   const [historySummary, setHistorySummary] = useState({ totalCount: 0, totalCost: 0 });
   const [wpCounts, setWpCounts] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [mongoConfigured, setMongoConfigured] = useState(false);
   const [needsAdminSetup, setNeedsAdminSetup] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [notifications, setNotifications] = useState([]);
@@ -199,23 +198,6 @@ function App() {
 
   useEffect(() => {
     const initAuth = async () => {
-      // Check if MongoDB is configured first
-      try {
-        const mongoConfig = await window.electronAPI.getMongoDBConfig();
-        if (mongoConfig.success && mongoConfig.config?.isConfigured) {
-          setMongoConfigured(true);
-        } else {
-          setMongoConfigured(false);
-          setAuthReady(true);
-          return; // Don't check auth if MongoDB is not configured
-        }
-      } catch (err) {
-        console.error('Error checking MongoDB config:', err);
-        setMongoConfigured(false);
-        setAuthReady(true);
-        return;
-      }
-
       const result = await window.electronAPI.getAuthState();
       if (result.success) {
         setNeedsAdminSetup(result.needsAdminSetup);
@@ -437,20 +419,7 @@ function App() {
     return result;
   };
 
-  const handleMongoDBSetupComplete = async () => {
-    setMongoConfigured(true);
-    // Re-initialize auth after MongoDB is configured
-    setAuthReady(false);
-    const result = await window.electronAPI.getAuthState();
-    if (result.success) {
-      setNeedsAdminSetup(result.needsAdminSetup);
-      setCurrentUser(result.currentUser);
-    }
-    setAuthReady(true);
-  };
-
-  const handleLogout = async () => {
-    await window.electronAPI.logout();
+  const handleClientSessionExpired = () => {
     setCurrentUser(null);
     setNotifications([]);
     setNotificationsOpen(false);
@@ -461,6 +430,23 @@ function App() {
     setViewHistory(['home']);
     setCurrentView('home');
   };
+
+  const handleLogout = async () => {
+    await window.electronAPI.logout();
+    handleClientSessionExpired();
+  };
+
+  useEffect(() => {
+    if (!window?.electronAPI?.onAuthExpired) return undefined;
+    const unsubscribe = window.electronAPI.onAuthExpired(() => {
+      handleClientSessionExpired();
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, []);
 
   const handleToggleNotifications = async () => {
     const nextOpen = !notificationsOpen;
@@ -563,11 +549,6 @@ function App() {
     return null;
   }
 
-  // Show MongoDB setup page FIRST if not configured
-  if (!mongoConfigured) {
-    return <MongoDBSetupPage onSetupComplete={handleMongoDBSetupComplete} />;
-  }
-
   if (needsAdminSetup) {
     return <AdminSetupPage t={t} onSetup={handleSetupAdmin} />;
   }
@@ -605,6 +586,7 @@ function App() {
       canSettings={can('settings')}
       canScraper={can('generate')}
       canLogs={can('notifications')}
+      canScheduler={can('history')}
       canAdmin={currentUser?.role === 'admin'}
     >
       {currentView === 'home' && can('generate') && (
@@ -646,6 +628,7 @@ function App() {
       {currentView === 'posts' && can('history') && <PostsPage t={t} />}
       {currentView === 'scraper' && <ProductScraperPage t={t} />}
       {currentView === 'logs' && <LogsPage t={t} />}
+      {currentView === 'scheduler' && <SchedulerPage />}
       {currentView === 'edit' && editingBlog && (
         <EditBlogPage
           key={`${editingBlog.id}-${editSessionId}`}

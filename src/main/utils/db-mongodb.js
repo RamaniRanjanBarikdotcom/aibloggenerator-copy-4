@@ -154,6 +154,9 @@ async function initDb() {
           console.log('[MongoDB] Using credentials from electron-store (persistent storage)');
         } else {
           console.warn('[MongoDB] Stored credentials could not be decrypted, falling back to env');
+          // Auto-clean invalid encrypted values so warning does not repeat forever.
+          storeInstance.delete('mongodb_uri');
+          storeInstance.delete('mongodb_db_name');
           uri = null;
           dbName = null;
         }

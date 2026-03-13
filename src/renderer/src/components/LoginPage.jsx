@@ -20,14 +20,14 @@ function LoginPage({ t, onLogin }) {
 
     if (!result.success) {
       const rawError = result.error || 'Login failed';
-      if (
-        rawError.includes('Database connection failed') ||
-        rawError.includes('SSL') ||
-        rawError.includes('TLSV1')
-      ) {
-        setError(
-          'Cannot connect to database. Please check your internet connection and ensure MongoDB Atlas is active and your IP is whitelisted.'
-        );
+      const statusCode = result.statusCode;
+      const errorCode = result.errorCode;
+      const hasHttpInMessage = statusCode && rawError.includes(`HTTP ${statusCode}`);
+      const hasCodeInMessage = errorCode && rawError.includes(errorCode);
+      if (statusCode && !hasHttpInMessage) {
+        setError(`[HTTP ${statusCode}] ${rawError}`);
+      } else if (errorCode && !hasCodeInMessage) {
+        setError(`[${errorCode}] ${rawError}`);
       } else {
         setError(rawError);
       }

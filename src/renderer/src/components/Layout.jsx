@@ -8,6 +8,7 @@ import {
   Shield,
   ClipboardList,
   Database,
+  CalendarClock,
   Moon,
   Sun,
   ArrowLeft,
@@ -39,6 +40,7 @@ function Layout({
   canSettings,
   canScraper,
   canLogs,
+  canScheduler,
   canAdmin,
 }) {
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
@@ -173,6 +175,20 @@ function Layout({
             >
               <ClipboardList className="w-5 h-5 mr-3" />
               <span>{t.logsNav}</span>
+            </button>
+          )}
+
+          {canScheduler && (
+            <button
+              onClick={() => setCurrentView('scheduler')}
+              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
+                currentView === 'scheduler'
+                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
+              }`}
+            >
+              <CalendarClock className="w-5 h-5 mr-3" />
+              <span>Scheduler</span>
             </button>
           )}
 

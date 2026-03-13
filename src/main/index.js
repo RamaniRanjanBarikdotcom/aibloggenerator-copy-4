@@ -16,6 +16,7 @@ const Store = require('electron-store');
 const FormData = require('form-data');
 const mime = require('mime-types');
 const { encryptForStore, decryptFromStore } = require('./utils/secure-store');
+const appBootstrap = require('./config/app-bootstrap');
 const {
   chatCompletion,
   generateImage,
@@ -30,6 +31,8 @@ const {
   listProviderModels,
 } = require('./aiProviders');
 const {
+  setAuthTokenGetter,
+  setUnauthorizedHandler,
   setStore,
   initDb,
   saveBlog,
@@ -78,9 +81,23 @@ const {
   heartbeatSession,
   endSession,
   getRealtimeAnalytics,
-} = require('./utils/db-mongodb');
+} = require('./utils/db-provider');
 const { exportBlog, exportHistoryCsv } = require('./services/fileExporter');
 const ProductScraper = require('./services/productScraper');
+const {
+  getApiConfig: getServerApiConfig,
+  setupAdmin: serverSetupAdmin,
+  login: serverLogin,
+  getAuthState: serverGetAuthState,
+  listSchedulerJobs: serverListSchedulerJobs,
+  createSchedulerJob: serverCreateSchedulerJob,
+  updateSchedulerJob: serverUpdateSchedulerJob,
+  deleteSchedulerJob: serverDeleteSchedulerJob,
+  importSchedulerCsv: serverImportSchedulerCsv,
+  listSchedulerLogs: serverListSchedulerLogs,
+  addSchedulerLog: serverAddSchedulerLog,
+  checkLatestUpdate: serverCheckLatestUpdate,
+} = require('./services/serverApi');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -92,8 +109,15 @@ const store = new Store({
 // This is crucial for built executables where .env file is not available
 setStore(store);
 
+const CURRENT_USER_KEY = 'current_user_id';
+const LAST_EXPORT_DIR_KEY = 'last_export_dir';
+const SERVER_API_ACCESS_TOKEN_KEY = 'server_api_access_token';
+const SERVER_API_BASE_URL_KEY = 'server_api_base_url';
+const SERVER_API_TIMEOUT_KEY = 'server_api_timeout_ms';
+
 function seedMongoConfigFromEnv() {
   if (!app.isPackaged) return;
+  if (process.env.APP_SERVER_API_BASE_URL) return;
   const storedUri = store.get('mongodb_uri');
   if (storedUri) return;
   if (process.env.MONGODB_URI) {
@@ -107,10 +131,78 @@ function seedMongoConfigFromEnv() {
 
 seedMongoConfigFromEnv();
 
+function isEncryptedStoreValue(value) {
+  return typeof value === 'string' && (value.startsWith('ss:') || value.startsWith('enc:'));
+}
+
+function getStoreDecryptedValue(key) {
+  const raw = store.get(key);
+  if (!raw || typeof raw !== 'string') {
+    return '';
+  }
+  if (isEncryptedStoreValue(raw)) {
+    const decrypted = decryptFromStore(raw) || '';
+    if (!decrypted) {
+      // Stored encrypted value is no longer decryptable (key changed/corrupted).
+      store.delete(key);
+      return '';
+    }
+    return decrypted;
+  }
+  const plaintext = raw.trim();
+  if (!plaintext) {
+    return '';
+  }
+  store.set(key, encryptForStore(plaintext));
+  return plaintext;
+}
+
+function seedServerApiConfigFromStore() {
+  const bootstrapBaseUrl = normalizeBaseUrl(appBootstrap?.serverApiBaseUrl || '');
+  const bootstrapTimeout = Number(appBootstrap?.serverApiTimeoutMs || 15000);
+
+  const storedBaseUrl = getStoreDecryptedValue(SERVER_API_BASE_URL_KEY);
+  const storedTimeout = getStoreDecryptedValue(SERVER_API_TIMEOUT_KEY);
+
+  const resolvedBaseUrl = storedBaseUrl || bootstrapBaseUrl;
+  const resolvedTimeout = storedTimeout || String(bootstrapTimeout);
+
+  if (!process.env.APP_SERVER_API_BASE_URL && resolvedBaseUrl) {
+    process.env.APP_SERVER_API_BASE_URL = resolvedBaseUrl;
+  }
+  if (!process.env.APP_SERVER_API_TIMEOUT_MS && resolvedTimeout) {
+    process.env.APP_SERVER_API_TIMEOUT_MS = resolvedTimeout;
+  }
+
+  // Persist bootstrap config encrypted so first run is fully automatic.
+  if (resolvedBaseUrl && !storedBaseUrl) {
+    store.set(SERVER_API_BASE_URL_KEY, encryptForStore(resolvedBaseUrl));
+  }
+  if (resolvedTimeout && !storedTimeout) {
+    store.set(SERVER_API_TIMEOUT_KEY, encryptForStore(String(resolvedTimeout)));
+  }
+
+  // Cleanup legacy key-based config from previous builds.
+  store.delete('server_api_key');
+}
+
+seedServerApiConfigFromStore();
+
 let mainWindow;
 let currentUser = null;
-const CURRENT_USER_KEY = 'current_user_id';
-const LAST_EXPORT_DIR_KEY = 'last_export_dir';
+setAuthTokenGetter(() => String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || ''));
+setUnauthorizedHandler(() => {
+  currentUser = null;
+  store.delete(SERVER_API_ACCESS_TOKEN_KEY);
+  store.delete(CURRENT_USER_KEY);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('auth-expired');
+  }
+});
+
+function isServerApiEnabled() {
+  return Boolean(getServerApiConfig().enabled);
+}
 
 function getUserApiKeyKey(userId) {
   return `openai_api_key_${userId}`;
@@ -118,6 +210,21 @@ function getUserApiKeyKey(userId) {
 
 function normalizeBaseUrl(url) {
   return (url || '').trim().replace(/\/+$/, '');
+}
+
+function buildServerApiUrl(baseUrl, routePath) {
+  const normalizedPath = String(routePath || '').startsWith('/') ? String(routePath) : `/${String(routePath || '')}`;
+  const isPhpEndpoint = /\.php(?:$|\?)/i.test(baseUrl);
+  if (!isPhpEndpoint) {
+    return `${baseUrl}${normalizedPath}`;
+  }
+
+  const [routePart, queryPart = ''] = normalizedPath.split('?');
+  const route = `/${String(routePart || '').replace(/^\/+/, '')}`;
+  const params = new URLSearchParams(queryPart);
+  params.set('route', route);
+  const joiner = baseUrl.includes('?') ? '&' : '?';
+  return `${baseUrl}${joiner}${params.toString()}`;
 }
 
 function requireHttps(url) {
@@ -617,6 +724,27 @@ async function getPublishDestination(destinationId, userId) {
 async function loadPersistedUser() {
   if (currentUser) {
     return currentUser;
+  }
+  if (isServerApiEnabled()) {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      return null;
+    }
+    try {
+      const state = await serverGetAuthState({ accessToken });
+      if (state?.currentUser) {
+        currentUser = state.currentUser;
+        store.set(CURRENT_USER_KEY, state.currentUser.id);
+        return currentUser;
+      }
+      store.delete(SERVER_API_ACCESS_TOKEN_KEY);
+      store.delete(CURRENT_USER_KEY);
+      return null;
+    } catch (error) {
+      store.delete(SERVER_API_ACCESS_TOKEN_KEY);
+      store.delete(CURRENT_USER_KEY);
+      return null;
+    }
   }
   const persistedUserId = store.get(CURRENT_USER_KEY);
   if (!persistedUserId) {
@@ -1220,7 +1348,9 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   try {
-    await initDb();
+    if (!isServerApiEnabled()) {
+      await initDb();
+    }
   } catch (error) {
     console.error('Database init failed:', error);
   }
@@ -1394,6 +1524,17 @@ ipcMain.handle('save-settings', async (event, settings) => {
 ipcMain.handle('get-settings', async () => {
   try {
     console.log('[IPC] get-settings called, currentUser:', currentUser?.id);
+    if (isServerApiEnabled()) {
+      const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+      if (!accessToken) {
+        currentUser = null;
+        store.delete(CURRENT_USER_KEY);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('auth-expired');
+        }
+        throw new Error('Not authenticated');
+      }
+    }
     requirePermission('settings');
     if (!currentUser) {
       throw new Error('Not authenticated');
@@ -1418,6 +1559,9 @@ ipcMain.handle('get-settings', async () => {
 ipcMain.handle('save-mongodb-config', async (event, { uri, dbName }) => {
   try {
     console.log('[IPC] save-mongodb-config called');
+    if (isServerApiEnabled()) {
+      return { success: true, message: 'MongoDB config is managed by server API mode' };
+    }
     if (!uri || !uri.trim()) {
       throw new Error('MongoDB URI is required');
     }
@@ -1440,6 +1584,17 @@ ipcMain.handle('save-mongodb-config', async (event, { uri, dbName }) => {
 ipcMain.handle('get-mongodb-config', async () => {
   try {
     console.log('[IPC] get-mongodb-config called');
+    if (isServerApiEnabled()) {
+      const cfg = getServerApiConfig();
+      return {
+        success: true,
+        config: {
+          uri: cfg.baseUrl || '',
+          dbName: 'server-managed',
+          isConfigured: !!cfg.baseUrl,
+        },
+      };
+    }
     let uri = '';
     let dbName = '';
     const storedUri = store.get('mongodb_uri');
@@ -1485,6 +1640,13 @@ ipcMain.handle('get-mongodb-config', async () => {
 ipcMain.handle('test-mongodb-connection', async (event, { uri, dbName }) => {
   try {
     console.log('[IPC] test-mongodb-connection called');
+    if (isServerApiEnabled()) {
+      const cfg = getServerApiConfig();
+      return {
+        success: !!cfg.baseUrl,
+        message: cfg.baseUrl ? 'Server API configured' : 'Server API base URL missing',
+      };
+    }
 
     // Temporarily save config for testing
     const originalUri = store.get('mongodb_uri');
@@ -3488,6 +3650,32 @@ ipcMain.handle(
 
 ipcMain.handle('get-auth-state', async () => {
   try {
+    if (isServerApiEnabled()) {
+      const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+      let state = null;
+      try {
+        state = await serverGetAuthState({ accessToken });
+      } catch (error) {
+        store.delete(SERVER_API_ACCESS_TOKEN_KEY);
+        state = await serverGetAuthState({ accessToken: '' });
+      }
+
+      currentUser = state?.currentUser || null;
+      if (currentUser?.id) {
+        store.set(CURRENT_USER_KEY, currentUser.id);
+      } else {
+        store.delete(CURRENT_USER_KEY);
+      }
+
+      return {
+        success: true,
+        needsAdminSetup: !!state?.needsAdminSetup,
+        currentUser: currentUser ? sanitizeUser(currentUser) : null,
+        permissions: ALL_PERMISSIONS,
+        userData: null,
+      };
+    }
+
     const count = await getUserCount();
     await loadPersistedUser();
 
@@ -3535,6 +3723,20 @@ ipcMain.handle('get-current-user', async () => {
 
 ipcMain.handle('setup-admin', async (event, { username, password }) => {
   try {
+    if (isServerApiEnabled()) {
+      const response = await serverSetupAdmin({ username, password });
+      const accessToken = String(response?.auth?.accessToken || '').trim();
+      if (!accessToken || !response?.user?.id) {
+        throw new Error('Invalid server auth response');
+      }
+      store.set(SERVER_API_ACCESS_TOKEN_KEY, accessToken);
+      currentUser = response?.user || null;
+      if (currentUser?.id) {
+        store.set(CURRENT_USER_KEY, currentUser.id);
+      }
+      return { success: true, user: sanitizeUser(currentUser) };
+    }
+
     const count = await getUserCount();
     if (count > 0) {
       throw new Error('Admin already exists');
@@ -3564,12 +3766,35 @@ ipcMain.handle('setup-admin', async (event, { username, password }) => {
 
     return { success: true, user: sanitizeUser(admin) };
   } catch (error) {
-    return { success: false, error: error.message };
+    return {
+      success: false,
+      error: error.message,
+      statusCode: error?.statusCode || error?.response?.status || null,
+      errorCode: error?.code || null,
+    };
   }
 });
 
 ipcMain.handle('login', async (event, { username, password }) => {
   try {
+    if (isServerApiEnabled()) {
+      const response = await serverLogin({ username, password });
+      const accessToken = String(response?.auth?.accessToken || '').trim();
+      if (!accessToken || !response?.user?.id) {
+        throw new Error('Invalid server auth response');
+      }
+      store.set(SERVER_API_ACCESS_TOKEN_KEY, accessToken);
+      currentUser = response?.user || null;
+      if (currentUser?.id) {
+        store.set(CURRENT_USER_KEY, currentUser.id);
+      }
+      return {
+        success: true,
+        user: sanitizeUser(currentUser),
+        userData: null,
+      };
+    }
+
     const user = await getUserByUsername(username);
     if (!user) {
       throw new Error('Invalid credentials');
@@ -3626,12 +3851,24 @@ ipcMain.handle('login', async (event, { username, password }) => {
       },
     };
   } catch (error) {
-    return { success: false, error: error.message };
+    return {
+      success: false,
+      error: error.message,
+      statusCode: error?.statusCode || error?.response?.status || null,
+      errorCode: error?.code || null,
+    };
   }
 });
 
 ipcMain.handle('logout', async () => {
   try {
+    if (isServerApiEnabled()) {
+      currentUser = null;
+      store.delete(SERVER_API_ACCESS_TOKEN_KEY);
+      store.delete(CURRENT_USER_KEY);
+      return { success: true };
+    }
+
     if (currentUser) {
       await logActivity({
         userId: currentUser.id,
@@ -3919,6 +4156,202 @@ ipcMain.handle('get-api-usage', async () => {
     }
     const usage = await getApiUsage({ userId: currentUser.id, isAdmin: isAdmin() });
     return { success: true, usage };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-server-api-config', async () => {
+  try {
+    const cfg = getServerApiConfig();
+    return {
+      success: true,
+      enabled: !!cfg.enabled,
+      baseUrl: cfg.baseUrl || '',
+      timeoutMs: cfg.timeoutMs || 15000,
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('save-server-api-config', async (event, { baseUrl, timeoutMs } = {}) => {
+  try {
+    const normalizedBaseUrl = requireHttps(normalizeBaseUrl(ensureValue('Server API base URL', baseUrl)));
+    const normalizedTimeout = Number(timeoutMs || 15000);
+    const timeout = Number.isFinite(normalizedTimeout) && normalizedTimeout > 0 ? Math.round(normalizedTimeout) : 15000;
+
+    process.env.APP_SERVER_API_BASE_URL = normalizedBaseUrl;
+    process.env.APP_SERVER_API_TIMEOUT_MS = String(timeout);
+
+    store.set(SERVER_API_BASE_URL_KEY, encryptForStore(normalizedBaseUrl));
+    store.set(SERVER_API_TIMEOUT_KEY, encryptForStore(String(timeout)));
+    store.delete('server_api_key');
+
+    return {
+      success: true,
+      enabled: true,
+      baseUrl: normalizedBaseUrl,
+      timeoutMs: timeout,
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('test-server-api-config', async (event, { baseUrl, timeoutMs } = {}) => {
+  try {
+    const normalizedBaseUrl = requireHttps(normalizeBaseUrl(ensureValue('Server API base URL', baseUrl)));
+    const normalizedTimeout = Number(timeoutMs || 15000);
+    const timeout = Number.isFinite(normalizedTimeout) && normalizedTimeout > 0 ? Math.round(normalizedTimeout) : 15000;
+
+    await axios.get(buildServerApiUrl(normalizedBaseUrl, '/health'), { timeout });
+    const stateResponse = await axios.get(buildServerApiUrl(normalizedBaseUrl, '/auth/state'), { timeout });
+
+    const payload = stateResponse?.data || {};
+    if (!payload.success) {
+      throw new Error(payload.error || 'Server API auth state check failed');
+    }
+
+    return {
+      success: true,
+      message: 'Server API connection successful.',
+      needsAdminSetup: !!payload.needsAdminSetup,
+    };
+  } catch (error) {
+    const status = error?.response?.status;
+    const remoteMessage = error?.response?.data?.error || error?.response?.data?.message;
+    const message = remoteMessage || error.message || 'Server API test failed';
+    return { success: false, error: status ? `${message} (HTTP ${status})` : message };
+  }
+});
+
+ipcMain.handle('scheduler-list-jobs', async (event, payload = {}) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverListSchedulerJobs({
+      accessToken,
+      status: payload.status || '',
+      shopId: payload.shopId || '',
+      limit: payload.limit || 500,
+    });
+    return { success: true, jobs: response.jobs || [] };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-create-job', async (event, { job }) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverCreateSchedulerJob({ accessToken, job: job || {} });
+    return { success: true, job: response.job || null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-update-job', async (event, { jobId, updates }) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverUpdateSchedulerJob({
+      accessToken,
+      jobId: String(jobId || ''),
+      updates: updates || {},
+    });
+    return { success: true, job: response.job || null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-delete-job', async (event, { jobId }) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverDeleteSchedulerJob({
+      accessToken,
+      jobId: String(jobId || ''),
+    });
+    return { success: true, deleted: !!response.deleted };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-import-csv', async (event, { csvContent, defaultShopId = '' }) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverImportSchedulerCsv({
+      accessToken,
+      csvContent: String(csvContent || ''),
+      defaultShopId: String(defaultShopId || ''),
+    });
+    return {
+      success: true,
+      created: response.created || 0,
+      errors: Array.isArray(response.errors) ? response.errors : [],
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-list-logs', async (event, payload = {}) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverListSchedulerLogs({
+      accessToken,
+      jobId: payload.jobId || '',
+      status: payload.status || '',
+      limit: payload.limit || 500,
+    });
+    return { success: true, logs: response.logs || [] };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('scheduler-add-log', async (event, { log }) => {
+  try {
+    const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+    if (!accessToken) {
+      throw new Error('Not authenticated');
+    }
+    const response = await serverAddSchedulerLog({
+      accessToken,
+      log: log || {},
+    });
+    return { success: true, id: response.id || null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('check-app-update', async (event, { currentVersion = '', channel = 'stable' } = {}) => {
+  try {
+    const result = await serverCheckLatestUpdate({
+      currentVersion: String(currentVersion || ''),
+      channel: String(channel || 'stable'),
+    });
+    return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
   }

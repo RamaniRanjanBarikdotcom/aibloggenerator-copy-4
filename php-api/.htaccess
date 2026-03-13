@@ -1,0 +1,25 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Never expose internal PHP files directly.
+  RewriteRule ^(?:config|config\.example|db-actions)\.php$ - [F,L,NC]
+
+  # Force extensionless canonical URL.
+  RewriteCond %{THE_REQUEST} \s/+blog-gen\.php[\s?] [NC]
+  RewriteRule ^blog-gen\.php$ blog-gen [R=301,L,NE]
+  RewriteCond %{THE_REQUEST} \s/+blog-gen\.php/([^\s?]*) [NC]
+  RewriteRule ^blog-gen\.php/(.*)$ blog-gen/$1 [R=301,L,NE]
+
+  # Reject direct .php endpoint requests (except internal rewrites).
+  RewriteCond %{THE_REQUEST} \s/+.+\.php(?:[\s?]|/) [NC]
+  RewriteRule \.php(?:/.*)?$ - [R=404,L]
+
+  # Extensionless API routes -> blog-gen.php
+  RewriteRule ^health$ blog-gen.php [QSA,L]
+  RewriteRule ^auth/(.*)$ blog-gen.php [QSA,L]
+  RewriteRule ^scheduler/(.*)$ blog-gen.php [QSA,L]
+  RewriteRule ^updates/(.*)$ blog-gen.php [QSA,L]
+  RewriteRule ^db/call$ blog-gen.php [QSA,L]
+  RewriteRule ^blog-gen/?$ blog-gen.php [QSA,L]
+  RewriteRule ^blog-gen/(.*)$ blog-gen.php [QSA,L]
+</IfModule>

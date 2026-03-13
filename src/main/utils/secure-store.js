@@ -1,5 +1,7 @@
 const { app, safeStorage } = require('electron');
 const crypto = require('crypto');
+let warnedSafeStorageDecryptFailure = false;
+let warnedFallbackDecryptFailure = false;
 
 function getFallbackKey() {
   const seed =
@@ -56,7 +58,10 @@ function decryptFromStore(value) {
     try {
       return safeStorage.decryptString(Buffer.from(payload, 'base64'));
     } catch (error) {
-      console.warn('[SecureStore] Failed to decrypt safeStorage value:', error.message);
+      if (!warnedSafeStorageDecryptFailure) {
+        warnedSafeStorageDecryptFailure = true;
+        console.warn('[SecureStore] Failed to decrypt a stored safeStorage value. Clearing invalid local encrypted data.');
+      }
       return '';
     }
   }
@@ -64,7 +69,10 @@ function decryptFromStore(value) {
     try {
       return decryptFallback(value);
     } catch (error) {
-      console.warn('[SecureStore] Failed to decrypt fallback value:', error.message);
+      if (!warnedFallbackDecryptFailure) {
+        warnedFallbackDecryptFailure = true;
+        console.warn('[SecureStore] Failed to decrypt a stored fallback value. Clearing invalid local encrypted data.');
+      }
       return '';
     }
   }

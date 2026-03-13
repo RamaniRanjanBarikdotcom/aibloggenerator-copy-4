@@ -47,6 +47,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   markNotificationRead: (payload) => ipcRenderer.invoke('mark-notification-read', payload),
   clearNotifications: () => ipcRenderer.invoke('clear-notifications'),
   getApiUsage: () => ipcRenderer.invoke('get-api-usage'),
+  getServerApiConfig: () => ipcRenderer.invoke('get-server-api-config'),
+  saveServerApiConfig: (payload) => ipcRenderer.invoke('save-server-api-config', payload),
+  testServerApiConfig: (payload) => ipcRenderer.invoke('test-server-api-config', payload),
+  schedulerListJobs: (payload) => ipcRenderer.invoke('scheduler-list-jobs', payload),
+  schedulerCreateJob: (payload) => ipcRenderer.invoke('scheduler-create-job', payload),
+  schedulerUpdateJob: (payload) => ipcRenderer.invoke('scheduler-update-job', payload),
+  schedulerDeleteJob: (payload) => ipcRenderer.invoke('scheduler-delete-job', payload),
+  schedulerImportCsv: (payload) => ipcRenderer.invoke('scheduler-import-csv', payload),
+  schedulerListLogs: (payload) => ipcRenderer.invoke('scheduler-list-logs', payload),
+  schedulerAddLog: (payload) => ipcRenderer.invoke('scheduler-add-log', payload),
+  checkAppUpdate: (payload) => ipcRenderer.invoke('check-app-update', payload),
   scrapeWebsite: (payload) => ipcRenderer.invoke('scrape-website', payload),
   saveProductDatabase: (payload) => ipcRenderer.invoke('save-product-database', payload),
   getProductDatabase: () => ipcRenderer.invoke('get-product-database'),
@@ -75,6 +86,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveMongoDBConfig: (payload) => ipcRenderer.invoke('save-mongodb-config', payload),
   getMongoDBConfig: () => ipcRenderer.invoke('get-mongodb-config'),
   testMongoDBConnection: (payload) => ipcRenderer.invoke('test-mongodb-connection', payload),
+  onAuthExpired: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('auth-expired', listener);
+    return () => ipcRenderer.removeListener('auth-expired', listener);
+  },
   onGenerationProgress: (callback) => {
     const listener = (event, data) => callback(data);
     ipcRenderer.on('generation-progress', listener);

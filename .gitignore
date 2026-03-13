@@ -10,3 +10,4 @@ build/
 .vscode/
 .claude
 SOP.md
+php-api/config.php
