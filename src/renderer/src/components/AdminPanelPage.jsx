@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Pencil, Search, Trash2, X } from 'lucide-react';
+import { Plus, Pencil, Search, Trash2 } from 'lucide-react';
+import ModalCloseButton from './ModalCloseButton';
+import TablePagination from './TablePagination';
 
 const MENU_PERMISSION_KEYS = [
   'generate',
@@ -55,6 +57,8 @@ function AdminPanelPage({ t, currentUser }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteTargetUser, setDeleteTargetUser] = useState(null);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersPerPage, setUsersPerPage] = useState(10);
   const isCurrentUserAdmin = currentUser?.role === 'admin';
 
   const menuPermissionLabels = useMemo(
@@ -121,6 +125,22 @@ function AdminPanelPage({ t, currentUser }) {
       return username.includes(q) || role.includes(q) || status.includes(q);
     });
   }, [users, userSearch]);
+
+  const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / usersPerPage));
+  const pagedUsers = useMemo(() => {
+    const startIndex = (usersPage - 1) * usersPerPage;
+    return filteredUsers.slice(startIndex, startIndex + usersPerPage);
+  }, [filteredUsers, usersPage, usersPerPage]);
+
+  useEffect(() => {
+    setUsersPage(1);
+  }, [userSearch]);
+
+  useEffect(() => {
+    if (usersPage > totalUserPages) {
+      setUsersPage(totalUserPages);
+    }
+  }, [usersPage, totalUserPages]);
 
   const openCreateModal = () => {
     setIsCreateMode(true);
@@ -427,7 +447,7 @@ function AdminPanelPage({ t, currentUser }) {
                     </td>
                   </tr>
                 )}
-                {filteredUsers.map((user) => {
+                {pagedUsers.map((user) => {
                   return (
                     <tr key={user.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30">
                       <td className="px-4 py-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{user.username}</td>
@@ -483,6 +503,19 @@ function AdminPanelPage({ t, currentUser }) {
               </tbody>
             </table>
           </div>
+          <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-700">
+            <TablePagination
+              totalItems={filteredUsers.length}
+              page={usersPage}
+              perPage={usersPerPage}
+              perPageOptions={[10, 20, 50]}
+              onPageChange={setUsersPage}
+              onPerPageChange={(value) => {
+                setUsersPerPage(value);
+                setUsersPage(1);
+              }}
+            />
+          </div>
         </div>
       )}
 
@@ -501,13 +534,7 @@ function AdminPanelPage({ t, currentUser }) {
                   {t.permissionsLabel}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={closeModal}
-                className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <ModalCloseButton onClick={closeModal} label={t.close || 'Close'} />
             </div>
 
             <form onSubmit={isCreateMode ? handleCreateUser : handleSaveUser} className="space-y-4">
@@ -673,13 +700,7 @@ function AdminPanelPage({ t, currentUser }) {
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                 {t.changePasswordLabel || 'Change Password'}
               </h3>
-              <button
-                type="button"
-                onClick={closePasswordModal}
-                className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <ModalCloseButton onClick={closePasswordModal} label={t.close || 'Close'} />
             </div>
             <form onSubmit={handleChangePassword} className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-slate-300">

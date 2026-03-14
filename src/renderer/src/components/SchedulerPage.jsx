@@ -1,13 +1,25 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { languageNames } from '../i18n';
+import ModalCloseButton from './ModalCloseButton';
+import TablePagination from './TablePagination';
 
 const STYLES = ['professional', 'conversational', 'educational', 'persuasive', 'storytelling'];
 const TONES = ['friendly', 'formal', 'persuasive', 'casual'];
 const PLATFORMS = ['generic', 'shopify', 'woocommerce', 'magento', 'custom'];
 const STATUS_FILTERS = ['all', 'pending', 'paused', 'running', 'completed', 'failed', 'cancelled'];
+const JOB_TABLE_TABS = [
+  { value: 'scheduled', label: 'Scheduled jobs' },
+  { value: 'completed', label: 'Completed jobs' },
+];
+const SCHEDULE_MODES = [
+  { value: 'generate', label: 'Generate new blog' },
+  { value: 'existing', label: 'Use existing history blog' },
+];
 const CSV_HEADERS = [
   'destination_id',
   'destination',
+  'schedule_mode',
+  'source_blog_id',
   'topic',
   'keywords',
   'focus_keyword',
@@ -28,6 +40,8 @@ const CSV_HEADERS = [
 ];
 const IMPORT_TEMPLATE_HEADERS = [
   'destination',
+  'schedule_mode',
+  'source_blog_id',
   'topic',
   'keywords',
   'focus_keyword',
@@ -50,6 +64,8 @@ const IMPORT_FIELD_OPTIONS = [
   { value: 'destination', label: 'Destination name' },
   { value: 'shop_id', label: 'Shop ID (legacy)' },
   { value: 'platform', label: 'Platform (legacy)' },
+  { value: 'schedule_mode', label: 'Schedule mode (generate/existing)' },
+  { value: 'source_blog_id', label: 'Source blog ID' },
   { value: 'topic', label: 'Topic' },
   { value: 'keywords', label: 'Keywords' },
   { value: 'focus_keyword', label: 'Focus keyword' },
@@ -82,6 +98,13 @@ const HEADER_ALIASES = {
   shopid: 'shop_id',
   shop: 'shop_id',
   platform: 'platform',
+  schedule_mode: 'schedule_mode',
+  schedulemode: 'schedule_mode',
+  mode: 'schedule_mode',
+  source_blog_id: 'source_blog_id',
+  sourceblogid: 'source_blog_id',
+  source_blog: 'source_blog_id',
+  sourceblog: 'source_blog_id',
   topic: 'topic',
   title: 'topic',
   keywords: 'keywords',
@@ -125,6 +148,88 @@ const HEADER_ALIASES = {
 const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
 const labelClass = 'mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200';
+
+function HistoryBlogDropdown({
+  value,
+  options,
+  loading,
+  query,
+  onQueryChange,
+  onSelect,
+  onRefresh,
+  placeholder = 'Select a generated blog',
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const selected = (options || []).find((item) => String(item?.id || '') === String(value || ''));
+
+  useEffect(() => {
+    const handleOutside = (event) => {
+      if (!rootRef.current || rootRef.current.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+      >
+        <span className="truncate">{selected?.title || placeholder}</span>
+        <span className="ml-3 text-slate-400">{open ? '\u25B2' : '\u25BC'}</span>
+      </button>
+      {open ? (
+        <div className="absolute z-[80] mt-2 w-full rounded-lg border border-slate-200 bg-white p-2 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+          <div className="mb-2 flex items-center gap-2">
+            <input
+              autoFocus
+              className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+              value={query}
+              onChange={(e) => onQueryChange(e.target.value)}
+              placeholder="Search by title or keyword"
+            />
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              Refresh
+            </button>
+          </div>
+          <div className="max-h-64 overflow-auto rounded-md border border-slate-200 dark:border-slate-700">
+            {loading ? (
+              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Loading blogs...</div>
+            ) : options.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No matching blogs found.</div>
+            ) : (
+              options.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    onSelect(item.id);
+                    setOpen(false);
+                  }}
+                  className={`block w-full px-3 py-2 text-left text-sm transition ${
+                    String(item.id) === String(value)
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-600/30 dark:text-blue-200'
+                      : 'text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {item.title}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -269,6 +374,8 @@ function buildScheduleSignature(item) {
     String(item?.shopId || item?.shop_id || '').trim(),
     String(item?.destinationId || item?.destination_id || '').trim(),
     String(item?.platform || '').trim(),
+    String(item?.scheduleMode || item?.schedule_mode || 'generate').trim().toLowerCase(),
+    String(item?.sourceBlogId || item?.source_blog_id || '').trim(),
     String(item?.topic || '').trim(),
     String(item?.keywords || '').trim(),
     runAt,
@@ -288,7 +395,42 @@ function buildScheduleSignature(item) {
 }
 
 function normalizeJob(job) {
-  const payload = job?.payload && typeof job.payload === 'object' ? job.payload : {};
+  let payload = {};
+  if (job?.payload && typeof job.payload === 'object' && !Array.isArray(job.payload)) {
+    payload = job.payload;
+  } else if (typeof job?.payload === 'string' && String(job.payload).trim()) {
+    try {
+      const parsed = JSON.parse(job.payload);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        payload = parsed;
+      }
+    } catch {
+      payload = {};
+    }
+  }
+  if (payload && typeof payload.payload === 'object' && !Array.isArray(payload.payload)) {
+    payload = { ...payload.payload, ...payload };
+  }
+  const sourceBlogId = String(
+    job?.source_blog_id ||
+      job?.sourceBlogId ||
+      payload.source_blog_id ||
+      payload.sourceBlogId ||
+      payload.source_blog ||
+      payload.sourceBlog ||
+      ''
+  ).trim();
+  const scheduleModeRaw = String(
+    job?.schedule_mode ||
+      job?.scheduleMode ||
+      payload.schedule_mode ||
+      payload.scheduleMode ||
+      payload.mode ||
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const scheduleMode = scheduleModeRaw === 'existing' || sourceBlogId ? 'existing' : 'generate';
   const categories = Array.isArray(payload.categories)
     ? payload.categories
     : String(payload.categories || '')
@@ -301,10 +443,14 @@ function normalizeJob(job) {
     shopId: job?.shop_id || '',
     destinationId: job?.destination_id || payload.destination_id || '',
     platform: job?.platform || payload.platform || '',
+    scheduleMode,
+    sourceBlogId,
     topic: job?.topic || '',
     keywords: job?.keywords || '',
     focusKeyword: job?.focus_keyword || payload.focus_keyword || '',
     runAt: job?.run_at || '',
+    completedAt: job?.completed_at || payload?.completed_at || job?.completedAt || '',
+    updatedAt: job?.updated_at || payload?.updated_at || job?.updatedAt || '',
     status: job?.status || 'pending',
     generateImage: parseBool(job?.generate_image ?? payload.generate_image, true),
     autoPost: parseBool(job?.auto_post ?? payload.auto_post, false),
@@ -329,6 +475,8 @@ function defaultForm() {
   d.setMinutes(d.getMinutes() + 30);
   d.setSeconds(0, 0);
   return {
+    scheduleMode: 'generate',
+    sourceBlogId: '',
     topic: '',
     keywords: '',
     focusKeyword: '',
@@ -350,6 +498,8 @@ function defaultForm() {
 
 function formFromJob(job) {
   return {
+    scheduleMode: String(job?.scheduleMode || 'generate').toLowerCase() === 'existing' ? 'existing' : 'generate',
+    sourceBlogId: job?.sourceBlogId || '',
     topic: job?.topic || '',
     keywords: job?.keywords || '',
     focusKeyword: job?.focusKeyword || '',
@@ -382,11 +532,20 @@ function SchedulerPage() {
   const [destinationFilter, setDestinationFilter] = useState('');
   const [platformFilter, setPlatformFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [jobTableTab, setJobTableTab] = useState('scheduled');
+  const [jobsPage, setJobsPage] = useState(1);
+  const [jobsPerPage, setJobsPerPage] = useState(10);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editTargetId, setEditTargetId] = useState('');
   const [editForm, setEditForm] = useState(defaultForm());
+  const [historyBlogOptions, setHistoryBlogOptions] = useState([]);
+  const [historyBlogLoading, setHistoryBlogLoading] = useState(false);
+  const [createHistoryBlogQuery, setCreateHistoryBlogQuery] = useState('');
+  const [editHistoryBlogQuery, setEditHistoryBlogQuery] = useState('');
+  const historyBlogCacheRef = useRef(new Map());
+  const historyBlogLoadingRef = useRef(false);
 
   const [csvContent, setCsvContent] = useState('');
   const [csvHeaders, setCsvHeaders] = useState([]);
@@ -399,6 +558,26 @@ function SchedulerPage() {
   );
 
   const destinationMap = useMemo(() => new Map((destinations || []).map((d) => [d.id, d])), [destinations]);
+  const historyBlogMap = useMemo(
+    () => new Map((historyBlogOptions || []).map((item) => [String(item.id || ''), item])),
+    [historyBlogOptions]
+  );
+  const createFilteredHistoryBlogOptions = useMemo(() => {
+    const q = String(createHistoryBlogQuery || '').trim().toLowerCase();
+    if (!q) return historyBlogOptions;
+    return historyBlogOptions.filter((item) => {
+      const keywords = Array.isArray(item?.keywords) ? item.keywords.join(', ') : String(item?.keywords || '');
+      return `${item?.title || ''} ${keywords}`.toLowerCase().includes(q);
+    });
+  }, [historyBlogOptions, createHistoryBlogQuery]);
+  const editFilteredHistoryBlogOptions = useMemo(() => {
+    const q = String(editHistoryBlogQuery || '').trim().toLowerCase();
+    if (!q) return historyBlogOptions;
+    return historyBlogOptions.filter((item) => {
+      const keywords = Array.isArray(item?.keywords) ? item.keywords.join(', ') : String(item?.keywords || '');
+      return `${item?.title || ''} ${keywords}`.toLowerCase().includes(q);
+    });
+  }, [historyBlogOptions, editHistoryBlogQuery]);
 
   const filteredJobs = useMemo(() => {
     const needle = String(searchTerm || '').trim().toLowerCase();
@@ -422,9 +601,38 @@ function SchedulerPage() {
     });
   }, [sortedJobs, statusFilter, destinationFilter, platformFilter, searchTerm, destinationMap]);
 
+  const scheduledJobs = useMemo(
+    () => filteredJobs.filter((job) => String(job.status || '').toLowerCase() !== 'completed'),
+    [filteredJobs]
+  );
+
+  const completedJobs = useMemo(
+    () => filteredJobs.filter((job) => String(job.status || '').toLowerCase() === 'completed'),
+    [filteredJobs]
+  );
+
+  const visibleJobs = jobTableTab === 'completed' ? completedJobs : scheduledJobs;
+  const countLabel = jobTableTab === 'completed' ? `${visibleJobs.length} completed` : `${visibleJobs.length} scheduled`;
+  const timeColumnLabel = jobTableTab === 'completed' ? 'Completed on' : 'Run at';
+  const totalJobPages = Math.max(1, Math.ceil(visibleJobs.length / jobsPerPage));
+  const pagedVisibleJobs = useMemo(() => {
+    const startIndex = (jobsPage - 1) * jobsPerPage;
+    return visibleJobs.slice(startIndex, startIndex + jobsPerPage);
+  }, [visibleJobs, jobsPage, jobsPerPage]);
+
   const languages = useMemo(() => {
     return Array.from(new Set([...Object.values(languageNames || {}), 'English'])).sort();
   }, []);
+
+  useEffect(() => {
+    setJobsPage(1);
+  }, [statusFilter, destinationFilter, platformFilter, searchTerm, jobTableTab]);
+
+  useEffect(() => {
+    if (jobsPage > totalJobPages) {
+      setJobsPage(totalJobPages);
+    }
+  }, [jobsPage, totalJobPages]);
 
   const clearMessages = () => {
     setError('');
@@ -452,9 +660,128 @@ function SchedulerPage() {
     }
   }, []);
 
+  const mapHistoryRowsToOptions = useCallback((items = []) => {
+    return (Array.isArray(items) ? items : [])
+      .map((item) => ({
+        id: String(item?.id || item?._id || ''),
+        title: String(item?.title || item?.topic || '').trim(),
+        keywords: item?.keywords || '',
+        categories: Array.isArray(item?.categories)
+          ? item.categories
+          : String(item?.categories || '')
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean),
+        generatedAt: item?.generatedAt || item?.created_at || item?.createdAt || '',
+      }))
+      .filter((item) => item.id && item.title);
+  }, []);
+
+  const loadHistoryBlogOptions = useCallback(async ({ search = '', force = false, limit = 120 } = {}) => {
+    if (historyBlogLoadingRef.current && !force) return;
+    const normalizedSearch = String(search || '').trim();
+    const cacheKey = normalizedSearch.toLowerCase();
+    if (!force && historyBlogCacheRef.current.has(cacheKey)) {
+      setHistoryBlogOptions(historyBlogCacheRef.current.get(cacheKey));
+      return;
+    }
+    historyBlogLoadingRef.current = true;
+    setHistoryBlogLoading(true);
+    try {
+      // Fast path for opening dropdown: use history endpoint (benefits from main-process cache)
+      // and then do local search filtering in the UI.
+      if (!normalizedSearch) {
+        const fallback = await window.electronAPI.getHistory({
+          limit: Math.max(120, Math.min(500, Number(limit) || 300)),
+        });
+        if (!fallback?.success) {
+          throw new Error(fallback?.error || 'Failed to load history blogs');
+        }
+        const mappedItems = mapHistoryRowsToOptions(fallback?.history || []);
+        historyBlogCacheRef.current.set(cacheKey, mappedItems);
+        setHistoryBlogOptions(mappedItems);
+        return;
+      }
+
+      const response = await window.electronAPI.schedulerListHistoryBlogs({
+        limit: Math.max(20, Math.min(300, Number(limit) || 120)),
+        search: normalizedSearch,
+      });
+      if (!response?.success) {
+        throw new Error(response?.error || 'Failed to load history blogs');
+      }
+      let items = mapHistoryRowsToOptions(response?.blogs || []);
+
+      historyBlogCacheRef.current.set(cacheKey, items);
+      setHistoryBlogOptions(items);
+    } catch (e) {
+      try {
+        const fallback = await window.electronAPI.getHistory({ limit: 120 });
+        if (!fallback?.success) {
+          throw new Error(fallback?.error || 'Failed to load history blogs');
+        }
+        const mappedItems = mapHistoryRowsToOptions(fallback?.history || []);
+        const fallbackFiltered = normalizedSearch
+          ? mappedItems.filter((item) =>
+              `${item.title} ${Array.isArray(item.keywords) ? item.keywords.join(', ') : item.keywords || ''}`
+                .toLowerCase()
+                .includes(normalizedSearch.toLowerCase())
+            )
+          : mappedItems;
+        historyBlogCacheRef.current.set(cacheKey, fallbackFiltered);
+        setHistoryBlogOptions(
+          fallbackFiltered
+        );
+      } catch (fallbackErr) {
+        setError(fallbackErr.message || e.message || 'Failed to load history blogs');
+      }
+    } finally {
+      historyBlogLoadingRef.current = false;
+      setHistoryBlogLoading(false);
+    }
+  }, [mapHistoryRowsToOptions]);
+
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (showCreateModal && form.scheduleMode === 'existing') {
+      loadHistoryBlogOptions();
+    }
+  }, [showCreateModal, form.scheduleMode, loadHistoryBlogOptions]);
+
+  useEffect(() => {
+    if (showEditModal && editForm.scheduleMode === 'existing') {
+      loadHistoryBlogOptions();
+    }
+  }, [showEditModal, editForm.scheduleMode, loadHistoryBlogOptions]);
+
+  useEffect(() => {
+    if (!(showCreateModal && form.scheduleMode === 'existing')) return;
+    const q = String(createHistoryBlogQuery || '').trim();
+    const timer = setTimeout(() => {
+      if (q.length >= 2 && historyBlogOptions.length === 0) {
+        loadHistoryBlogOptions({ search: q, force: false, limit: 140 });
+      } else if (q.length === 0) {
+        loadHistoryBlogOptions({ search: '', force: false, limit: 120 });
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [createHistoryBlogQuery, showCreateModal, form.scheduleMode, loadHistoryBlogOptions, historyBlogOptions.length]);
+
+  useEffect(() => {
+    if (!(showEditModal && editForm.scheduleMode === 'existing')) return;
+    const q = String(editHistoryBlogQuery || '').trim();
+    const timer = setTimeout(() => {
+      if (q.length >= 2 && historyBlogOptions.length === 0) {
+        loadHistoryBlogOptions({ search: q, force: false, limit: 140 });
+      } else if (q.length === 0) {
+        loadHistoryBlogOptions({ search: '', force: false, limit: 120 });
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [editHistoryBlogQuery, showEditModal, editForm.scheduleMode, loadHistoryBlogOptions, historyBlogOptions.length]);
 
   useEffect(() => {
     if (!showImportModal) return;
@@ -487,6 +814,58 @@ function SchedulerPage() {
     }));
   };
 
+  const onCreateModeChange = (mode) => {
+    if (mode !== 'existing') {
+      setCreateHistoryBlogQuery('');
+    }
+    setForm((prev) => ({
+      ...prev,
+      scheduleMode: mode,
+      sourceBlogId: mode === 'existing' ? prev.sourceBlogId : '',
+    }));
+  };
+
+  const onEditModeChange = (mode) => {
+    if (mode !== 'existing') {
+      setEditHistoryBlogQuery('');
+    }
+    setEditForm((prev) => ({
+      ...prev,
+      scheduleMode: mode,
+      sourceBlogId: mode === 'existing' ? prev.sourceBlogId : '',
+    }));
+  };
+
+  const onCreateSourceBlogChange = (sourceBlogId) => {
+    const blog = historyBlogMap.get(String(sourceBlogId || ''));
+    const mappedKeywords = Array.isArray(blog?.keywords) ? blog.keywords.join(', ') : String(blog?.keywords || '');
+    setForm((prev) => ({
+      ...prev,
+      sourceBlogId,
+      topic: blog?.title || prev.topic,
+      keywords: mappedKeywords || prev.keywords,
+      categories:
+        Array.isArray(blog?.categories) && blog.categories.length > 0
+          ? blog.categories.join(', ')
+          : prev.categories,
+    }));
+  };
+
+  const onEditSourceBlogChange = (sourceBlogId) => {
+    const blog = historyBlogMap.get(String(sourceBlogId || ''));
+    const mappedKeywords = Array.isArray(blog?.keywords) ? blog.keywords.join(', ') : String(blog?.keywords || '');
+    setEditForm((prev) => ({
+      ...prev,
+      sourceBlogId,
+      topic: blog?.title || prev.topic,
+      keywords: mappedKeywords || prev.keywords,
+      categories:
+        Array.isArray(blog?.categories) && blog.categories.length > 0
+          ? blog.categories.join(', ')
+          : prev.categories,
+    }));
+  };
+
   const onEditDestinationChange = (destinationId) => {
     setEditForm((prev) => ({
       ...prev,
@@ -495,27 +874,51 @@ function SchedulerPage() {
   };
 
   const buildPayload = (sourceForm = form) => {
-    const topic = String(sourceForm.topic || '').trim();
+    const scheduleMode = String(sourceForm.scheduleMode || 'generate').toLowerCase() === 'existing' ? 'existing' : 'generate';
+    const sourceBlogId = String(sourceForm.sourceBlogId || '').trim();
+    const sourceBlog = sourceBlogId ? historyBlogMap.get(sourceBlogId) : null;
+    const topic =
+      scheduleMode === 'existing'
+        ? String(sourceBlog?.title || sourceForm.topic || '').trim()
+        : String(sourceForm.topic || '').trim();
     const runAt = toIso(sourceForm.runAt);
     const shopId = String(sourceForm.destinationId || 'default').trim();
     const selectedDestination = destinations.find((item) => item.id === sourceForm.destinationId);
     const resolvedPlatform = String(selectedDestination?.platform || '').trim();
 
+    if (scheduleMode === 'existing' && !sourceBlogId) {
+      throw new Error('Select a history blog to schedule.');
+    }
+    if (scheduleMode === 'existing' && !sourceBlog && !String(sourceForm.topic || '').trim()) {
+      throw new Error('Selected history blog was not found.');
+    }
     if (!topic) throw new Error('Topic is required.');
     if (!runAt) throw new Error('Valid run date/time is required.');
     if (sourceForm.autoPost && !String(sourceForm.destinationId || '').trim()) {
       throw new Error('Destination is required when auto post is enabled.');
     }
 
-    const categories = String(sourceForm.categories || '')
+    const sourceCategories = Array.isArray(sourceBlog?.categories) ? sourceBlog.categories : [];
+    const categoriesInput =
+      scheduleMode === 'existing' && !String(sourceForm.categories || '').trim()
+        ? sourceCategories.join(', ')
+        : String(sourceForm.categories || '');
+    const categories = categoriesInput
       .split(',')
       .map((x) => x.trim())
       .filter(Boolean);
+    const sourceKeywords =
+      Array.isArray(sourceBlog?.keywords) ? sourceBlog.keywords.join(', ') : String(sourceBlog?.keywords || '').trim();
+    const keywords =
+      scheduleMode === 'existing' && !String(sourceForm.keywords || '').trim()
+        ? sourceKeywords
+        : String(sourceForm.keywords || '').trim();
+    const focusKeyword = String(sourceForm.focusKeyword || '').trim();
 
     const payloadCore = {
       destination_id: String(sourceForm.destinationId || '').trim(),
       platform: resolvedPlatform,
-      focus_keyword: String(sourceForm.focusKeyword || '').trim(),
+      focus_keyword: focusKeyword,
       publish_status: sourceForm.publishStatus === 'publish' ? 'publish' : 'draft',
       generate_image: !!sourceForm.generateImage,
       auto_post: !!sourceForm.autoPost,
@@ -527,14 +930,20 @@ function SchedulerPage() {
       website_url: String(sourceForm.websiteUrl || '').trim(),
       scraper_platform: String(sourceForm.scraperPlatform || 'generic'),
       categories,
+      schedule_mode: scheduleMode,
+      source_blog_id: sourceBlogId,
     };
 
     return {
       shopId,
       destinationId: payloadCore.destination_id,
       platform: payloadCore.platform,
+      schedule_mode: scheduleMode,
+      source_blog_id: sourceBlogId,
+      scheduleMode,
+      sourceBlogId,
       topic,
-      keywords: String(sourceForm.keywords || '').trim(),
+      keywords,
       focusKeyword: payloadCore.focus_keyword,
       runAt,
       generateImage: payloadCore.generate_image,
@@ -571,6 +980,7 @@ function SchedulerPage() {
   const openEditModal = (job) => {
     setEditTargetId(job.id || '');
     setEditForm(formFromJob(job));
+    setEditHistoryBlogQuery('');
     setShowEditModal(true);
   };
 
@@ -618,6 +1028,20 @@ function SchedulerPage() {
     await loadAll();
   };
 
+  const handleRetryFailed = async (job) => {
+    clearMessages();
+    const result = await window.electronAPI.schedulerUpdateJob({
+      jobId: job.id,
+      updates: { status: 'pending' },
+    });
+    if (!result?.success) {
+      setError(result?.error || 'Failed to retry schedule');
+      return;
+    }
+    setSuccess('Schedule moved to pending. It will retry shortly.');
+    await loadAll();
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget?.id) return;
     clearMessages();
@@ -652,10 +1076,10 @@ function SchedulerPage() {
     const mappedFields = headers
       .map((h) => csvColumnMappings[h] || detectImportField(h))
       .filter(Boolean);
-    const hasTopicField = mappedFields.includes('topic');
+    const hasTopicField = mappedFields.includes('topic') || mappedFields.includes('source_blog_id');
     const hasRunField = mappedFields.some((f) => f === 'run_at' || f === 'datetime' || f === 'date');
     if (!hasTopicField || !hasRunField) {
-      setError('Map CSV columns first. Required fields: topic and run_at (or date/datetime).');
+      setError('Map CSV columns first. Required fields: topic or source_blog_id, and run_at (or date/datetime).');
       return;
     }
     const rows = lines.slice(1).map((line) => {
@@ -687,7 +1111,13 @@ function SchedulerPage() {
       const destinationId = String(row.destination_id || row.destinationid || matchedDestination?.id || '').trim();
       const selectedDestination = destinationId ? destinations.find((d) => d.id === destinationId) : matchedDestination;
       const shopId = String(destinationId || row.shop_id || row.shopid || 'default').trim();
-      const topic = String(row.topic || '').trim();
+      const scheduleMode =
+        String(row.schedule_mode || row.schedulemode || 'generate').trim().toLowerCase() === 'existing'
+          ? 'existing'
+          : 'generate';
+      const sourceBlogId = String(row.source_blog_id || row.sourceblogid || '').trim();
+      const fallbackSourceBlog = sourceBlogId ? historyBlogMap.get(sourceBlogId) : null;
+      const topic = String(row.topic || fallbackSourceBlog?.title || '').trim();
       const keywords = String(row.keywords || '').trim();
       const focusKeyword = String(row.focus_keyword || row.focuskeyword || '').trim();
       const platform = String(selectedDestination?.platform || row.platform || '').trim();
@@ -712,8 +1142,12 @@ function SchedulerPage() {
       }
       const runAt = toIso(runAtRaw);
 
-      if (!topic || !runAt) {
+      if ((!topic && scheduleMode !== 'existing') || !runAt) {
         errors.push(`Row ${i + 2}: Missing topic/run_at`);
+        continue;
+      }
+      if (scheduleMode === 'existing' && !sourceBlogId) {
+        errors.push(`Row ${i + 2}: source_blog_id is required when schedule_mode is existing`);
         continue;
       }
       if (autoPost && !destinationId) {
@@ -746,6 +1180,8 @@ function SchedulerPage() {
         website_url: websiteUrl,
         scraper_platform: scraperPlatform,
         categories,
+        schedule_mode: scheduleMode,
+        source_blog_id: sourceBlogId,
         ...payloadJson,
       };
 
@@ -753,7 +1189,9 @@ function SchedulerPage() {
         shopId,
         destinationId,
         platform,
-        topic,
+        scheduleMode,
+        sourceBlogId,
+        topic: topic || `History blog ${sourceBlogId}`,
         keywords,
         focusKeyword,
         runAt,
@@ -822,9 +1260,11 @@ function SchedulerPage() {
   };
 
   const handleExportCsv = () => {
-    const rows = filteredJobs.map((job) => [
+    const rows = visibleJobs.map((job) => [
       job.destinationId,
       destinationMap.get(job.destinationId)?.name || '',
+      job.scheduleMode || 'generate',
+      job.sourceBlogId || '',
       job.topic,
       job.keywords,
       job.focusKeyword,
@@ -843,7 +1283,8 @@ function SchedulerPage() {
       job.platform,
       JSON.stringify(job.payload || {}),
     ].map(csvEscape));
-    downloadCsv('scheduler-jobs.csv', [CSV_HEADERS.map(csvEscape), ...rows]);
+    const fileName = jobTableTab === 'completed' ? 'scheduler-completed-jobs.csv' : 'scheduler-jobs.csv';
+    downloadCsv(fileName, [CSV_HEADERS.map(csvEscape), ...rows]);
   };
 
   const handleTemplateCsv = () => {
@@ -851,6 +1292,8 @@ function SchedulerPage() {
     sampleDate.setMinutes(sampleDate.getMinutes() + 30);
     const sampleRow = {
       destination: destinations[0]?.name || 'Your destination name',
+      schedule_mode: 'generate',
+      source_blog_id: '',
       topic: 'Best leather care tips for premium furniture',
       keywords: 'leather care, premium furniture',
       focus_keyword: 'leather care tips',
@@ -880,6 +1323,8 @@ function SchedulerPage() {
     if (s === 'cancelled') return 'bg-slate-500/20 text-slate-300 border-slate-500/40';
     return 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30';
   };
+
+  const isTerminalStatus = (status) => ['completed', 'failed', 'cancelled'].includes(String(status || '').toLowerCase());
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6">
@@ -956,6 +1401,7 @@ function SchedulerPage() {
               type="button"
               onClick={() => {
                 setForm(defaultForm());
+                setCreateHistoryBlogQuery('');
                 setShowCreateModal(true);
               }}
               className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
@@ -967,15 +1413,30 @@ function SchedulerPage() {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Scheduled jobs</h3>
-          <span className="text-xs text-slate-500 dark:text-slate-400">{filteredJobs.length} schedule(s)</span>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1.5 dark:border-slate-700/80 dark:bg-slate-800/70">
+            {JOB_TABLE_TABS.map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => setJobTableTab(tab.value)}
+                className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                  jobTableTab === tab.value
+                    ? 'border border-blue-300 bg-white text-slate-900 shadow-sm dark:border-blue-500/40 dark:bg-blue-900/40 dark:text-white dark:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.2)]'
+                    : 'text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700/60'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-slate-500 dark:text-slate-400">{countLabel}</span>
         </div>
         <div className="mt-3 overflow-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500 dark:text-slate-400">
-                <th className="py-2 pr-3">Run at</th>
+                <th className="py-2 pr-3">{timeColumnLabel}</th>
                 <th className="py-2 pr-3">Topic</th>
                 <th className="py-2 pr-3">Destination</th>
                 <th className="py-2 pr-3">Status</th>
@@ -986,13 +1447,25 @@ function SchedulerPage() {
             </thead>
             <tbody>
               {loading ? <tr><td className="py-3 text-slate-500" colSpan={7}>Loading...</td></tr> : null}
-              {!loading && filteredJobs.length === 0 ? <tr><td className="py-3 text-slate-500" colSpan={7}>No scheduler jobs found.</td></tr> : null}
-              {!loading && filteredJobs.map((job) => {
+              {!loading && visibleJobs.length === 0 ? (
+                <tr>
+                  <td className="py-3 text-slate-500" colSpan={7}>
+                    {jobTableTab === 'completed' ? 'No completed jobs found.' : 'No scheduler jobs found.'}
+                  </td>
+                </tr>
+              ) : null}
+              {!loading && pagedVisibleJobs.map((job) => {
                 const d = destinationMap.get(job.destinationId);
+                const canPauseResume = !isTerminalStatus(job.status);
+                const isFailed = String(job.status || '').toLowerCase() === 'failed';
+                const primaryTime =
+                  jobTableTab === 'completed' ? job.completedAt || job.updatedAt || job.runAt : job.runAt;
                 return (
                   <tr key={job.id} className="border-t border-slate-200 dark:border-slate-700">
-                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{formatDatetime(job.runAt)}</td>
-                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200"><div className="font-medium">{job.topic}</div><div className="text-xs text-slate-500 dark:text-slate-400">{job.keywords || '-'}</div></td>
+                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{formatDatetime(primaryTime)}</td>
+                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">
+                      <div className="font-medium">{job.topic}</div>
+                    </td>
                     <td className="py-2 pr-3 text-slate-700 dark:text-slate-200"><div>{d?.name || job.destinationId || '-'}</div><div className="text-xs text-slate-500 dark:text-slate-400">{job.platform || d?.platform || '-'}</div></td>
                     <td className="py-2 pr-3"><span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${statusClass(job.status)}`}>{job.status}</span></td>
                     <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{job.autoPost ? `Auto (${job.publishStatus})` : 'Generate only'}</td>
@@ -1000,7 +1473,19 @@ function SchedulerPage() {
                     <td className="py-2">
                       <div className="flex items-center gap-2">
                         <button type="button" onClick={() => openEditModal(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Edit</button>
-                        <button type="button" onClick={() => handlePauseToggle(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{job.status === 'paused' ? 'Resume' : 'Pause'}</button>
+                        {isFailed ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryFailed(job)}
+                            className="rounded-lg border border-emerald-300 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
+                          >
+                            Retry
+                          </button>
+                        ) : canPauseResume ? (
+                          <button type="button" onClick={() => handlePauseToggle(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{job.status === 'paused' ? 'Resume' : 'Pause'}</button>
+                        ) : (
+                          <span className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400">Done</span>
+                        )}
                         <button type="button" onClick={() => setDeleteTarget(job)} className="rounded-lg border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/20">Delete</button>
                       </div>
                     </td>
@@ -1010,36 +1495,93 @@ function SchedulerPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          totalItems={visibleJobs.length}
+          page={jobsPage}
+          perPage={jobsPerPage}
+          perPageOptions={[10, 20, 50, 100]}
+          onPageChange={setJobsPage}
+          onPerPageChange={(value) => {
+            setJobsPerPage(value);
+            setJobsPage(1);
+          }}
+        />
       </div>
 
       {showCreateModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+          <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-100">Create schedule</h3>
-              <button
-                type="button"
-                onClick={() => setShowCreateModal(false)}
-                className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
-              >
-                Close
-              </button>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Create schedule</h3>
+              <ModalCloseButton onClick={() => setShowCreateModal(false)} label="Close" />
             </div>
 
             <form onSubmit={handleCreate} className="mt-4">
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">1. Blog content</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={form.topic} onChange={(e) => setForm((p) => ({ ...p, topic: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Keywords</label><input className={inputClass} value={form.keywords} onChange={(e) => setForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={form.focusKeyword} onChange={(e) => setForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
-                    <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={form.categories} onChange={(e) => setForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Schedule type</p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {SCHEDULE_MODES.map((mode) => (
+                      <button
+                        key={`create-mode-${mode.value}`}
+                        type="button"
+                        onClick={() => onCreateModeChange(mode.value)}
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                          form.scheduleMode === mode.value
+                            ? 'border-blue-500 bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-300'
+                            : 'border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">2. Destination and run time</p>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  {form.scheduleMode === 'existing' ? (
+                    <>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        1. Select existing history blog
+                      </p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>History blog</label>
+                          <HistoryBlogDropdown
+                            value={form.sourceBlogId}
+                            options={createFilteredHistoryBlogOptions}
+                            loading={historyBlogLoading}
+                            query={createHistoryBlogQuery}
+                            onQueryChange={setCreateHistoryBlogQuery}
+                            onSelect={onCreateSourceBlogChange}
+                            onRefresh={() =>
+                              loadHistoryBlogOptions({ search: '', force: true })
+                            }
+                            placeholder="Select a generated blog"
+                          />
+                          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                            {historyBlogLoading
+                              ? 'Loading history blogs...'
+                              : `${createFilteredHistoryBlogOptions.length} blog(s) found`}
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">1. Blog content</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={form.topic} onChange={(e) => setForm((p) => ({ ...p, topic: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Keywords</label><input className={inputClass} value={form.keywords} onChange={(e) => setForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={form.focusKeyword} onChange={(e) => setForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
+                        <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={form.categories} onChange={(e) => setForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">2. Destination and run time</p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
                       <label className={labelClass}>Post destination</label>
@@ -1054,30 +1596,36 @@ function SchedulerPage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">3. Writing setup</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                    <div><label className={labelClass}>Language</label><select className={inputClass} value={form.language} onChange={(e) => setForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Style</label><select className={inputClass} value={form.writingStyle} onChange={(e) => setForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Tone</label><select className={inputClass} value={form.writingTone} onChange={(e) => setForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={form.targetWordCount} onChange={(e) => setForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
-                  </div>
-                </div>
+                {form.scheduleMode !== 'existing' ? (
+                  <>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">3. Writing setup</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                        <div><label className={labelClass}>Language</label><select className={inputClass} value={form.language} onChange={(e) => setForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Style</label><select className={inputClass} value={form.writingStyle} onChange={(e) => setForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Tone</label><select className={inputClass} value={form.writingTone} onChange={(e) => setForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={form.targetWordCount} onChange={(e) => setForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
+                      </div>
+                    </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">4. Product context and scrape</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={form.websiteUrl} onChange={(e) => setForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={form.scraperPlatform} onChange={(e) => setForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={form.useProductContext} onChange={(e) => setForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
-                  </div>
-                </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">4. Product context and scrape</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={form.websiteUrl} onChange={(e) => setForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={form.scraperPlatform} onChange={(e) => setForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.useProductContext} onChange={(e) => setForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">5. Output actions</p>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {form.scheduleMode === 'existing' ? '3. Output actions' : '5. Output actions'}
+                  </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={form.generateImage} onChange={(e) => setForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={form.autoPost} onChange={(e) => setForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.generateImage} onChange={(e) => setForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.autoPost} onChange={(e) => setForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
                     {form.autoPost ? (
                       <select className={inputClass} value={form.publishStatus} onChange={(e) => setForm((p) => ({ ...p, publishStatus: e.target.value }))}>
                         <option value="draft">Post as draft</option>
@@ -1089,7 +1637,7 @@ function SchedulerPage() {
               </div>
 
               <div className="mt-5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setForm(defaultForm())} className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800">Reset</button>
+                <button type="button" onClick={() => setForm(defaultForm())} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Reset</button>
                 <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Add schedule</button>
               </div>
             </form>
@@ -1099,32 +1647,78 @@ function SchedulerPage() {
 
       {showEditModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+          <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-100">Edit schedule</h3>
-              <button
-                type="button"
-                onClick={() => setShowEditModal(false)}
-                className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
-              >
-                Close
-              </button>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Edit schedule</h3>
+              <ModalCloseButton onClick={() => setShowEditModal(false)} label="Close" />
             </div>
 
             <form onSubmit={handleEditSave} className="mt-4">
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">1. Blog content</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={editForm.topic} onChange={(e) => setEditForm((p) => ({ ...p, topic: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Keywords</label><input className={inputClass} value={editForm.keywords} onChange={(e) => setEditForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={editForm.focusKeyword} onChange={(e) => setEditForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
-                    <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={editForm.categories} onChange={(e) => setEditForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Schedule type</p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {SCHEDULE_MODES.map((mode) => (
+                      <button
+                        key={`edit-mode-${mode.value}`}
+                        type="button"
+                        onClick={() => onEditModeChange(mode.value)}
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                          editForm.scheduleMode === mode.value
+                            ? 'border-blue-500 bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-300'
+                            : 'border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">2. Destination and run time</p>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  {editForm.scheduleMode === 'existing' ? (
+                    <>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        1. Select existing history blog
+                      </p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>History blog</label>
+                          <HistoryBlogDropdown
+                            value={editForm.sourceBlogId}
+                            options={editFilteredHistoryBlogOptions}
+                            loading={historyBlogLoading}
+                            query={editHistoryBlogQuery}
+                            onQueryChange={setEditHistoryBlogQuery}
+                            onSelect={onEditSourceBlogChange}
+                            onRefresh={() =>
+                              loadHistoryBlogOptions({ search: '', force: true })
+                            }
+                            placeholder="Select a generated blog"
+                          />
+                          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                            {historyBlogLoading
+                              ? 'Loading history blogs...'
+                              : `${editFilteredHistoryBlogOptions.length} blog(s) found`}
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">1. Blog content</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={editForm.topic} onChange={(e) => setEditForm((p) => ({ ...p, topic: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Keywords</label><input className={inputClass} value={editForm.keywords} onChange={(e) => setEditForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={editForm.focusKeyword} onChange={(e) => setEditForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
+                        <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={editForm.categories} onChange={(e) => setEditForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">2. Destination and run time</p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
                       <label className={labelClass}>Post destination</label>
@@ -1139,30 +1733,36 @@ function SchedulerPage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">3. Writing setup</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                    <div><label className={labelClass}>Language</label><select className={inputClass} value={editForm.language} onChange={(e) => setEditForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Style</label><select className={inputClass} value={editForm.writingStyle} onChange={(e) => setEditForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Tone</label><select className={inputClass} value={editForm.writingTone} onChange={(e) => setEditForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={editForm.targetWordCount} onChange={(e) => setEditForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
-                  </div>
-                </div>
+                {editForm.scheduleMode !== 'existing' ? (
+                  <>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">3. Writing setup</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                        <div><label className={labelClass}>Language</label><select className={inputClass} value={editForm.language} onChange={(e) => setEditForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Style</label><select className={inputClass} value={editForm.writingStyle} onChange={(e) => setEditForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Tone</label><select className={inputClass} value={editForm.writingTone} onChange={(e) => setEditForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={editForm.targetWordCount} onChange={(e) => setEditForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
+                      </div>
+                    </div>
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">4. Product context and scrape</p>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={editForm.websiteUrl} onChange={(e) => setEditForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
-                    <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={editForm.scraperPlatform} onChange={(e) => setEditForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={editForm.useProductContext} onChange={(e) => setEditForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
-                  </div>
-                </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">4. Product context and scrape</p>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={editForm.websiteUrl} onChange={(e) => setEditForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
+                        <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={editForm.scraperPlatform} onChange={(e) => setEditForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.useProductContext} onChange={(e) => setEditForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
 
-                <div className="rounded-xl border border-slate-700/80 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">5. Output actions</p>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {editForm.scheduleMode === 'existing' ? '3. Output actions' : '5. Output actions'}
+                  </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={editForm.generateImage} onChange={(e) => setEditForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-200"><input type="checkbox" checked={editForm.autoPost} onChange={(e) => setEditForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.generateImage} onChange={(e) => setEditForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.autoPost} onChange={(e) => setEditForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
                     {editForm.autoPost ? (
                       <select className={inputClass} value={editForm.publishStatus} onChange={(e) => setEditForm((p) => ({ ...p, publishStatus: e.target.value }))}>
                         <option value="draft">Post as draft</option>
@@ -1174,7 +1774,7 @@ function SchedulerPage() {
               </div>
 
               <div className="mt-5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setShowEditModal(false)} className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800">Cancel</button>
+                <button type="button" onClick={() => setShowEditModal(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button>
                 <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Save changes</button>
               </div>
             </form>
@@ -1184,30 +1784,24 @@ function SchedulerPage() {
 
       {showImportModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="max-h-[92vh] w-full max-w-3xl overflow-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+          <div className="max-h-[92vh] w-full max-w-3xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-100">Import schedules</h3>
-              <button
-                type="button"
-                onClick={() => setShowImportModal(false)}
-                className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
-              >
-                Close
-              </button>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Import schedules</h3>
+              <ModalCloseButton onClick={() => setShowImportModal(false)} label="Close" />
             </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={handleTemplateCsv}
-                className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 Export sample template
               </button>
             </div>
 
             <div className="mt-4 space-y-3">
-              <input type="file" accept=".csv,text/csv" onChange={handleCsvFile} className="w-full text-sm text-slate-200" />
+              <input type="file" accept=".csv,text/csv" onChange={handleCsvFile} className="w-full text-sm text-slate-700 dark:text-slate-200" />
               <textarea
                 className={inputClass}
                 rows={10}
@@ -1218,17 +1812,17 @@ function SchedulerPage() {
             </div>
 
             {csvHeaders.length > 0 ? (
-              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/40 p-3">
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/40">
                 <div className="mb-3 flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-100">Column mapping</p>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Column mapping</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     Identified:{' '}
                     {csvHeaders.filter((h) => (csvColumnMappings[h] || detectImportField(h))).length} / {csvHeaders.length}
                   </p>
                 </div>
-                <div className="max-h-64 overflow-auto rounded-lg border border-slate-700">
+                <div className="max-h-64 overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
                   <table className="min-w-full text-xs">
-                    <thead className="bg-slate-900 text-slate-300">
+                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-300">
                       <tr>
                         <th className="px-3 py-2 text-left">CSV column</th>
                         <th className="px-3 py-2 text-left">Detected</th>
@@ -1239,8 +1833,8 @@ function SchedulerPage() {
                       {csvHeaders.map((header) => {
                         const mapped = csvColumnMappings[header] || detectImportField(header);
                         return (
-                          <tr key={header} className="border-t border-slate-700">
-                            <td className="px-3 py-2 text-slate-200">{header}</td>
+                          <tr key={header} className="border-t border-slate-200 dark:border-slate-700">
+                            <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{header}</td>
                             <td className="px-3 py-2">
                               <span
                                 className={`inline-flex rounded-full px-2 py-0.5 ${
@@ -1252,7 +1846,7 @@ function SchedulerPage() {
                             </td>
                             <td className="px-3 py-2">
                               <select
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                                 value={mapped}
                                 onChange={(e) =>
                                   setCsvColumnMappings((prev) => ({
@@ -1285,7 +1879,7 @@ function SchedulerPage() {
                   setCsvHeaders([]);
                   setCsvColumnMappings({});
                 }}
-                className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 Clear
               </button>
@@ -1307,7 +1901,7 @@ function SchedulerPage() {
             <h4 className="text-lg font-semibold text-white">Delete schedule?</h4>
             <p className="mt-2 text-sm text-slate-300">This will permanently delete the schedule for "{deleteTarget.topic}".</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">Cancel</button>
+              <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button>
               <button type="button" onClick={handleDelete} className="rounded-lg border border-red-800 bg-red-900/30 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/50">Delete</button>
             </div>
           </div>
@@ -1318,5 +1912,3 @@ function SchedulerPage() {
 }
 
 export default SchedulerPage;
-
-

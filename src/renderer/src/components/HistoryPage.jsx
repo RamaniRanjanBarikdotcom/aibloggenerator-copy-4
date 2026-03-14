@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Clock, ExternalLink, X, Plus, Upload } from 'lucide-react';
+import ModalCloseButton from './ModalCloseButton';
 
 const HISTORY_PUBLISH_STATUS_CACHE_KEY = 'history_publish_status_cache_v1';
 const HISTORY_PUBLISH_STATUS_TTL_MS = 60 * 60 * 1000;
@@ -214,6 +215,12 @@ function HistoryPage({
   useEffect(() => {
     setPageIndex(1);
   }, [searchTerm, dateFilter, statusFilter, pageSize]);
+
+  useEffect(() => {
+    if (pageIndex > totalPages) {
+      setPageIndex(totalPages);
+    }
+  }, [pageIndex, totalPages]);
 
   const selectedPublishStatus = selectedBlogId ? publishStatuses[selectedBlogId] : null;
   const selectedGallery = useMemo(
@@ -448,21 +455,25 @@ function HistoryPage({
                     <option value="html">{t.exportHtml || 'HTML'}</option>
                     <option value="pdf">{t.exportPdf || 'PDF'}</option>
                     <option value="docx">{t.exportDocx || 'DOCX'}</option>
+                    <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
                   </select>
                   <button
                     type="button"
                     onClick={async () => {
-                      const result = await window.electronAPI.exportBulk({
-                        blogIds: selectedIds,
-                        format: bulkFormat,
-                      });
+                      const result =
+                        bulkFormat === 'imagesZip'
+                          ? await window.electronAPI.exportHistoryImages({ blogIds: selectedIds })
+                          : await window.electronAPI.exportBulk({
+                              blogIds: selectedIds,
+                              format: bulkFormat,
+                            });
                       if (!result.success && result.error !== 'Export cancelled') {
                         alert(`Export failed: ${result.error}`);
                       }
                     }}
                     className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                   >
-                    {t.exportBulk}
+                    {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
                   </button>
                   <button
                     type="button"
@@ -503,22 +514,26 @@ function HistoryPage({
                     <option value="html">{t.exportHtml || 'HTML'}</option>
                     <option value="pdf">{t.exportPdf || 'PDF'}</option>
                     <option value="docx">{t.exportDocx || 'DOCX'}</option>
+                    <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
                   </select>
                   <button
                     type="button"
                     onClick={async () => {
                       const ids = filteredHistory.map((item) => item.id);
-                      const result = await window.electronAPI.exportBulk({
-                        blogIds: ids,
-                        format: bulkFormat,
-                      });
+                      const result =
+                        bulkFormat === 'imagesZip'
+                          ? await window.electronAPI.exportHistoryImages({ blogIds: ids })
+                          : await window.electronAPI.exportBulk({
+                              blogIds: ids,
+                              format: bulkFormat,
+                            });
                       if (!result.success && result.error !== 'Export cancelled') {
                         alert(`Export failed: ${result.error}`);
                       }
                     }}
                     className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                   >
-                    {t.exportBulk}
+                    {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
                   </button>
                   <button
                     type="button"
@@ -538,7 +553,7 @@ function HistoryPage({
               )}
               </div>
             )}
-            <div className="ml-auto rounded-lg bg-white px-3 py-2 text-slate-600 border border-slate-200">
+            <div className="ml-auto rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
               {t.historyPerPage || 'Per page'}:{' '}
               <select
                 value={pageSize}
@@ -632,44 +647,26 @@ function HistoryPage({
       )}
 
       {filteredHistory.length > 0 && (
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
-          <div>
-            {t.historyPageLabel || 'Page'} {safePageIndex} {t.historyPageOf || 'of'} {totalPages}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPageIndex(1)}
-              disabled={safePageIndex === 1}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              {t.historyFirst || 'First'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPageIndex((prev) => Math.max(1, prev - 1))}
-              disabled={safePageIndex === 1}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              {t.historyPrev || 'Prev'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPageIndex((prev) => Math.min(totalPages, prev + 1))}
-              disabled={safePageIndex === totalPages}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              {t.historyNext || 'Next'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPageIndex(totalPages)}
-              disabled={safePageIndex === totalPages}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              {t.historyLast || 'Last'}
-            </button>
-          </div>
+        <div className="mt-4 flex items-center justify-end gap-3 text-sm text-slate-600">
+          <button
+            type="button"
+            onClick={() => setPageIndex((prev) => Math.max(1, prev - 1))}
+            disabled={safePageIndex === 1}
+            className="rounded-xl border border-slate-300 px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            {t.historyPrev || 'Prev'}
+          </button>
+          <span className="text-sm text-slate-600 dark:text-slate-300">
+            {t.historyPageLabel || 'Page'} {safePageIndex} / {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPageIndex((prev) => Math.min(totalPages, prev + 1))}
+            disabled={safePageIndex === totalPages}
+            className="rounded-xl border border-slate-300 px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            {t.historyNext || 'Next'}
+          </button>
         </div>
       )}
 
@@ -686,13 +683,7 @@ function HistoryPage({
                   {selectedBlog?.wordCount ? ` • ${selectedBlog.wordCount} ${t.historyWords}` : ''}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={closeDetails}
-                className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <ModalCloseButton onClick={closeDetails} label={t.close || 'Close'} />
             </div>
 
             <div className="max-h-[70vh] overflow-y-auto px-5 py-4">

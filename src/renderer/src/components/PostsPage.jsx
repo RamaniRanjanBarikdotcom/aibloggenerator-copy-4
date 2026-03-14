@@ -1,5 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, ExternalLink, Globe, TrendingUp, FileText, Eye, Calendar, BarChart3, AlertCircle, CheckCircle, XCircle, Clock, Pencil, Trash2 } from 'lucide-react';
+import ModalCloseButton from './ModalCloseButton';
+import TablePagination from './TablePagination';
 import {
   LineChart,
   Line,
@@ -27,7 +29,8 @@ const normalizeUrlKey = (value) => {
   if (!trimmed) return '';
   try {
     const parsed = new URL(trimmed);
-    return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    return `${host}${parsed.pathname}`.toLowerCase();
   } catch {
     return trimmed.toLowerCase();
   }
@@ -52,20 +55,47 @@ const normalizeFileKey = (value) => {
     .replace(/-scaled(?=\.[a-z0-9]+$)/i, '');
 };
 
+const normalizeFileVariantKey = (value) => {
+  const fileKey = normalizeFileKey(value);
+  if (!fileKey) return '';
+  const dotIndex = fileKey.lastIndexOf('.');
+  const ext = dotIndex >= 0 ? fileKey.slice(dotIndex) : '';
+  const name = dotIndex >= 0 ? fileKey.slice(0, dotIndex) : fileKey;
+  const parts = name.split('-').filter(Boolean);
+  const isSuffixToken = (token) =>
+    /^scaled$/i.test(token) ||
+    /^\d+x\d+$/i.test(token) ||
+    /^\d{2,}$/.test(token) ||
+    /^[a-f0-9]{6,}$/i.test(token);
+  while (parts.length > 1 && isSuffixToken(parts[parts.length - 1])) {
+    parts.pop();
+  }
+  return `${parts.join('-')}${ext}`;
+};
+
 const dedupeUrls = (items = []) => {
   const seenUrl = new Set();
   const seenFile = new Set();
+  const seenFileVariant = new Set();
+  const seenStamp = new Set();
   return items
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .filter((value) => {
       const urlKey = normalizeUrlKey(value);
       const fileKey = normalizeFileKey(value);
+      const fileVariantKey = normalizeFileVariantKey(value);
+      const stampMatch = fileKey.match(/-(\d{10,})(?=\.[a-z0-9]+$)/i);
+      const stampKey = stampMatch ? stampMatch[1] : '';
       if (!urlKey) return false;
       if (seenUrl.has(urlKey)) return false;
       if (fileKey && seenFile.has(fileKey)) return false;
+      if (fileVariantKey && seenFileVariant.has(fileVariantKey)) return false;
+      if (stampKey && seenStamp.has(stampKey)) return false;
       seenUrl.add(urlKey);
       if (fileKey) seenFile.add(fileKey);
+      if (fileVariantKey) seenFileVariant.add(fileVariantKey);
+      if (stampKey) seenStamp.add(stampKey);
       return true;
     });
 };
@@ -102,8 +132,15 @@ function PostsPage({ t, canDelete = false }) {
   const [editGallery, setEditGallery] = useState([]);
   const [editImageUrl, setEditImageUrl] = useState('');
   const [editEditorMode, setEditEditorMode] = useState('visual');
+  const [recentPublishesPage, setRecentPublishesPage] = useState(1);
+  const [recentPublishesPerPage, setRecentPublishesPerPage] = useState(10);
+  const [publishHistoryPage, setPublishHistoryPage] = useState(1);
+  const [publishHistoryPerPage, setPublishHistoryPerPage] = useState(10);
+  const [postsPage, setPostsPage] = useState(1);
+  const [postsPerPage, setPostsPerPage] = useState(10);
   const [tinyLoaded, setTinyLoaded] = useState(false);
   const [tinyLoadError, setTinyLoadError] = useState('');
+  const [deleteConfirmPost, setDeleteConfirmPost] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(() =>
     typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : false
   );
@@ -115,6 +152,25 @@ function PostsPage({ t, canDelete = false }) {
   const selectedDestination = destinations.find((dest) => dest.id === destinationId) || null;
   const autoSyncInFlight = useRef(false);
   const lastAutoSyncAt = useRef(0);
+
+  const recentPublishes = Array.isArray(analytics?.recentPublishes) ? analytics.recentPublishes : [];
+  const recentPublishesTotalPages = Math.max(1, Math.ceil(recentPublishes.length / recentPublishesPerPage));
+  const pagedRecentPublishes = useMemo(() => {
+    const startIndex = (recentPublishesPage - 1) * recentPublishesPerPage;
+    return recentPublishes.slice(startIndex, startIndex + recentPublishesPerPage);
+  }, [recentPublishes, recentPublishesPage, recentPublishesPerPage]);
+
+  const publishHistoryTotalPages = Math.max(1, Math.ceil(publishHistory.length / publishHistoryPerPage));
+  const pagedPublishHistory = useMemo(() => {
+    const startIndex = (publishHistoryPage - 1) * publishHistoryPerPage;
+    return publishHistory.slice(startIndex, startIndex + publishHistoryPerPage);
+  }, [publishHistory, publishHistoryPage, publishHistoryPerPage]);
+
+  const postsTotalPages = Math.max(1, Math.ceil(posts.length / postsPerPage));
+  const pagedPosts = useMemo(() => {
+    const startIndex = (postsPage - 1) * postsPerPage;
+    return posts.slice(startIndex, startIndex + postsPerPage);
+  }, [posts, postsPage, postsPerPage]);
 
   const loadPosts = async () => {
     setLoading(true);
@@ -429,39 +485,41 @@ function PostsPage({ t, canDelete = false }) {
       }
       setEditEditorMode('visual');
 
-      // Load linked local images in background so modal opens fast.
-      window.electronAPI
-        .getRemotePostLinkedImages({
-          destinationId,
-          postId: resolvedPostId,
-          remoteUrl: result.post.url || '',
-          remoteTitle: result.post.title || '',
-          remoteFeaturedImage: remoteImage || '',
-        })
-        .then((linkedResult) => {
-          if (!linkedResult?.success) return;
-          if (activeEditPostIdRef.current !== resolvedPostId) return;
+      // Only backfill linked images if we don't already have a meaningful gallery.
+      if (mergedGallery.length <= 1) {
+        window.electronAPI
+          .getRemotePostLinkedImages({
+            destinationId,
+            postId: resolvedPostId,
+            remoteUrl: result.post.url || '',
+            remoteTitle: result.post.title || '',
+            remoteFeaturedImage: remoteImage || '',
+          })
+          .then((linkedResult) => {
+            if (!linkedResult?.success) return;
+            if (activeEditPostIdRef.current !== resolvedPostId) return;
 
-          const linkedGallery = Array.isArray(linkedResult.imageGallery) ? linkedResult.imageGallery : [];
-          const merged = dedupeUrls([
-            remoteImage,
-            result.post.localImageUrl,
-            ...localGallery,
-            linkedResult.localImageUrl,
-            ...linkedGallery,
-          ]);
+            const linkedGallery = Array.isArray(linkedResult.imageGallery) ? linkedResult.imageGallery : [];
+            const merged = dedupeUrls([
+              remoteImage,
+              result.post.localImageUrl,
+              ...localGallery,
+              linkedResult.localImageUrl,
+              ...linkedGallery,
+            ]);
 
-          if (merged.length) {
-            setEditGallery(merged);
-            setEditImageUrl((prev) => {
-              if (prev && merged.some((url) => normalizeUrlKey(url) === normalizeUrlKey(prev))) {
-                return prev;
-              }
-              return remoteImage || merged[0] || '';
-            });
-          }
-        })
-        .catch(() => {});
+            if (merged.length) {
+              setEditGallery(merged);
+              setEditImageUrl((prev) => {
+                if (prev && merged.some((url) => normalizeUrlKey(url) === normalizeUrlKey(prev))) {
+                  return prev;
+                }
+                return remoteImage || merged[0] || '';
+              });
+            }
+          })
+          .catch(() => {});
+      }
     } else {
       setEditError(result.error || 'Failed to load post');
     }
@@ -495,8 +553,12 @@ function PostsPage({ t, canDelete = false }) {
       setError(t.publishDestinationRequired || 'Select a destination first.');
       return;
     }
-    const confirmed = window.confirm(t.deleteConfirm || 'Delete this post from the remote platform?');
-    if (!confirmed) return;
+    setDeleteConfirmPost(post || null);
+  };
+
+  const confirmDeletePost = async () => {
+    const post = deleteConfirmPost;
+    if (!post) return;
     const result = await window.electronAPI.deleteRemotePost({
       destinationId,
       postId: post.id,
@@ -504,8 +566,10 @@ function PostsPage({ t, canDelete = false }) {
     });
     if (!result.success) {
       setError(result.error || 'Delete failed');
+      setDeleteConfirmPost(null);
       return;
     }
+    setDeleteConfirmPost(null);
     await Promise.all([loadPosts(), loadAnalytics(), loadPublishHistory()]);
   };
 
@@ -520,6 +584,33 @@ function PostsPage({ t, canDelete = false }) {
     setAutoSynced(false);
     lastAutoSyncAt.current = 0;
   }, [destinationId]);
+
+  useEffect(() => {
+    setRecentPublishesPage(1);
+  }, [destinationId, analytics?.recentPublishes?.length]);
+
+  useEffect(() => {
+    setPublishHistoryPage(1);
+    setPostsPage(1);
+  }, [statusFilter, platformFilter, destinationId]);
+
+  useEffect(() => {
+    if (recentPublishesPage > recentPublishesTotalPages) {
+      setRecentPublishesPage(recentPublishesTotalPages);
+    }
+  }, [recentPublishesPage, recentPublishesTotalPages]);
+
+  useEffect(() => {
+    if (publishHistoryPage > publishHistoryTotalPages) {
+      setPublishHistoryPage(publishHistoryTotalPages);
+    }
+  }, [publishHistoryPage, publishHistoryTotalPages]);
+
+  useEffect(() => {
+    if (postsPage > postsTotalPages) {
+      setPostsPage(postsTotalPages);
+    }
+  }, [postsPage, postsTotalPages]);
 
   // Lightweight polling for near-real-time updates
   useEffect(() => {
@@ -967,9 +1058,10 @@ function PostsPage({ t, canDelete = false }) {
               <Calendar className="w-4 h-4 text-blue-600" />
               {t.recentPublishes || 'Recent Publishes'}
             </h3>
-            {analytics.recentPublishes?.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+            {recentPublishes.length > 0 ? (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-slate-500 border-b border-slate-100">
                       <th className="pb-2 font-medium">{t.destinationLabel || 'Destination'}</th>
@@ -979,8 +1071,8 @@ function PostsPage({ t, canDelete = false }) {
                       <th className="pb-2 font-medium">{t.actionLabel || 'Action'}</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {analytics.recentPublishes.map((pub) => (
+                    <tbody>
+                      {pagedRecentPublishes.map((pub) => (
                       <tr key={pub.id} className="border-b border-slate-50">
                         <td className="py-2 text-slate-800">{pub.destinationName || '—'}</td>
                         <td className="py-2">
@@ -1011,10 +1103,22 @@ function PostsPage({ t, canDelete = false }) {
                           )}
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePagination
+                  totalItems={recentPublishes.length}
+                  page={recentPublishesPage}
+                  perPage={recentPublishesPerPage}
+                  perPageOptions={[5, 10, 20, 50]}
+                  onPageChange={setRecentPublishesPage}
+                  onPerPageChange={(value) => {
+                    setRecentPublishesPerPage(value);
+                    setRecentPublishesPage(1);
+                  }}
+                />
+              </>
             ) : (
               <p className="text-sm text-slate-500 text-center py-4">{t.noRecentPublishes || 'No recent publishes'}</p>
             )}
@@ -1068,7 +1172,7 @@ function PostsPage({ t, canDelete = false }) {
                     </td>
                   </tr>
                 ) : (
-                  publishHistory.map((item) => (
+                  pagedPublishHistory.map((item) => (
                     <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50">
                       <td className="px-4 py-3">
                         <p className="font-medium text-slate-800 truncate max-w-[200px]">
@@ -1110,6 +1214,19 @@ function PostsPage({ t, canDelete = false }) {
               </tbody>
             </table>
           </div>
+          <div className="px-4 py-3 border-t border-slate-100">
+            <TablePagination
+              totalItems={publishHistory.length}
+              page={publishHistoryPage}
+              perPage={publishHistoryPerPage}
+              perPageOptions={[10, 20, 50, 100]}
+              onPageChange={setPublishHistoryPage}
+              onPerPageChange={(value) => {
+                setPublishHistoryPerPage(value);
+                setPublishHistoryPage(1);
+              }}
+            />
+          </div>
         </div>
       )}
 
@@ -1144,7 +1261,7 @@ function PostsPage({ t, canDelete = false }) {
               {t.emptyPosts || 'No posts yet. Click Sync to fetch posts from your destination.'}
             </div>
           ) : (
-            posts.map((post) => (
+            pagedPosts.map((post) => (
               <div
                 key={post.id}
                 className="grid grid-cols-12 gap-3 px-4 py-3 border-b border-slate-100 text-sm text-slate-800 hover:bg-slate-50"
@@ -1204,6 +1321,19 @@ function PostsPage({ t, canDelete = false }) {
               </div>
             ))
           )}
+          <div className="px-4 py-3 border-t border-slate-100">
+            <TablePagination
+              totalItems={posts.length}
+              page={postsPage}
+              perPage={postsPerPage}
+              perPageOptions={[10, 20, 50, 100]}
+              onPageChange={setPostsPage}
+              onPerPageChange={(value) => {
+                setPostsPerPage(value);
+                setPostsPage(1);
+              }}
+            />
+          </div>
         </div>
       )}
       {editModalOpen && (
@@ -1211,10 +1341,7 @@ function PostsPage({ t, canDelete = false }) {
           <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{t.editPostTitle || 'Edit Remote Post'}</h3>
-              <button
-                onClick={() => setEditModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >X</button>
+              <ModalCloseButton onClick={() => setEditModalOpen(false)} label={t.close || 'Close'} />
             </div>
             {editLoading ? (
               <div className="py-8 text-center text-slate-500 dark:text-slate-400">{t.loading || 'Loading...'}</div>
@@ -1347,6 +1474,42 @@ function PostsPage({ t, canDelete = false }) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {deleteConfirmPost && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/60 backdrop-blur-[1px] p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                  {t.deletePostTitle || 'Delete remote post?'}
+                </h3>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  {t.deletePostBody || 'This will permanently delete this post from the connected platform.'}
+                </p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400 break-words">
+                  {deleteConfirmPost?.title || t.untitledLabel || 'Untitled'}
+                </p>
+              </div>
+              <ModalCloseButton onClick={() => setDeleteConfirmPost(null)} label={t.close || 'Close'} />
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmPost(null)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeletePost}
+                className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300 dark:hover:bg-rose-900/30"
+              >
+                {t.deleteLabel || 'Delete'}
+              </button>
+            </div>
           </div>
         </div>
       )}

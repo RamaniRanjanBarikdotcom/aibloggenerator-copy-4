@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Save, Eye, EyeOff, Plus, Trash2, CheckCircle, RefreshCw, ChevronDown } from 'lucide-react';
+import ModalCloseButton from './ModalCloseButton';
 import {
   ResponsiveContainer,
   LineChart,
@@ -3194,13 +3195,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                   <span className="font-mono">{shopifyOauthRedirectUrl || '-'}</span>
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={closeShopifyOauthModal}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                &times;
-              </button>
+              <ModalCloseButton onClick={closeShopifyOauthModal} label={t.close || 'Close'} />
             </div>
 
             <div className="mt-4 space-y-4">

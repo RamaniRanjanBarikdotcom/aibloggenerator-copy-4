@@ -473,7 +473,12 @@ async function chatCompletion({ provider, apiKey, model, messages, temperature =
     temperature,
   };
   if (Number.isFinite(maxTokens) && maxTokens > 0) {
-    body.max_tokens = Math.floor(maxTokens);
+    // OpenAI reasoning/newer models require `max_completion_tokens` instead of `max_tokens`.
+    if (provider === 'openai') {
+      body.max_completion_tokens = Math.floor(maxTokens);
+    } else {
+      body.max_tokens = Math.floor(maxTokens);
+    }
   }
   const headers = {
     'Content-Type': 'application/json',
@@ -484,11 +489,41 @@ async function chatCompletion({ provider, apiKey, model, messages, temperature =
     headers['X-Title'] = 'AI Blog Generator';
   }
 
-  const json = await requestJson(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let json;
+  try {
+    json = await requestJson(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    // Compatibility fallback: if API reports wrong token param, retry once with the alternate field.
+    const message = String(error?.message || '').toLowerCase();
+    const isBadRequest = Number(error?.status) === 400;
+    if (
+      provider === 'openai' &&
+      isBadRequest &&
+      Number.isFinite(maxTokens) &&
+      maxTokens > 0 &&
+      (message.includes('max_tokens') || message.includes('max_completion_tokens'))
+    ) {
+      const fallbackBody = { ...body };
+      if (Object.prototype.hasOwnProperty.call(fallbackBody, 'max_completion_tokens')) {
+        delete fallbackBody.max_completion_tokens;
+        fallbackBody.max_tokens = Math.floor(maxTokens);
+      } else {
+        delete fallbackBody.max_tokens;
+        fallbackBody.max_completion_tokens = Math.floor(maxTokens);
+      }
+      json = await requestJson(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(fallbackBody),
+      });
+    } else {
+      throw error;
+    }
+  }
 
   const text = json.choices?.[0]?.message?.content || '';
   return {

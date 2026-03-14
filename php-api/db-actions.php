@@ -228,6 +228,57 @@ function bgDbAction(array $cfg, string $action, array $args)
             return $rows;
         }
 
+        
+        case 'listBlogSummaries': {
+            $opt = is_array($args[0] ?? null) ? $args[0] : [];
+            $filter = [];
+            $userId = $opt['userId'] ?? null;
+            $isAdmin = (bool)($opt['isAdmin'] ?? false);
+            if (!$isAdmin && $userId) {
+                $filter['user_id'] = $userId;
+            } elseif ($userId) {
+                $filter['user_id'] = $userId;
+            }
+            $dateRange = bgBuildDateFilter($opt['dateFrom'] ?? null, $opt['dateTo'] ?? null);
+            if (is_array($dateRange)) {
+                $filter['created_at'] = $dateRange;
+            }
+
+            $limit = max(1, min(300, (int)($opt['limit'] ?? 120)));
+            $scanLimit = max($limit, min(2000, $limit * 5));
+            $docs = mongoFindMany($cfg, 'blogs', $filter, [
+                'sort' => ['created_at' => -1],
+                'skip' => (int)($opt['offset'] ?? 0),
+                'limit' => $scanLimit,
+                'projection' => [
+                    '_id' => 1,
+                    'user_id' => 1,
+                    'title' => 1,
+                    'keywords' => 1,
+                    'categories' => 1,
+                    'created_at' => 1,
+                ],
+            ]);
+            $rows = array_map(static function ($doc): array {
+                return [
+                    'id' => (string)($doc['_id'] ?? ''),
+                    'user_id' => $doc['user_id'] ?? null,
+                    'title' => (string)($doc['title'] ?? ''),
+                    'keywords' => $doc['keywords'] ?? '',
+                    'categories' => is_array($doc['categories'] ?? null) ? $doc['categories'] : [],
+                    'generatedAt' => $doc['created_at'] ?? null,
+                ];
+            }, $docs);
+            $search = trim((string)($opt['search'] ?? ''));
+            if ($search !== '') {
+                $rows = array_values(array_filter($rows, static fn($row) => bgMatchText($search, ['title', 'keywords'], $row)));
+            }
+            if (count($rows) > $limit) {
+                $rows = array_slice($rows, 0, $limit);
+            }
+            return $rows;
+        }
+
         case 'getBlogById': {
             $id = (string)($args[0] ?? '');
             $opt = is_array($args[1] ?? null) ? $args[1] : [];

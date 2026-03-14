@@ -38,6 +38,7 @@ const {
   setStore,
   initDb,
   saveBlog,
+  getBlogs,
   listBlogs,
   getHistorySummary,
   getBlogById,
@@ -90,6 +91,7 @@ const { exportBlog, exportHistoryCsv } = require('./services/fileExporter');
 const ProductScraper = require('./services/productScraper');
 const {
   getApiConfig: getServerApiConfig,
+  dbCall: serverDbCall,
   setupAdmin: serverSetupAdmin,
   login: serverLogin,
   getAuthState: serverGetAuthState,
@@ -208,6 +210,7 @@ function invalidateHistoryCaches() {
 }
 setAuthTokenGetter(() => String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || ''));
 setUnauthorizedHandler(() => {
+  stopSchedulerRunner('auth-expired');
   currentUser = null;
   workspaceOwnerCache.clear();
   invalidateHistoryCaches();
@@ -283,6 +286,31 @@ function normalizeImageGallery(gallery, imageUrl = null) {
     list.unshift(imageUrl);
   }
   return list;
+}
+
+function countMojibakeMarkers(value) {
+  if (!value) return 0;
+  const matches = String(value).match(/[ÃÂâÐÑ]/g);
+  return matches ? matches.length : 0;
+}
+
+function normalizeUtfText(value) {
+  const text = String(value ?? '');
+  if (!text) return '';
+  if (!/[ÃÂâÐÑ]/.test(text)) {
+    return text;
+  }
+  try {
+    const repaired = Buffer.from(text, 'latin1').toString('utf8');
+    const before = countMojibakeMarkers(text);
+    const after = countMojibakeMarkers(repaired);
+    if (repaired && after < before && !repaired.includes('\uFFFD')) {
+      return repaired;
+    }
+  } catch {
+    // Keep original text if repair is not safe.
+  }
+  return text;
 }
 
 function slugifyFilename(value) {
@@ -747,6 +775,144 @@ function rememberExportDir(dirPath) {
   }
 }
 
+function sanitizeExportName(name, fallback = 'item') {
+  const cleaned = String(name || '')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return fallback;
+  return cleaned.slice(0, 120);
+}
+
+function buildHistoryImageSources(blog) {
+  const gallery = normalizeImageGallery(
+    blog?.imageGallery || blog?.image_gallery,
+    blog?.imageUrl || blog?.image_url || null
+  );
+  const sources = [];
+  gallery.forEach((item) => {
+    if (item) sources.push(String(item));
+  });
+  const localPath = String(blog?.localImagePath || blog?.local_image_path || '').trim();
+  if (localPath) {
+    sources.push(localPath);
+  }
+  return Array.from(new Set(sources.filter(Boolean)));
+}
+
+function resolveImageExtension({ source = '', contentType = '', defaultExt = '.png' } = {}) {
+  const src = String(source || '').trim();
+  if (src) {
+    try {
+      const asUrl = /^https?:\/\//i.test(src) ? new URL(src) : null;
+      const pathname = asUrl ? asUrl.pathname : src;
+      const ext = path.extname(pathname || '');
+      if (ext && ext.length <= 6) return ext.toLowerCase();
+    } catch {
+      const ext = path.extname(src);
+      if (ext && ext.length <= 6) return ext.toLowerCase();
+    }
+  }
+  const mimeExt = mime.extension(String(contentType || '').split(';')[0].trim());
+  if (mimeExt) return `.${mimeExt}`;
+  return defaultExt;
+}
+
+async function loadHistoryImageBuffer(source) {
+  const value = String(source || '').trim();
+  if (!value) {
+    throw new Error('Image source is empty');
+  }
+
+  // data URI support
+  if (value.startsWith('data:')) {
+    const match = value.match(/^data:([^;]+);base64,(.+)$/i);
+    if (!match) {
+      throw new Error('Unsupported data URI format');
+    }
+    return {
+      buffer: Buffer.from(match[2], 'base64'),
+      contentType: match[1] || '',
+      source: value,
+    };
+  }
+
+  // URL support
+  if (/^https?:\/\//i.test(value)) {
+    const response = await axios.get(value, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    return {
+      buffer: Buffer.from(response.data),
+      contentType: response.headers?.['content-type'] || '',
+      source: value,
+    };
+  }
+
+  // local path support (plain path or file://)
+  let localPath = value;
+  if (value.startsWith('file://')) {
+    localPath = decodeURIComponent(value.replace(/^file:\/\//i, ''));
+    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(localPath)) {
+      localPath = localPath.slice(1);
+    }
+  }
+  if (!fs.existsSync(localPath)) {
+    throw new Error('Local image file not found');
+  }
+  return {
+    buffer: fs.readFileSync(localPath),
+    contentType: mime.lookup(localPath) || '',
+    source: localPath,
+  };
+}
+
+function runProcess(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      ...options,
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '');
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr || `${command} exited with code ${code}`));
+      }
+    });
+  });
+}
+
+async function zipDirectory(sourceDir, zipPath) {
+  if (process.platform === 'win32') {
+    const src = String(sourceDir || '').replace(/'/g, "''");
+    const dst = String(zipPath || '').replace(/'/g, "''");
+    const script = `$ErrorActionPreference='Stop'; Compress-Archive -Path '${src}\\*' -DestinationPath '${dst}' -Force`;
+    await runProcess('powershell.exe', ['-NoProfile', '-Command', script]);
+    return;
+  }
+
+  // POSIX fallback
+  const zipName = path.basename(zipPath);
+  const zipDir = path.dirname(zipPath);
+  await runProcess('zip', ['-r', zipName, '.'], { cwd: sourceDir });
+  const produced = path.join(sourceDir, zipName);
+  if (produced !== zipPath) {
+    fs.copyFileSync(produced, zipPath);
+    fs.unlinkSync(produced);
+  }
+  if (!fs.existsSync(zipPath) && fs.existsSync(path.join(zipDir, zipName))) {
+    fs.renameSync(path.join(zipDir, zipName), zipPath);
+  }
+}
+
 async function getUserSettings(userId) {
   const raw = await getSetting({
     userId,
@@ -927,6 +1093,568 @@ async function loadPersistedUser() {
   }
   currentUser = user;
   return user;
+}
+
+const SCHEDULER_POLL_INTERVAL_MS = 30 * 1000;
+const SCHEDULER_RUNNING_STALE_MS = 10 * 60 * 1000;
+const SCHEDULER_TIMEOUT_GENERATE_MS = 9 * 60 * 1000;
+const SCHEDULER_TIMEOUT_IMAGE_MS = 5 * 60 * 1000;
+const SCHEDULER_TIMEOUT_PUBLISH_MS = 4 * 60 * 1000;
+let schedulerPollTimer = null;
+let schedulerTickInProgress = false;
+
+function schedulerParseBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return fallback;
+  if (['1', 'true', 'yes', 'y', 'on'].includes(text)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(text)) return false;
+  return fallback;
+}
+
+function normalizeSchedulerJob(rawJob = {}) {
+  let payload = {};
+  if (rawJob && typeof rawJob.payload === 'object' && !Array.isArray(rawJob.payload)) {
+    payload = rawJob.payload;
+  } else if (typeof rawJob?.payload === 'string' && rawJob.payload.trim()) {
+    try {
+      const parsed = JSON.parse(rawJob.payload);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        payload = parsed;
+      }
+    } catch {
+      payload = {};
+    }
+  }
+  if (payload && typeof payload.payload === 'object' && !Array.isArray(payload.payload)) {
+    payload = { ...payload.payload, ...payload };
+  }
+  const sourceBlogId = String(
+    payload.source_blog_id ||
+      payload.sourceBlogId ||
+      payload.source_blog ||
+      payload.sourceBlog ||
+      rawJob.source_blog_id ||
+      rawJob.sourceBlogId ||
+      rawJob.source_blog ||
+      rawJob.sourceBlog ||
+      ''
+  ).trim();
+  const scheduleModeRaw = String(
+    payload.schedule_mode ||
+      payload.scheduleMode ||
+      payload.mode ||
+      rawJob.schedule_mode ||
+      rawJob.scheduleMode ||
+      rawJob.mode ||
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const scheduleMode = scheduleModeRaw === 'existing' || sourceBlogId ? 'existing' : 'generate';
+  const categories = Array.isArray(payload.categories)
+    ? payload.categories.map((item) => String(item || '').trim()).filter(Boolean)
+    : String(payload.categories || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+  return {
+    id: String(rawJob._id || rawJob.id || ''),
+    topic: String(rawJob.topic || '').trim(),
+    keywords: String(rawJob.keywords || '').trim(),
+    runAt: String(rawJob.run_at || rawJob.runAt || '').trim(),
+    status: String(rawJob.status || 'pending').trim().toLowerCase(),
+    payload,
+    destinationId: String(
+      payload.destination_id ||
+        payload.destinationId ||
+        rawJob.destination_id ||
+        rawJob.destinationId ||
+        ''
+    ).trim(),
+    platform: String(payload.platform || rawJob.platform || '').trim().toLowerCase(),
+    generateImage: schedulerParseBool(payload.generate_image, true),
+    autoPost: schedulerParseBool(payload.auto_post, false),
+    publishStatus: String(payload.publish_status || 'draft').trim().toLowerCase() === 'publish' ? 'publish' : 'draft',
+    focusKeyword: String(payload.focus_keyword || '').trim(),
+    writingStyle: String(payload.writing_style || 'professional').trim(),
+    writingTone: String(payload.writing_tone || 'friendly').trim(),
+    targetWordCount: Math.min(10000, Math.max(300, Number(payload.target_word_count || 2500) || 2500)),
+    language: String(payload.language || 'English').trim(),
+    useProductContext: schedulerParseBool(payload.use_product_context, false),
+    websiteUrl: String(payload.website_url || '').trim(),
+    categories,
+    scheduleMode,
+    sourceBlogId,
+    createdAt: String(rawJob.created_at || rawJob.createdAt || '').trim(),
+    updatedAt: String(rawJob.updated_at || rawJob.updatedAt || '').trim(),
+    completedAt: String(rawJob.completed_at || rawJob.completedAt || '').trim(),
+  };
+}
+
+function parseSchedulerDateToMs(value) {
+  if (!value) return NaN;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+async function invokeRendererElectronApiWithTimeout(method, payload, timeoutMs, timeoutMessage) {
+  const safeTimeoutMs = Math.max(5000, Number(timeoutMs) || 15000);
+  let timer = null;
+  try {
+    return await Promise.race([
+      invokeRendererElectronApi(method, payload),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage || `${method} timed out`)), safeTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function isSchedulerJobDue(job) {
+  if (!job?.runAt) return false;
+  const runAtMs = new Date(job.runAt).getTime();
+  if (!Number.isFinite(runAtMs)) return false;
+  return runAtMs <= Date.now();
+}
+
+async function waitForRendererReady(timeoutMs = 15000) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error('Application window is not available.');
+  }
+  if (!mainWindow.webContents.isLoadingMainFrame()) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Renderer did not become ready in time.'));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      mainWindow.webContents.removeListener('did-finish-load', onReady);
+    };
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+    mainWindow.webContents.once('did-finish-load', onReady);
+  });
+}
+
+async function invokeRendererElectronApi(method, payload) {
+  await waitForRendererReady();
+  const encoded = Buffer.from(
+    JSON.stringify({
+      method: String(method || ''),
+      payload: payload || {},
+    }),
+    'utf8'
+  ).toString('base64');
+  const script = `(async () => {
+    try {
+      const binary = atob('${encoded}');
+      const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+      const req = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      if (!window.electronAPI || typeof window.electronAPI[req.method] !== 'function') {
+        return { success: false, error: 'Renderer API not available: ' + req.method };
+      }
+      return await window.electronAPI[req.method](req.payload);
+    } catch (err) {
+      return { success: false, error: (err && err.message) ? err.message : String(err) };
+    }
+  })();`;
+  return mainWindow.webContents.executeJavaScript(script, true);
+}
+
+async function appendSchedulerExecutionLog({ accessToken, jobId, shopId = '', status = 'info', message = '', meta = {} }) {
+  if (!accessToken) return;
+  try {
+    await serverAddSchedulerLog({
+      accessToken,
+      log: {
+        jobId: String(jobId || ''),
+        shopId: String(shopId || ''),
+        status: String(status || 'info'),
+        message: String(message || '').trim(),
+        meta: meta && typeof meta === 'object' ? meta : {},
+      },
+    });
+  } catch (error) {
+    console.warn('[Scheduler] Failed to append scheduler log:', error?.message || error);
+  }
+}
+
+async function processSchedulerJob(job) {
+  const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+  if (!accessToken) {
+    throw new Error('Not authenticated');
+  }
+  if (!job?.id) {
+    throw new Error('Invalid scheduler job id');
+  }
+
+  await serverUpdateSchedulerJob({
+    accessToken,
+    jobId: job.id,
+    updates: { status: 'running' },
+  });
+
+  await appendSchedulerExecutionLog({
+    accessToken,
+    jobId: job.id,
+    shopId: job.destinationId || '',
+    status: 'info',
+    message: `Started processing schedule "${job.topic || 'Untitled'}"`,
+    meta: {
+      runAt: job.runAt,
+      autoPost: !!job.autoPost,
+      generateImage: !!job.generateImage,
+      scheduleMode: job.scheduleMode || 'generate',
+      sourceBlogId: job.sourceBlogId || '',
+    },
+  });
+
+  let publishedUrl = '';
+  let blog = null;
+  const sourceBlogId = String(
+    job?.sourceBlogId ||
+      job?.source_blog_id ||
+      job?.payload?.source_blog_id ||
+      job?.payload?.sourceBlogId ||
+      ''
+  ).trim();
+  const scheduleMode = String(
+    job?.scheduleMode ||
+      job?.schedule_mode ||
+      job?.payload?.schedule_mode ||
+      job?.payload?.scheduleMode ||
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const isExistingMode = scheduleMode === 'existing' || !!sourceBlogId;
+
+  try {
+    if (isExistingMode) {
+      if (!sourceBlogId) {
+        throw new Error('Source history blog is required for existing-blog schedule mode');
+      }
+      const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+      const existingBlog = await getBlogById(sourceBlogId, {
+        userId: workspaceOwnerId || currentUser?.id,
+        isAdmin: isAdmin(),
+      });
+      if (!existingBlog) {
+        throw new Error('Selected history blog was not found');
+      }
+      blog = existingBlog;
+    } else {
+      const generationResult = await invokeRendererElectronApiWithTimeout(
+        'generateBlog',
+        {
+        topic: job.topic,
+        keywords: job.keywords,
+        categories: job.categories,
+        settings: {
+          autoSave: true,
+          language: job.language || 'English',
+          focusKeyword: job.focusKeyword || '',
+          writingStyle: job.writingStyle || 'professional',
+          writingTone: job.writingTone || 'friendly',
+          targetWordCount: job.targetWordCount || 2500,
+          useProductContext: !!job.useProductContext,
+          siteBaseUrl: job.websiteUrl || '',
+        },
+        __schedulerJobId: job.id,
+      },
+        SCHEDULER_TIMEOUT_GENERATE_MS,
+        'Scheduler blog generation timed out'
+      );
+
+      if (!generationResult?.success || !generationResult?.blog) {
+        throw new Error(generationResult?.error || 'Blog generation failed');
+      }
+      blog = generationResult.blog;
+    }
+
+    // Always publish from the latest saved blog snapshot so scheduler follows
+    // the same post rules/data path as History/Post manual publishing.
+    if (blog?.id) {
+      try {
+        const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+        const latestSaved = await getBlogById(blog.id, {
+          userId: workspaceOwnerId || currentUser?.id,
+          isAdmin: isAdmin(),
+        });
+        if (latestSaved) {
+          blog = {
+            ...latestSaved,
+            id: latestSaved.id || blog.id,
+            metaDescription:
+              latestSaved.metaDescription ||
+              latestSaved.meta_description ||
+              blog.metaDescription ||
+              '',
+          };
+        }
+      } catch (error) {
+        console.warn('[Scheduler] Failed to load latest saved blog for publish:', error?.message || error);
+      }
+    }
+
+    if (blog) {
+      const normalizedGallery = normalizeImageGallery(
+        blog.imageGallery || blog.image_gallery,
+        blog.imageUrl || blog.image_url || null
+      );
+      blog = {
+        ...blog,
+        title: normalizeUtfText(blog.title || job.topic || ''),
+        content: normalizeUtfText(blog.content || ''),
+        metaDescription: normalizeUtfText(
+          blog.metaDescription || blog.meta_description || ''
+        ),
+        keywords: parseListInput(blog.keywords).map((item) => normalizeUtfText(item)).filter(Boolean),
+        categories: parseListInput(blog.categories).map((item) => normalizeUtfText(item)).filter(Boolean),
+        imageGallery: normalizedGallery,
+        imageUrl: String(blog.imageUrl || blog.image_url || normalizedGallery[0] || '').trim(),
+        localImagePath: String(blog.localImagePath || blog.local_image_path || '').trim(),
+      };
+    }
+
+    if (job.generateImage && blog?.id) {
+      const imageResult = await invokeRendererElectronApiWithTimeout(
+        'generateBlogImage',
+        {
+          blogId: blog.id,
+          title: blog.title || job.topic,
+          content: blog.content || '',
+          __schedulerJobId: job.id,
+        },
+        SCHEDULER_TIMEOUT_IMAGE_MS,
+        'Scheduler image generation timed out'
+      );
+
+      if (imageResult?.success) {
+        blog = imageResult.blog || {
+          ...blog,
+          imageUrl: imageResult.imageUrl || blog.imageUrl || '',
+          localImagePath: imageResult.localPath || blog.localImagePath || '',
+        };
+      } else {
+        await appendSchedulerExecutionLog({
+          accessToken,
+          jobId: job.id,
+          shopId: job.destinationId || '',
+          status: 'warning',
+          message: 'Image generation failed for schedule job',
+          meta: { error: imageResult?.error || 'Unknown image generation error' },
+        });
+      }
+    }
+
+    if (job.autoPost) {
+      if (!job.destinationId) {
+        throw new Error('Destination is required for auto post');
+      }
+      const mergedKeywords = Array.from(
+        new Set([
+          ...parseListInput(blog?.keywords),
+          ...parseListInput(job?.keywords),
+          ...(job?.focusKeyword ? [job.focusKeyword] : []),
+        ])
+      );
+      const mergedCategories = Array.from(
+        new Set([...parseListInput(blog?.categories), ...(Array.isArray(job?.categories) ? job.categories : [])])
+      );
+      blog = {
+        ...blog,
+        keywords: mergedKeywords,
+        categories: mergedCategories,
+        metaDescription:
+          blog?.metaDescription ||
+          blog?.meta_description ||
+          '',
+      };
+      const destination = await getPublishDestination(job.destinationId, currentUser?.id);
+      if (!destination) {
+        throw new Error(`Destination not found: ${job.destinationId}`);
+      }
+
+      const publishResult = await invokeRendererElectronApiWithTimeout(
+        'publishBlog',
+        {
+          destination,
+          blog,
+          status: job.publishStatus || 'draft',
+          __schedulerJobId: job.id,
+        },
+        SCHEDULER_TIMEOUT_PUBLISH_MS,
+        'Scheduler publish timed out'
+      );
+
+      if (!publishResult?.success) {
+        throw new Error(publishResult?.error || 'Publish failed');
+      }
+      publishedUrl =
+        publishResult?.result?.url ||
+        publishResult?.result?.link ||
+        publishResult?.result?.postUrl ||
+        '';
+    }
+
+    await serverUpdateSchedulerJob({
+      accessToken,
+      jobId: job.id,
+      updates: { status: 'completed' },
+    });
+
+    await appendSchedulerExecutionLog({
+      accessToken,
+      jobId: job.id,
+      shopId: job.destinationId || '',
+      status: 'success',
+      message: job.autoPost ? 'Schedule job completed and posted' : 'Schedule job completed',
+      meta: {
+        blogId: String(blog?.id || ''),
+        publishedUrl: publishedUrl || '',
+        scheduleMode: job.scheduleMode || 'generate',
+        sourceBlogId: job.sourceBlogId || '',
+      },
+    });
+  } catch (error) {
+    const message = error?.message || 'Scheduler job failed';
+    await serverUpdateSchedulerJob({
+      accessToken,
+      jobId: job.id,
+      updates: { status: 'failed' },
+    });
+    await appendSchedulerExecutionLog({
+      accessToken,
+      jobId: job.id,
+      shopId: job.destinationId || '',
+      status: 'error',
+      message: `Schedule job failed: ${message}`,
+      meta: { error: message },
+    });
+    throw error;
+  }
+}
+
+async function runSchedulerTick(trigger = 'timer') {
+  if (schedulerTickInProgress) return;
+  if (!isServerApiEnabled()) return;
+  if (!currentUser?.id) return;
+
+  const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+  if (!accessToken) return;
+
+  schedulerTickInProgress = true;
+  try {
+    const runningResponse = await serverListSchedulerJobs({
+      accessToken,
+      status: 'running',
+      limit: 500,
+    });
+    const runningJobs = Array.isArray(runningResponse?.jobs) ? runningResponse.jobs.map(normalizeSchedulerJob) : [];
+    const nowMs = Date.now();
+    for (const runningJob of runningJobs) {
+      const lastTouchedMs =
+        parseSchedulerDateToMs(runningJob.updatedAt) ||
+        parseSchedulerDateToMs(runningJob.createdAt) ||
+        parseSchedulerDateToMs(runningJob.runAt);
+      if (!Number.isFinite(lastTouchedMs)) continue;
+      if (nowMs - lastTouchedMs <= SCHEDULER_RUNNING_STALE_MS) continue;
+      try {
+        await serverUpdateSchedulerJob({
+          accessToken,
+          jobId: runningJob.id,
+          updates: { status: 'failed' },
+        });
+        await appendSchedulerExecutionLog({
+          accessToken,
+          jobId: runningJob.id,
+          shopId: runningJob.destinationId || '',
+          status: 'warning',
+          message: 'Scheduler job was marked failed after stale running timeout',
+          meta: {
+            staleForMs: nowMs - lastTouchedMs,
+            timeoutMs: SCHEDULER_RUNNING_STALE_MS,
+          },
+        });
+      } catch (runningRecoveryError) {
+        console.warn(
+          `[Scheduler] Failed stale-running recovery for ${runningJob.id}:`,
+          runningRecoveryError?.message || runningRecoveryError
+        );
+      }
+    }
+
+    const response = await serverListSchedulerJobs({
+      accessToken,
+      status: 'pending',
+      limit: 1000,
+    });
+    const allPending = Array.isArray(response?.jobs) ? response.jobs : [];
+    const dueJobs = allPending
+      .map((job) => normalizeSchedulerJob(job))
+      .filter(
+        (job) =>
+          job.id &&
+          (job.topic || (job.scheduleMode === 'existing' && job.sourceBlogId)) &&
+          isSchedulerJobDue(job)
+      )
+      .sort((a, b) => new Date(a.runAt).getTime() - new Date(b.runAt).getTime());
+
+    if (dueJobs.length === 0) {
+      return;
+    }
+
+    console.log(`[Scheduler] ${trigger}: processing ${dueJobs.length} due job(s)`);
+    for (const job of dueJobs) {
+      if (!currentUser?.id) {
+        break;
+      }
+      try {
+        await processSchedulerJob(job);
+      } catch (error) {
+        console.error(`[Scheduler] Job ${job.id} failed:`, error?.message || error);
+      }
+    }
+  } catch (error) {
+    const message = error?.message || String(error);
+    if (/not authenticated/i.test(message)) {
+      stopSchedulerRunner('not-authenticated');
+    }
+    console.warn('[Scheduler] Tick failed:', message);
+  } finally {
+    schedulerTickInProgress = false;
+  }
+}
+
+function startSchedulerRunner(reason = 'unknown') {
+  if (!isServerApiEnabled()) return;
+  if (schedulerPollTimer) return;
+  console.log('[Scheduler] Runner started:', reason);
+  schedulerPollTimer = setInterval(() => {
+    void runSchedulerTick('interval');
+  }, SCHEDULER_POLL_INTERVAL_MS);
+  setTimeout(() => {
+    void runSchedulerTick('startup');
+  }, 1500);
+}
+
+function stopSchedulerRunner(reason = 'unknown') {
+  if (schedulerPollTimer) {
+    clearInterval(schedulerPollTimer);
+    schedulerPollTimer = null;
+  }
+  schedulerTickInProgress = false;
+  console.log('[Scheduler] Runner stopped:', reason);
 }
 
 const PERMISSIONS = [
@@ -2080,12 +2808,16 @@ ipcMain.handle('get-history', async (event, { userId } = {}) => {
     const now = Date.now();
     const cachedResponse = historyResponseCache.get(cacheKey);
     if (cachedResponse && now - cachedResponse.ts <= HISTORY_RESPONSE_CACHE_TTL_MS) {
-      console.log('[IPC] get-history cache hit in', Date.now() - startedAt, 'ms');
+      if (process.env.DEBUG_HISTORY_IPC === 'true') {
+        console.log('[IPC] get-history cache hit in', Date.now() - startedAt, 'ms');
+      }
       return cachedResponse.result;
     }
     if (historyInFlightRequests.has(cacheKey)) {
       const sharedResult = await historyInFlightRequests.get(cacheKey);
-      console.log('[IPC] get-history shared pending request in', Date.now() - startedAt, 'ms');
+      if (process.env.DEBUG_HISTORY_IPC === 'true') {
+        console.log('[IPC] get-history shared pending request in', Date.now() - startedAt, 'ms');
+      }
       return sharedResult;
     }
 
@@ -2154,7 +2886,9 @@ ipcMain.handle('get-history', async (event, { userId } = {}) => {
     historyInFlightRequests.set(cacheKey, requestPromise);
     try {
       const result = await requestPromise;
-      console.log('[IPC] get-history completed in', Date.now() - startedAt, 'ms');
+      if (process.env.DEBUG_HISTORY_IPC === 'true') {
+        console.log('[IPC] get-history completed in', Date.now() - startedAt, 'ms');
+      }
       return result;
     } finally {
       historyInFlightRequests.delete(cacheKey);
@@ -2308,9 +3042,13 @@ ipcMain.handle('export-blog', async (event, { blogId, blog, formats }) => {
   }
 });
 
-ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draft' }) => {
+ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draft', __schedulerJobId = '' }) => {
   try {
-    requirePermission('export');
+    if (__schedulerJobId) {
+      requireAnyPermission(['export', 'scheduler']);
+    } else {
+      requirePermission('export');
+    }
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -2323,18 +3061,25 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
 
     const platform = ensureValue('Platform', destination.platform);
     const publishStatus = status || 'draft';
-    const title = blog.title || 'Untitled';
-    let content = blog.content || '';
+    const imageGallery = normalizeImageGallery(
+      blog.imageGallery || blog.image_gallery,
+      blog.imageUrl || blog.image_url || null
+    );
+    const title = normalizeUtfText(blog.title || 'Untitled');
+    let content = normalizeUtfText(blog.content || '');
     const metaDescription = (
-      blog.metaDescription ||
-      blog.meta_description ||
-      blog?.meta?.description ||
+      normalizeUtfText(
+        blog.metaDescription ||
+          blog.meta_description ||
+          blog?.meta?.description ||
+          ''
+      ) ||
       ''
     ).trim();
-    let imageUrl = blog.imageUrl || null;
+    let imageUrl = blog.imageUrl || blog.image_url || imageGallery[0] || null;
     let localImagePath = blog.localImagePath || blog.local_image_path || null;
-    const keywords = parseListInput(blog.keywords);
-    const categories = parseListInput(blog.categories);
+    const keywords = parseListInput(blog.keywords).map((item) => normalizeUtfText(item)).filter(Boolean);
+    const categories = parseListInput(blog.categories).map((item) => normalizeUtfText(item)).filter(Boolean);
 
     let result = null;
     let imageStorageUsed = false;
@@ -2473,7 +3218,11 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
           const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
           const latest = await getBlogById(blog.id, { userId: workspaceOwnerId, isAdmin: isAdmin() });
           if (latest) {
-            imageUrl = imageUrl || latest.image_url || latest.imageUrl || null;
+            const latestGallery = normalizeImageGallery(
+              latest.imageGallery || latest.image_gallery,
+              latest.imageUrl || latest.image_url || null
+            );
+            imageUrl = imageUrl || latest.image_url || latest.imageUrl || latestGallery[0] || null;
             localImagePath =
               localImagePath || latest.local_image_path || latest.localImagePath || null;
           }
@@ -3037,6 +3786,105 @@ ipcMain.handle('export-history-csv', async (event, { rows }) => {
   }
 });
 
+ipcMain.handle('export-history-images', async (event, { blogIds = [] } = {}) => {
+  try {
+    requirePermission('bulkExport');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+
+    const ids = Array.isArray(blogIds)
+      ? blogIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    if (!ids.length) {
+      throw new Error('No blogs selected');
+    }
+
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const blogs = await getBlogsByIds(ids, { userId: workspaceOwnerId, isAdmin: isAdmin() });
+    if (!Array.isArray(blogs) || blogs.length === 0) {
+      throw new Error('No blogs found for export');
+    }
+
+    const { dialog } = require('electron');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const defaultZipName = `history-images-${stamp}.zip`;
+    const saveResult = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.join(getDefaultExportDir(), defaultZipName),
+      title: 'Save history images ZIP',
+      buttonLabel: 'Save ZIP',
+      filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+    });
+
+    if (saveResult.canceled || !saveResult.filePath) {
+      return { success: false, error: 'Export cancelled' };
+    }
+
+    const zipPath = saveResult.filePath.toLowerCase().endsWith('.zip')
+      ? saveResult.filePath
+      : `${saveResult.filePath}.zip`;
+    rememberExportDir(path.dirname(zipPath));
+
+    const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'history-images-'));
+    let exportedImages = 0;
+    let failedImages = 0;
+
+    try {
+      for (let i = 0; i < blogs.length; i += 1) {
+        const blog = blogs[i] || {};
+        const blogId = String(blog?.id || blog?._id || `blog-${i + 1}`);
+        const folderName = `${String(i + 1).padStart(2, '0')}-${sanitizeExportName(blog?.title, `blog-${i + 1}`)}-${blogId.slice(-6)}`;
+        const blogDir = path.join(tempRoot, folderName);
+        fs.mkdirSync(blogDir, { recursive: true });
+
+        const sources = buildHistoryImageSources(blog);
+        for (let imgIndex = 0; imgIndex < sources.length; imgIndex += 1) {
+          const source = sources[imgIndex];
+          try {
+            const loaded = await loadHistoryImageBuffer(source);
+            const ext = resolveImageExtension({
+              source: loaded.source || source,
+              contentType: loaded.contentType || '',
+              defaultExt: '.png',
+            });
+            const fileName = `image-${String(imgIndex + 1).padStart(2, '0')}${ext}`;
+            fs.writeFileSync(path.join(blogDir, fileName), loaded.buffer);
+            exportedImages += 1;
+          } catch (_error) {
+            failedImages += 1;
+          }
+        }
+      }
+
+      await zipDirectory(tempRoot, zipPath);
+    } finally {
+      try {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      } catch (_cleanupError) {
+        // best effort cleanup
+      }
+    }
+
+    await logActivity({
+      userId: currentUser?.id,
+      action: 'export.historyImages',
+      details: `Exported history images ZIP (${blogs.length} blog folders, ${exportedImages} images)`,
+    });
+
+    return {
+      success: true,
+      filePath: zipPath,
+      stats: {
+        blogs: blogs.length,
+        images: exportedImages,
+        failedImages,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error.message || 'Failed to export history images' };
+  }
+});
+
 ipcMain.handle('download-image', async (event, { url, title }) => {
   try {
     requirePermission('export');
@@ -3253,9 +4101,13 @@ ipcMain.handle('test-image-storage', async (event, { imageStorage } = {}) => {
   }
 });
 
-ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) => {
+ipcMain.handle('generate-blog-image', async (event, { blogId, title, content, __schedulerJobId = '' }) => {
   try {
-    requirePermission('history');
+    if (__schedulerJobId) {
+      requireAnyPermission(['history', 'scheduler']);
+    } else {
+      requirePermission('history');
+    }
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -3475,10 +4327,14 @@ ipcMain.handle('get-wordpress-stats', async (event, { destinationId = null } = {
 
 ipcMain.handle(
   'generate-blog',
-  async (event, { topic, keywords, categories = [], settings, resumeState = null }) => {
+  async (event, { topic, keywords, categories = [], settings, resumeState = null, __schedulerJobId = '' }) => {
   let checkpoint = null;
   try {
-    requirePermission('generate');
+    if (__schedulerJobId) {
+      requireAnyPermission(['generate', 'scheduler']);
+    } else {
+      requirePermission('generate');
+    }
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4118,8 +4974,10 @@ ipcMain.handle('get-auth-state', async () => {
       }
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
+        startSchedulerRunner('auth-state');
       } else {
         store.delete(CURRENT_USER_KEY);
+        stopSchedulerRunner('auth-state-no-user');
       }
 
       return {
@@ -4166,6 +5024,12 @@ ipcMain.handle('get-auth-state', async () => {
       };
     }
 
+    if (currentUser?.id) {
+      startSchedulerRunner('auth-state');
+    } else {
+      stopSchedulerRunner('auth-state-no-user');
+    }
+
     return {
       success: true,
       needsAdminSetup: count === 0,
@@ -4198,6 +5062,9 @@ ipcMain.handle('setup-admin', async (event, { username, password }) => {
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
       }
+      if (currentUser?.id) {
+        startSchedulerRunner('setup-admin');
+      }
       return { success: true, user: sanitizeUser(currentUser) };
     }
 
@@ -4222,6 +5089,7 @@ ipcMain.handle('setup-admin', async (event, { username, password }) => {
     const admin = await getUserByUsername(username);
     currentUser = admin;
     store.set(CURRENT_USER_KEY, admin.id);
+    startSchedulerRunner('setup-admin');
     await logActivity({
       userId: admin?.id,
       action: 'admin.setup',
@@ -4267,6 +5135,7 @@ ipcMain.handle('login', async (event, { username, password }) => {
         } catch (_activityError) {
           // Ignore activity logging failures in server mode login path.
         }
+        startSchedulerRunner('login');
       }
       return {
         success: true,
@@ -4298,6 +5167,7 @@ ipcMain.handle('login', async (event, { username, password }) => {
     workspaceOwnerCache.clear();
     invalidateHistoryCaches();
     store.set(CURRENT_USER_KEY, user.id);
+    startSchedulerRunner('login');
     try {
       await touchUserLastOnline({ id: user.id });
     } catch (_onlineError) {
@@ -4371,6 +5241,7 @@ ipcMain.handle('logout', async () => {
         }
       }
       currentUser = null;
+      stopSchedulerRunner('logout');
       workspaceOwnerCache.clear();
       userListCache = { ts: 0, users: null, promise: null };
       invalidateHistoryCaches();
@@ -4387,6 +5258,7 @@ ipcMain.handle('logout', async () => {
       });
     }
     currentUser = null;
+    stopSchedulerRunner('logout');
     workspaceOwnerCache.clear();
     userListCache = { ts: 0, users: null, promise: null };
     invalidateHistoryCaches();
@@ -4979,6 +5851,89 @@ ipcMain.handle('scheduler-list-jobs', async (event, payload = {}) => {
   }
 });
 
+ipcMain.handle('scheduler-list-history-blogs', async (event, payload = {}) => {
+  try {
+    requirePermission('scheduler');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    let workspaceOwnerId = currentUser?.id || null;
+    try {
+      workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    } catch (_ownerError) {
+      workspaceOwnerId = currentUser?.id || null;
+    }
+    const limitRaw = Number(payload?.limit || 120);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(300, Math.round(limitRaw))) : 120;
+    const search = String(payload?.search || '').trim();
+    const query = {
+      limit,
+      userId: workspaceOwnerId,
+      isAdmin: isAdmin(),
+      search,
+    };
+    let items = [];
+    if (isServerApiEnabled()) {
+      const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+      if (!accessToken) {
+        throw new Error('Not authenticated');
+      }
+      try {
+        const remote = await serverDbCall({
+          accessToken,
+          action: 'listBlogSummaries',
+          args: [query],
+        });
+        items = Array.isArray(remote) ? remote : [];
+      } catch (error) {
+        const message = String(error?.message || '');
+        if (/unsupported db action|listblogsummaries/i.test(message)) {
+          try {
+            items = await listBlogs(query);
+          } catch (legacyError) {
+            const legacyMessage = String(legacyError?.message || '');
+            if (/unsupported db action|listblogs/i.test(legacyMessage)) {
+              items = await getBlogs(query);
+            } else {
+              throw legacyError;
+            }
+          }
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      try {
+        items = await listBlogs(query);
+      } catch (error) {
+        const message = String(error?.message || '');
+        if (/unsupported db action|listblogs/i.test(message)) {
+          items = await getBlogs(query);
+        } else {
+          throw error;
+        }
+      }
+    }
+    const blogs = (Array.isArray(items) ? items : [])
+      .map((item) => ({
+        id: String(item?.id || item?._id || item?.blog_id || ''),
+        title: String(item?.title || item?.topic || '').trim(),
+        keywords: item?.keywords || item?.keyword || '',
+        categories: Array.isArray(item?.categories)
+          ? item.categories
+          : String(item?.categories || '')
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean),
+        generatedAt: item?.generatedAt || item?.created_at || item?.createdAt || '',
+      }))
+      .filter((item) => item.id && item.title);
+    return { success: true, blogs };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('scheduler-create-job', async (event, { job }) => {
   try {
     requirePermission('scheduler');
@@ -4997,6 +5952,18 @@ ipcMain.handle('scheduler-create-job', async (event, { job }) => {
         destinationId: response?.job?.destination_id || job?.destinationId || job?.destination_id || '',
         platform: response?.job?.platform || job?.platform || '',
         runAt: response?.job?.run_at || job?.runAt || job?.run_at || '',
+        scheduleMode:
+          response?.job?.schedule_mode ||
+          response?.job?.scheduleMode ||
+          job?.schedule_mode ||
+          job?.scheduleMode ||
+          '',
+        sourceBlogId:
+          response?.job?.source_blog_id ||
+          response?.job?.sourceBlogId ||
+          job?.source_blog_id ||
+          job?.sourceBlogId ||
+          '',
       },
     });
     return { success: true, job: response.job || null };
@@ -6283,19 +7250,36 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId, 
     }
 
     const data = await fetchWordpressPostDetail({ destination, postId, timeoutMs: 10000 });
-    const content =
-      typeof data?.content === 'string'
+    const remoteTitle =
+      normalizeUtfText(
+        typeof data?.title === 'string'
+          ? data.title
+          : data?.title?.rendered || ''
+      ) || '';
+    const remoteFeaturedImage = String(
+      data?.featuredImage ||
+        data?.featured_image ||
+        data?.image?.src ||
+        data?._embedded?.['wp:featuredmedia']?.[0]?.source_url ||
+        ''
+    ).trim();
+    const content = normalizeUtfText(
+      typeof data?.rawContent === 'string'
+        ? data.rawContent
+        : typeof data?.content === 'string'
         ? data.content
-        : data?.content?.rendered || '';
-    const summary =
+        : data?.content?.rendered || ''
+    );
+    const summary = normalizeUtfText(
       typeof data?.excerpt === 'string'
         ? data.excerpt
-        : data?.excerpt?.rendered || '';
+        : data?.excerpt?.rendered || ''
+    );
     if (resolveLinkedImages && !localBlog) {
       await tryResolveLocalBlogFallback({
         remoteUrl: data.url || data.link || '',
-        remoteTitle: data.title || data?.title?.rendered || '',
-        remoteFeaturedImage: data.featuredImage || '',
+        remoteTitle,
+        remoteFeaturedImage,
       });
     }
     const resolvedGallery = Array.isArray(localBlog?.imageGallery)
@@ -6308,13 +7292,13 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId, 
       success: true,
       post: {
         id: data.id || postId,
-        title: data.title || data?.title?.rendered || '',
+        title: remoteTitle,
         content,
         summary,
         status: data.status || 'draft',
         url: data.url || data.link || null,
-        tags: Array.isArray(data.tags) ? data.tags : [],
-        featuredImage: data.featuredImage || '',
+        tags: Array.isArray(data.tags) ? data.tags.map((tag) => normalizeUtfText(tag)) : [],
+        featuredImage: remoteFeaturedImage,
         imageGallery: resolvedGallery,
         localImageUrl: resolvedFeatured || '',
         provider: 'wordpress',
@@ -6531,6 +7515,9 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
       throw new Error('Destination not found');
     }
 
+    const normalizedTitle = normalizeUtfText(title || '');
+    const normalizedContent = normalizeUtfText(content || '');
+
     if (destination.platform === 'shopify') {
       const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
       const accessToken = ensureValue('Shopify access token', destination.accessToken);
@@ -6552,8 +7539,8 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
         apiVersion,
         blogId,
         articleId: postId,
-        title,
-        bodyHtml: content,
+        title: normalizedTitle,
+        bodyHtml: normalizedContent,
         summaryHtml: current.summary_html || '',
         tags: current.tags || '',
         status,
@@ -6572,7 +7559,7 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
           {
             id: updated?.id || postId,
             destination_id: destination.id || null,
-            title: updated?.title || title || 'Untitled',
+            title: updated?.title || normalizedTitle || 'Untitled',
             status: updated?.published_at ? 'publish' : 'draft',
             url: articleUrl || null,
             created_at: updated?.created_at || current?.created_at,
@@ -6597,19 +7584,19 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
     const updated = await updateWordpressPost({
       destination,
       postId,
-      title,
-      content,
+      title: normalizedTitle,
+      content: normalizedContent,
       status,
       excerpt: '',
       featuredImage: imageUrl || '',
-      featuredImageAlt: title || '',
+      featuredImageAlt: normalizedTitle || '',
     });
     await upsertRemotePosts(
       [
         {
           id: updated.id || postId,
           destination_id: destination.id || null,
-          title: updated.title || updated?.title?.rendered || title || 'Untitled',
+          title: updated.title || updated?.title?.rendered || normalizedTitle || 'Untitled',
           status: updated.status || status || 'draft',
           url: updated.url || updated.link,
           created_at: updated.created_at || updated.date,

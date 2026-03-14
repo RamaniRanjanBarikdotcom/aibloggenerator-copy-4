@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import MarkdownIt from 'markdown-it';
 import { Download, Copy, Sparkles, FileText, FileCode2, Send, X, ExternalLink, CheckCircle, Clock, Plus, Upload } from 'lucide-react';
+import ModalCloseButton from './ModalCloseButton';
 
 function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit, openPublishOnMount = false, onPublishModalOpened }) {
   const keywords = Array.isArray(blog.keywords) ? blog.keywords : [];
@@ -886,13 +887,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit, openPublis
                 <h3 className="text-lg font-semibold text-slate-900">{t.publishDialogTitle || 'Publish Blog'}</h3>
                 <p className="text-sm text-slate-600">{t.publishDialogSubtitle || 'Choose destination and publish status'}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setPublishDialogOpen(false)}
-                className="rounded-full p-2 text-slate-500 hover:bg-slate-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <ModalCloseButton onClick={() => setPublishDialogOpen(false)} label={t.close || 'Close'} />
             </div>
 
             {/* Previous publish history */}

@@ -1,10 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import ModalCloseButton from './ModalCloseButton';
+import TablePagination from './TablePagination';
 
 function LogsPage({ t, canDelete = false }) {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [loadError, setLoadError] = useState('');
   const categoryOptions = [
@@ -46,6 +50,23 @@ function LogsPage({ t, canDelete = false }) {
     loadLogs();
     loadStats();
   }, [level, category]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [level, category, perPage]);
+
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil((logs?.length || 0) / Math.max(1, Number(perPage) || 20)));
+    if (page > maxPage) {
+      setPage(maxPage);
+    }
+  }, [logs, page, perPage]);
+
+  const paginatedLogs = useMemo(() => {
+    const safePerPage = Math.max(1, Number(perPage) || 20);
+    const start = (Math.max(1, page) - 1) * safePerPage;
+    return (logs || []).slice(start, start + safePerPage);
+  }, [logs, page, perPage]);
 
   const handleClear = async () => {
     const result = await window.electronAPI.clearLogs();
@@ -131,34 +152,51 @@ function LogsPage({ t, canDelete = false }) {
           {logs.length === 0 ? (
             <p className="text-sm text-slate-500 py-6">{t.logsEmpty}</p>
           ) : (
-            logs.map((log) => (
-              <div key={log.id} className="py-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <p className="font-semibold text-slate-800">[{log.level}] {log.category}</p>
-                  <p className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</p>
+            paginatedLogs.map((log) => (
+              <div key={log.id} className="py-4 text-sm">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="font-semibold text-slate-800 break-words">
+                      [{log.level}] {log.category}
+                    </p>
+                    <p className="text-slate-600 break-words">{log.message}</p>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
+                      {log.username && (
+                        <span>{t.logsUserLabel || 'User'}: {log.username}</span>
+                      )}
+                      {typeof log.tokensUsed === 'number' && (
+                        <span>{t.logsTokens || 'Tokens'}: {log.tokensUsed}</span>
+                      )}
+                      {typeof log.cost === 'number' && (
+                        <span>{t.logsCost || 'Cost'}: ${log.cost.toFixed(4)}</span>
+                      )}
+                      {log.blogId && (
+                        <span>{t.logsBlogId || 'Blog ID'}: {log.blogId}</span>
+                      )}
+                    </div>
+                    {log.details && (
+                      <pre className="mt-2 overflow-x-auto rounded-md bg-slate-50 p-2 text-xs text-slate-500 whitespace-pre-wrap break-words">
+                        {log.details}
+                      </pre>
+                    )}
+                  </div>
+                  <p className="shrink-0 whitespace-nowrap text-xs text-slate-400">
+                    {new Date(log.timestamp).toLocaleString()}
+                  </p>
                 </div>
-                <p className="text-slate-600">{log.message}</p>
-                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
-                  {log.username && (
-                    <span>{t.logsUserLabel || 'User'}: {log.username}</span>
-                  )}
-                  {typeof log.tokensUsed === 'number' && (
-                    <span>{t.logsTokens || 'Tokens'}: {log.tokensUsed}</span>
-                  )}
-                  {typeof log.cost === 'number' && (
-                    <span>{t.logsCost || 'Cost'}: ${log.cost.toFixed(4)}</span>
-                  )}
-                  {log.blogId && (
-                    <span>{t.logsBlogId || 'Blog ID'}: {log.blogId}</span>
-                  )}
-                </div>
-                {log.details && (
-                  <pre className="mt-2 text-xs text-slate-500 whitespace-pre-wrap">{log.details}</pre>
-                )}
               </div>
             ))
           )}
         </div>
+        {logs.length > 0 && (
+          <TablePagination
+            totalItems={logs.length}
+            page={page}
+            perPage={perPage}
+            onPageChange={setPage}
+            onPerPageChange={setPerPage}
+          />
+        )}
       </div>
 
       {showClearConfirm && (
@@ -173,13 +211,7 @@ function LogsPage({ t, canDelete = false }) {
                   {t.logsClearConfirmBody || 'This will permanently delete all log entries.'}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowClearConfirm(false)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                &times;
-              </button>
+              <ModalCloseButton onClick={() => setShowClearConfirm(false)} label={t.close || 'Close'} />
             </div>
             <div className="mt-6 flex items-center justify-end gap-3">
               <button

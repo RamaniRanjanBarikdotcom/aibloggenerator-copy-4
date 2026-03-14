@@ -596,18 +596,31 @@ if (str_starts_with($requestPath, '/scheduler/')) {
         $shopId = trim((string)($body['shopId'] ?? ''));
         $topic = trim((string)($body['topic'] ?? ''));
         $runAt = trim((string)($body['runAt'] ?? ''));
+        $payload = is_array($body['payload'] ?? null) ? $body['payload'] : [];
+        $scheduleMode = strtolower(trim((string)($body['scheduleMode'] ?? $body['schedule_mode'] ?? $payload['schedule_mode'] ?? 'generate')));
+        $sourceBlogId = trim((string)($body['sourceBlogId'] ?? $body['source_blog_id'] ?? $payload['source_blog_id'] ?? ''));
+        if ($sourceBlogId !== '') {
+            // Safety: if a source blog is provided, this is always an existing-blog schedule.
+            $scheduleMode = 'existing';
+        }
 
         if ($shopId === '' || $topic === '' || $runAt === '') {
             respond(400, ['success' => false, 'error' => 'shopId, topic and runAt are required']);
         }
-
+        if ($scheduleMode === 'existing' && $sourceBlogId === '') {
+            respond(400, ['success' => false, 'error' => 'source_blog_id is required for existing schedule mode']);
+        }
+        $payload['schedule_mode'] = $scheduleMode === 'existing' ? 'existing' : 'generate';
+        $payload['source_blog_id'] = $sourceBlogId;
         $now = new UTCDateTime((int)(microtime(true) * 1000));
         $id = mongoInsertOne($cfg, 'scheduler_jobs', [
             'user_id' => $userId,
             'shop_id' => $shopId,
             'topic' => $topic,
             'keywords' => trim((string)($body['keywords'] ?? '')),
-            'payload' => is_array($body['payload'] ?? null) ? $body['payload'] : [],
+            'schedule_mode' => $scheduleMode === 'existing' ? 'existing' : 'generate',
+            'source_blog_id' => $sourceBlogId,
+            'payload' => $payload,
             'run_at' => toUtcDateTime($runAt),
             'status' => 'pending',
             'created_at' => $now,
@@ -624,6 +637,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
         if ($method === 'PUT') {
             $body = readJsonBody();
             $set = ['updated_at' => new UTCDateTime((int)(microtime(true) * 1000))];
+            $payloadBody = is_array($body['payload'] ?? null) ? $body['payload'] : null;
             if (isset($body['topic'])) {
                 $set['topic'] = trim((string)$body['topic']);
             }
@@ -636,10 +650,39 @@ if (str_starts_with($requestPath, '/scheduler/')) {
             if (isset($body['status'])) {
                 $set['status'] = trim((string)$body['status']);
             }
-            if (isset($body['payload']) && is_array($body['payload'])) {
-                $set['payload'] = $body['payload'];
+            if ($payloadBody !== null) {
+                $set['payload'] = $payloadBody;
             }
-
+            if (array_key_exists('scheduleMode', $body) || array_key_exists('schedule_mode', $body) || ($payloadBody !== null && array_key_exists('schedule_mode', $payloadBody))) {
+                $scheduleMode = strtolower(trim((string)($body['scheduleMode'] ?? $body['schedule_mode'] ?? ($payloadBody['schedule_mode'] ?? 'generate'))));
+                $set['schedule_mode'] = $scheduleMode === 'existing' ? 'existing' : 'generate';
+            }
+            if (array_key_exists('sourceBlogId', $body) || array_key_exists('source_blog_id', $body) || ($payloadBody !== null && array_key_exists('source_blog_id', $payloadBody))) {
+                $set['source_blog_id'] = trim((string)($body['sourceBlogId'] ?? $body['source_blog_id'] ?? ($payloadBody['source_blog_id'] ?? '')));
+            }
+            if (array_key_exists('source_blog_id', $set) && $set['source_blog_id'] !== '') {
+                // Safety: source blog present => force existing mode.
+                $set['schedule_mode'] = 'existing';
+            }
+            if (
+                array_key_exists('schedule_mode', $set) &&
+                $set['schedule_mode'] === 'existing' &&
+                (!array_key_exists('source_blog_id', $set) || trim((string)$set['source_blog_id']) === '')
+            ) {
+                $current = mongoFindOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $userId]);
+                $currentSource = trim((string)($current['source_blog_id'] ?? ''));
+                if ($currentSource === '') {
+                    respond(400, ['success' => false, 'error' => 'source_blog_id is required for existing schedule mode']);
+                }
+            }
+            if (array_key_exists('payload', $set) && is_array($set['payload'])) {
+                if (array_key_exists('schedule_mode', $set)) {
+                    $set['payload']['schedule_mode'] = $set['schedule_mode'];
+                }
+                if (array_key_exists('source_blog_id', $set)) {
+                    $set['payload']['source_blog_id'] = $set['source_blog_id'];
+                }
+            }
             mongoUpdateOne(
                 $cfg,
                 'scheduler_jobs',
