@@ -7,7 +7,7 @@ Deploy this folder on your AWS/PHP server to provide server-side auth, scheduler
 - `blog-gen.php`: main API router
 - `db-actions.php`: DB action handlers used by `/db/call`
 - `config.example.php`: copy to `config.php` and fill secrets
-- `.htaccess`: optional rewrite support (default endpoint used by app is `/blog-gen.php`)
+- `.htaccess`: rewrite support for extensionless API URLs (use `/blog-gen`, not `/blog-gen.php`)
 
 ## Requirements
 
@@ -69,7 +69,7 @@ Optional:
 
 Set:
 
-- `APP_SERVER_API_BASE_URL=https://your-domain.com/path/to/blog-gen.php`
+- `APP_SERVER_API_BASE_URL=https://your-domain.com/path/to/blog-gen`
 - `APP_SERVER_API_TIMEOUT_MS=15000` (optional)
 
 The app client calls `/auth/*`, `/scheduler/*`, `/updates/*`, and `/db/call` under that base URL.
