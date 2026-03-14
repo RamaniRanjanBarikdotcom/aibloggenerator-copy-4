@@ -204,9 +204,6 @@ async function initDb() {
     if (!remoteNames.has('destination_id')) {
       db.run('ALTER TABLE remote_posts ADD COLUMN destination_id TEXT');
     }
-
-    const remoteColumns = db.exec('PRAGMA table_info(remote_posts)');
-    const remoteNames = new Set((remoteColumns[0]?.values || []).map((row) => row[1]));
     if (!remoteNames.has('topics')) {
       db.run('ALTER TABLE remote_posts ADD COLUMN topics TEXT');
     }
@@ -619,11 +616,48 @@ async function updateUserAccess({ id, role, permissions }) {
   persistDb();
 }
 
+async function updateUserPassword({ id, passwordHash, passwordSalt }) {
+  await initDb();
+  db.run('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', [
+    passwordHash,
+    passwordSalt,
+    id,
+  ]);
+  persistDb();
+}
+
 async function logActivity({ userId, action, details }) {
   await initDb();
+  const actionPrefix = String(action || '').split('.')[0] || 'activity';
+  const categoryMap = {
+    blog: 'history',
+    auth: 'auth',
+    admin: 'admin',
+    logs: 'logs',
+    posts: 'posts',
+    settings: 'settings',
+    scheduler: 'scheduler',
+    notification: 'notifications',
+    notifications: 'notifications',
+  };
+  const category = categoryMap[actionPrefix] || actionPrefix;
   db.run(
     'INSERT INTO activities (user_id, action, details, created_at) VALUES (?, ?, ?, ?)',
     [userId || null, action, details || null, new Date().toISOString()]
+  );
+  db.run(
+    'INSERT INTO logs (timestamp, level, category, message, details, blog_id, tokens_used, cost, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      new Date().toISOString(),
+      'info',
+      category,
+      details || action || 'Activity',
+      JSON.stringify({ source: 'activity', action: String(action || '') }),
+      null,
+      null,
+      null,
+      userId || null,
+    ]
   );
   persistDb();
 }
@@ -1092,20 +1126,36 @@ async function listRemotePosts({ status = null, limit = 100, destinationId = nul
 async function getBlogForRemotePost({ remotePostId, destinationId = null } = {}) {
   await initDb();
   if (!remotePostId) return null;
-  let query = 'SELECT blog_id FROM publish_history WHERE remote_post_id = ?';
-  const params = [remotePostId];
-  if (destinationId) {
-    query += ' AND destination_id = ?';
-    params.push(destinationId);
+  const rawId = String(remotePostId).trim();
+  const idCandidates = [rawId];
+  if (/^-?\d+$/.test(rawId)) {
+    idCandidates.push(Number(rawId));
   }
-  query += ' ORDER BY published_at DESC LIMIT 1';
-  const stmt = db.prepare(query);
-  stmt.bind(params);
-  let row = null;
-  if (stmt.step()) {
-    row = stmt.getAsObject();
+
+  const findRow = (withDestination) => {
+    const placeholders = idCandidates.map(() => '?').join(', ');
+    let query = `SELECT blog_id FROM publish_history WHERE remote_post_id IN (${placeholders})`;
+    const params = [...idCandidates];
+    if (withDestination && destinationId) {
+      query += ' AND destination_id = ?';
+      params.push(destinationId);
+    }
+    query += ' ORDER BY published_at DESC LIMIT 1';
+    const stmt = db.prepare(query);
+    stmt.bind(params);
+    let row = null;
+    if (stmt.step()) {
+      row = stmt.getAsObject();
+    }
+    stmt.free();
+    return row;
+  };
+
+  let row = findRow(true);
+  // Fallback for legacy publish-history rows that may not carry destination_id.
+  if (!row?.blog_id && destinationId) {
+    row = findRow(false);
   }
-  stmt.free();
   if (!row?.blog_id) return null;
   return await getBlogById(row.blog_id);
 }
@@ -1430,6 +1480,7 @@ module.exports = {
   createUser,
   listUsers,
   updateUserAccess,
+  updateUserPassword,
   logActivity,
   listActivities,
   setSetting,

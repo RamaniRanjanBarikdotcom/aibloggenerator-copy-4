@@ -1,6 +1,35 @@
 import React, { useState } from 'react';
 import { User, Lock, Eye, EyeOff, ArrowRight, Loader2, AlertTriangle, Shield, UserPlus, KeyRound, Sparkles } from 'lucide-react';
 
+const formatAuthError = (result, fallbackMessage) => {
+  const rawError = String(result?.error || fallbackMessage || 'Request failed');
+  const normalized = rawError.toLowerCase();
+
+  if (normalized.includes('admin already exists')) {
+    return 'Admin account is already configured. Please sign in.';
+  }
+  if (normalized.includes('invalid credentials')) {
+    return 'Invalid username or password.';
+  }
+
+  const isConnectivityError =
+    normalized.includes('database connection failed') ||
+    normalized.includes('econnrefused') ||
+    normalized.includes('enotfound') ||
+    normalized.includes('etimedout') ||
+    normalized.includes('econnaborted') ||
+    normalized.includes('eai_again') ||
+    normalized.includes('route not found') ||
+    normalized.includes('server api') ||
+    normalized.includes('network');
+
+  if (isConnectivityError) {
+    return 'Unable to connect to server. Please try again.';
+  }
+
+  return 'Setup failed. Please try again.';
+};
+
 function AdminSetupPage({ t, onSetup }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -47,12 +76,7 @@ function AdminSetupPage({ t, onSetup }) {
     setIsSubmitting(false);
 
     if (!result.success) {
-      const rawError = result.error || 'Setup failed';
-      if (rawError.includes('Database connection failed') || rawError.includes('SSL') || rawError.includes('TLSV1')) {
-        setError('Cannot connect to database. Please check your internet connection and ensure MongoDB Atlas is active and your IP is whitelisted.');
-      } else {
-        setError(rawError);
-      }
+      setError(formatAuthError(result, 'Setup failed'));
     }
   };
 

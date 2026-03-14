@@ -20,6 +20,7 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'
 const TINYMCE_SCRIPT_ID = 'tinymce-local-script';
 const TINYMCE_SCRIPT_SRC = './tinymce/tinymce.min.js';
 const TINYMCE_BASE_URL = './tinymce';
+const POSTS_DESTINATION_STORAGE_KEY = 'posts.selectedDestinationId';
 
 const normalizeUrlKey = (value) => {
   const trimmed = String(value || '').trim();
@@ -32,20 +33,44 @@ const normalizeUrlKey = (value) => {
   }
 };
 
+const normalizeFileKey = (value) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  let pathPart = trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    pathPart = parsed.pathname || '';
+  } catch {
+    pathPart = trimmed;
+  }
+  const segments = String(pathPart).split(/[\\/]/).filter(Boolean);
+  const file = decodeURIComponent(segments[segments.length - 1] || '').toLowerCase();
+  if (!file) return '';
+  // Collapse common CMS variants like image-300x200.jpg or image-scaled.jpg
+  return file
+    .replace(/-\d+x\d+(?=\.[a-z0-9]+$)/i, '')
+    .replace(/-scaled(?=\.[a-z0-9]+$)/i, '');
+};
+
 const dedupeUrls = (items = []) => {
-  const seen = new Set();
+  const seenUrl = new Set();
+  const seenFile = new Set();
   return items
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .filter((value) => {
-      const key = normalizeUrlKey(value);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
+      const urlKey = normalizeUrlKey(value);
+      const fileKey = normalizeFileKey(value);
+      if (!urlKey) return false;
+      if (seenUrl.has(urlKey)) return false;
+      if (fileKey && seenFile.has(fileKey)) return false;
+      seenUrl.add(urlKey);
+      if (fileKey) seenFile.add(fileKey);
       return true;
     });
 };
 
-function PostsPage({ t }) {
+function PostsPage({ t, canDelete = false }) {
   const [posts, setPosts] = useState([]);
   const [publishHistory, setPublishHistory] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -57,7 +82,10 @@ function PostsPage({ t }) {
   const [statusFilter, setStatusFilter] = useState('any');
   const [platformFilter, setPlatformFilter] = useState('any');
   const [destinations, setDestinations] = useState([]);
-  const [destinationId, setDestinationId] = useState('');
+  const [destinationId, setDestinationId] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return window.localStorage.getItem(POSTS_DESTINATION_STORAGE_KEY) || '';
+  });
   const [syncMessage, setSyncMessage] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
   const [autoSynced, setAutoSynced] = useState(false);
@@ -76,10 +104,14 @@ function PostsPage({ t }) {
   const [editEditorMode, setEditEditorMode] = useState('visual');
   const [tinyLoaded, setTinyLoaded] = useState(false);
   const [tinyLoadError, setTinyLoadError] = useState('');
+  const [isDarkMode, setIsDarkMode] = useState(() =>
+    typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : false
+  );
   const tinyTextareaRef = useRef(null);
   const tinyEditorRef = useRef(null);
   const syncingFromTinyRef = useRef(false);
   const pendingTinyContentRef = useRef('');
+  const activeEditPostIdRef = useRef('');
   const selectedDestination = destinations.find((dest) => dest.id === destinationId) || null;
   const autoSyncInFlight = useRef(false);
   const lastAutoSyncAt = useRef(0);
@@ -154,11 +186,25 @@ function PostsPage({ t }) {
           )
         : [];
       setDestinations(dests);
-      if (!destinationId && dests.length) {
-        setDestinationId(dests[0].id);
-      }
+      setDestinationId((prev) => {
+        if (!dests.length) return '';
+        const preferred = prev || (typeof window !== 'undefined'
+          ? window.localStorage.getItem(POSTS_DESTINATION_STORAGE_KEY) || ''
+          : '');
+        const exists = dests.some((d) => d.id === preferred);
+        return exists ? preferred : dests[0].id;
+      });
     }
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (destinationId) {
+      window.localStorage.setItem(POSTS_DESTINATION_STORAGE_KEY, destinationId);
+    } else {
+      window.localStorage.removeItem(POSTS_DESTINATION_STORAGE_KEY);
+    }
+  }, [destinationId]);
 
   const handleSync = async () => {
     if (syncing) return;
@@ -240,6 +286,17 @@ function PostsPage({ t }) {
   };
 
   useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const root = document.documentElement;
+    const syncTheme = () => setIsDarkMode(root.classList.contains('dark'));
+    syncTheme();
+
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (window.tinymce) {
       setTinyLoaded(true);
       return;
@@ -273,6 +330,8 @@ function PostsPage({ t }) {
         license_key: 'gpl',
         base_url: TINYMCE_BASE_URL,
         suffix: '.min',
+        skin: isDarkMode ? 'oxide-dark' : 'oxide',
+        content_css: isDarkMode ? 'dark' : 'default',
         menubar: false,
         branding: false,
         promotion: false,
@@ -284,7 +343,11 @@ function PostsPage({ t }) {
         toolbar:
           'undo redo | blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist outdent indent | link image | blockquote code removeformat',
         content_style:
-          'body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; padding: 8px; } img { max-width: 100%; height: auto; }',
+          `body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; padding: 8px; ${
+            isDarkMode
+              ? 'background: #0f172a; color: #e2e8f0 !important; } h1, h2, h3, h4, h5, h6, p, li, blockquote, span, div, a { color: inherit !important; '
+              : ''
+          } } img { max-width: 100%; height: auto; }`,
         setup: (editor) => {
           tinyEditorRef.current = editor;
           editor.on('init', () => {
@@ -312,7 +375,7 @@ function PostsPage({ t }) {
         tinyEditorRef.current = null;
       }
     };
-  }, [editModalOpen, tinyLoaded, editEditorMode, editLoading]);
+  }, [editModalOpen, tinyLoaded, editEditorMode, editLoading, isDarkMode]);
 
   useEffect(() => {
     if (!editModalOpen || editEditorMode !== 'visual' || !tinyEditorRef.current) return;
@@ -339,18 +402,19 @@ function PostsPage({ t }) {
     setEditError('');
     setTinyLoadError('');
     syncingFromTinyRef.current = false;
+    activeEditPostIdRef.current = String(post?.id || '');
     const result = await window.electronAPI.getRemotePostDetail({
       destinationId,
       postId: post.id,
     });
     if (result.success) {
-      const remoteImage = result.post.featuredImage || '';
+      const remoteImage = String(result.post.featuredImage || '').trim();
       const localGallery = Array.isArray(result.post.imageGallery) ? result.post.imageGallery : [];
-      let mergedGallery = dedupeUrls([result.post.localImageUrl, ...localGallery]);
-      if (!mergedGallery.length && remoteImage) {
-        mergedGallery = dedupeUrls([remoteImage]);
-      }
+      // Keep the remotely posted image as the primary/default selection.
+      const mergedGallery = dedupeUrls([remoteImage, result.post.localImageUrl, ...localGallery]);
       const nextContent = result.post.content || result.post.summary || '';
+      const resolvedPostId = String(result.post.id || post.id || '');
+      activeEditPostIdRef.current = resolvedPostId;
       setEditForm({
         id: result.post.id,
         title: result.post.title || '',
@@ -359,16 +423,45 @@ function PostsPage({ t }) {
       });
       setEditGallery(mergedGallery);
       pendingTinyContentRef.current = nextContent;
-      const normalizedRemote = normalizeUrlKey(remoteImage);
-      const galleryMatch =
-        mergedGallery.find((url) => normalizeUrlKey(url) === normalizedRemote) ||
-        mergedGallery[0] ||
-        '';
-      setEditImageUrl(galleryMatch);
+      setEditImageUrl(remoteImage || mergedGallery[0] || '');
       if (tinyEditorRef.current && editEditorMode === 'visual') {
         tinyEditorRef.current.setContent(nextContent);
       }
       setEditEditorMode('visual');
+
+      // Load linked local images in background so modal opens fast.
+      window.electronAPI
+        .getRemotePostLinkedImages({
+          destinationId,
+          postId: resolvedPostId,
+          remoteUrl: result.post.url || '',
+          remoteTitle: result.post.title || '',
+          remoteFeaturedImage: remoteImage || '',
+        })
+        .then((linkedResult) => {
+          if (!linkedResult?.success) return;
+          if (activeEditPostIdRef.current !== resolvedPostId) return;
+
+          const linkedGallery = Array.isArray(linkedResult.imageGallery) ? linkedResult.imageGallery : [];
+          const merged = dedupeUrls([
+            remoteImage,
+            result.post.localImageUrl,
+            ...localGallery,
+            linkedResult.localImageUrl,
+            ...linkedGallery,
+          ]);
+
+          if (merged.length) {
+            setEditGallery(merged);
+            setEditImageUrl((prev) => {
+              if (prev && merged.some((url) => normalizeUrlKey(url) === normalizeUrlKey(prev))) {
+                return prev;
+              }
+              return remoteImage || merged[0] || '';
+            });
+          }
+        })
+        .catch(() => {});
     } else {
       setEditError(result.error || 'Failed to load post');
     }
@@ -474,6 +567,15 @@ function PostsPage({ t }) {
     return `${mins}m ${secs}s`;
   };
 
+  const getStatusLabel = (status) => {
+    if (status === 'publish') return t.statusPublish || 'Published';
+    if (status === 'draft') return t.statusDraft || 'Draft';
+    if (status === 'pending') return t.statusPending || 'Pending';
+    if (status === 'private') return t.statusPrivate || 'Private';
+    if (status === 'scheduled') return t.statusScheduled || 'Scheduled';
+    return status || '-';
+  };
+
   return (
     <div className="max-w-7xl mx-auto p-8">
       {/* Header */}
@@ -504,7 +606,7 @@ function PostsPage({ t }) {
             className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >
             <AlertCircle className={`h-4 w-4 ${testing ? 'animate-pulse' : ''}`} />
-            <span>{testing ? 'Testing...' : 'Test Connection'}</span>
+            <span>{testing ? (t.testingLabel || 'Testing...') : (t.testConnectionLabel || 'Test Connection')}</span>
           </button>
           <button
             onClick={handleSync}
@@ -766,7 +868,7 @@ function PostsPage({ t }) {
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <p className="text-sm text-slate-500 text-center py-8">No data yet</p>
+                <p className="text-sm text-slate-500 text-center py-8">{t.noDataYet || 'No data yet'}</p>
               )}
             </div>
 
@@ -796,7 +898,7 @@ function PostsPage({ t }) {
                   </PieChart>
                 </ResponsiveContainer>
               ) : (
-                <p className="text-sm text-slate-500 text-center py-8">No data yet</p>
+                <p className="text-sm text-slate-500 text-center py-8">{t.noDataYet || 'No data yet'}</p>
               )}
             </div>
           </div>
@@ -822,7 +924,7 @@ function PostsPage({ t }) {
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <p className="text-sm text-slate-500 text-center py-8">No topic data yet</p>
+                <p className="text-sm text-slate-500 text-center py-8">{t.noTopicDataYet || 'No topic data yet'}</p>
               )}
             </div>
 
@@ -837,7 +939,7 @@ function PostsPage({ t }) {
                     <li key={post.id} className="flex items-center justify-between text-sm border-b border-slate-50 pb-2">
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         <span className="text-slate-400 font-medium w-5">{idx + 1}.</span>
-                        <span className="truncate text-slate-800">{post.title || 'Untitled'}</span>
+                        <span className="truncate text-slate-800">{post.title || t.untitledLabel || 'Untitled'}</span>
                       </div>
                       <div className="flex items-center gap-3 flex-shrink-0">
                         <span className="font-semibold text-slate-900">{(post.views || 0).toLocaleString()}</span>
@@ -854,7 +956,7 @@ function PostsPage({ t }) {
                   ))}
                 </ul>
               ) : (
-                <p className="text-sm text-slate-500 text-center py-8">No posts yet</p>
+                <p className="text-sm text-slate-500 text-center py-8">{t.emptyPosts || 'No posts yet'}</p>
               )}
             </div>
           </div>
@@ -870,11 +972,11 @@ function PostsPage({ t }) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-slate-500 border-b border-slate-100">
-                      <th className="pb-2 font-medium">Destination</th>
-                      <th className="pb-2 font-medium">Platform</th>
-                      <th className="pb-2 font-medium">Status</th>
-                      <th className="pb-2 font-medium">Date</th>
-                      <th className="pb-2 font-medium">Action</th>
+                      <th className="pb-2 font-medium">{t.destinationLabel || 'Destination'}</th>
+                      <th className="pb-2 font-medium">{t.scraperPlatformLabel || 'Platform'}</th>
+                      <th className="pb-2 font-medium">{t.colStatus || 'Status'}</th>
+                      <th className="pb-2 font-medium">{t.dateLabel || 'Date'}</th>
+                      <th className="pb-2 font-medium">{t.actionLabel || 'Action'}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -894,7 +996,7 @@ function PostsPage({ t }) {
                                 : 'bg-amber-50 text-amber-700'
                             }`}
                           >
-                            {pub.status}
+                            {getStatusLabel(pub.status)}
                           </span>
                         </td>
                         <td className="py-2 text-slate-600">{formatDate(pub.publishedAt)}</td>
@@ -904,7 +1006,7 @@ function PostsPage({ t }) {
                               onClick={() => window.electronAPI.openExternal({ url: pub.publishedUrl })}
                               className="text-blue-600 hover:text-blue-800 text-xs flex items-center gap-1"
                             >
-                              <ExternalLink className="w-3 h-3" /> View
+                              <ExternalLink className="w-3 h-3" /> {t.viewLabel || 'View'}
                             </button>
                           )}
                         </td>
@@ -914,7 +1016,7 @@ function PostsPage({ t }) {
                 </table>
               </div>
             ) : (
-              <p className="text-sm text-slate-500 text-center py-4">No recent publishes</p>
+              <p className="text-sm text-slate-500 text-center py-4">{t.noRecentPublishes || 'No recent publishes'}</p>
             )}
           </div>
         </div>
@@ -929,16 +1031,16 @@ function PostsPage({ t }) {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
             >
-              <option value="any">All Status</option>
-              <option value="publish">Published</option>
-              <option value="draft">Draft</option>
+              <option value="any">{t.allStatusLabel || 'All Status'}</option>
+              <option value="publish">{t.statusPublish || 'Published'}</option>
+              <option value="draft">{t.statusDraft || 'Draft'}</option>
             </select>
             <select
               value={platformFilter}
               onChange={(e) => setPlatformFilter(e.target.value)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
             >
-              <option value="any">All Platforms</option>
+              <option value="any">{t.allPlatformsLabel || 'All Platforms'}</option>
               <option value="wordpress">WordPress</option>
               <option value="wordpress-token">WordPress (Token)</option>
               <option value="shopify">Shopify</option>
@@ -950,19 +1052,19 @@ function PostsPage({ t }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-slate-500 border-b border-slate-100 bg-slate-50">
-                  <th className="px-4 py-3 font-medium">Blog Title</th>
-                  <th className="px-4 py-3 font-medium">Destination</th>
-                  <th className="px-4 py-3 font-medium">Platform</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Published</th>
-                  <th className="px-4 py-3 font-medium">Actions</th>
+                  <th className="px-4 py-3 font-medium">{t.blogTitleLabel || 'Blog Title'}</th>
+                  <th className="px-4 py-3 font-medium">{t.destinationLabel || 'Destination'}</th>
+                  <th className="px-4 py-3 font-medium">{t.scraperPlatformLabel || 'Platform'}</th>
+                  <th className="px-4 py-3 font-medium">{t.colStatus || 'Status'}</th>
+                  <th className="px-4 py-3 font-medium">{t.colPublished || 'Published'}</th>
+                  <th className="px-4 py-3 font-medium">{t.colActions || 'Actions'}</th>
                 </tr>
               </thead>
               <tbody>
                 {publishHistory.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                      No publishing history yet
+                      {t.noPublishingHistoryYet || 'No publishing history yet'}
                     </td>
                   </tr>
                 ) : (
@@ -970,7 +1072,7 @@ function PostsPage({ t }) {
                     <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50">
                       <td className="px-4 py-3">
                         <p className="font-medium text-slate-800 truncate max-w-[200px]">
-                          {item.blogTitle || 'Untitled'}
+                          {item.blogTitle || t.untitledLabel || 'Untitled'}
                         </p>
                       </td>
                       <td className="px-4 py-3 text-slate-600">{item.destinationName || '—'}</td>
@@ -987,7 +1089,7 @@ function PostsPage({ t }) {
                               : 'bg-amber-50 text-amber-700'
                           }`}
                         >
-                          {item.status}
+                          {getStatusLabel(item.status)}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-slate-600">{formatDate(item.publishedAt)}</td>
@@ -998,7 +1100,7 @@ function PostsPage({ t }) {
                             className="text-blue-600 hover:text-blue-800 flex items-center gap-1"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
-                            <span>View</span>
+                            <span>{t.viewLabel || 'View'}</span>
                           </button>
                         )}
                       </td>
@@ -1048,7 +1150,7 @@ function PostsPage({ t }) {
                 className="grid grid-cols-12 gap-3 px-4 py-3 border-b border-slate-100 text-sm text-slate-800 hover:bg-slate-50"
               >
                 <div className="col-span-4">
-                  <p className="font-semibold truncate">{post.title || 'Untitled'}</p>
+                  <p className="font-semibold truncate">{post.title || t.untitledLabel || 'Untitled'}</p>
                   <p className="text-xs text-slate-500 truncate">{post.url}</p>
                 </div>
                 <div className="col-span-2">
@@ -1061,7 +1163,7 @@ function PostsPage({ t }) {
                         : 'bg-slate-100 text-slate-600'
                     }`}
                   >
-                    {post.status}
+                    {getStatusLabel(post.status)}
                   </span>
                 </div>
                 <div className="col-span-2">
@@ -1089,13 +1191,15 @@ function PostsPage({ t }) {
                     <Pencil className="h-4 w-4" />
                     {t.editLabel || 'Edit'}
                   </button>
-                  <button
-                    onClick={() => handleDeletePost(post)}
-                    className="inline-flex items-center gap-1 text-rose-600 hover:text-rose-800 text-sm"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    {t.deleteLabel || 'Delete'}
-                  </button>
+                  {canDelete && (
+                    <button
+                      onClick={() => handleDeletePost(post)}
+                      className="inline-flex items-center gap-1 text-rose-600 hover:text-rose-800 text-sm"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {t.deleteLabel || 'Delete'}
+                    </button>
+                  )}
                 </div>
               </div>
             ))
@@ -1104,33 +1208,33 @@ function PostsPage({ t }) {
       )}
       {editModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50">
-          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900">{t.editPostTitle || 'Edit Remote Post'}</h3>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{t.editPostTitle || 'Edit Remote Post'}</h3>
               <button
                 onClick={() => setEditModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >X</button>
             </div>
             {editLoading ? (
-              <div className="py-8 text-center text-slate-500">{t.loading || 'Loading...'}</div>
+              <div className="py-8 text-center text-slate-500 dark:text-slate-400">{t.loading || 'Loading...'}</div>
             ) : (
               <div className="mt-4 space-y-4">
                 <div>
-                  <label className="text-sm font-medium text-slate-700">{t.colTitle || 'Title'}</label>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">{t.colTitle || 'Title'}</label>
                   <input
                     value={editForm.title}
                     onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    placeholder="Post title"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    placeholder={t.postTitlePlaceholder || 'Post title'}
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">{t.colStatus || 'Status'}</label>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">{t.colStatus || 'Status'}</label>
                   <select
                     value={editForm.status}
                     onChange={(e) => setEditForm((prev) => ({ ...prev, status: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                   >
                     <option value="publish">{t.statusPublish || 'Published'}</option>
                     <option value="draft">{t.statusDraft || 'Draft'}</option>
@@ -1142,9 +1246,9 @@ function PostsPage({ t }) {
                     )}
                   </select>
                 </div>
-                                {editGallery.length > 0 ? (
+                {editGallery.length > 0 ? (
                   <div className="space-y-2">
-                    <p className="text-sm font-medium text-slate-700">
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
                       {t.featuredImageLabel || 'Featured image'}
                     </p>
                     <div className="flex flex-wrap gap-2">
@@ -1154,7 +1258,9 @@ function PostsPage({ t }) {
                           type="button"
                           onClick={() => setEditImageUrl(url)}
                           className={`h-20 w-28 overflow-hidden rounded-md border ${
-                            url === editImageUrl ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+                            url === editImageUrl
+                              ? 'border-blue-500 ring-2 ring-blue-200 dark:ring-blue-500/50'
+                              : 'border-slate-200 dark:border-slate-700'
                           }`}
                           title={t.selectImageLabel || 'Use as featured image'}
                         >
@@ -1163,26 +1269,28 @@ function PostsPage({ t }) {
                       ))}
                     </div>
                     {editImageUrl && (
-                      <p className="text-xs text-slate-500">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
                         {t.selectedImageHint || 'Selected image will be used as the featured image.'}
                       </p>
                     )}
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-400">
                     {t.noImagesAvailable || 'No images available for this blog.'}
                   </div>
                 )}
 
                 <div>
                   <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-slate-700">{t.colContent || 'Content'}</label>
+                    <label className="text-sm font-medium text-slate-700 dark:text-slate-300">{t.colContent || 'Content'}</label>
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => setEditEditorMode('visual')}
                         className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                          editEditorMode === 'visual' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
+                          editEditorMode === 'visual'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                         }`}
                       >
                         {t.editorModeVisual || 'Visual'}
@@ -1191,7 +1299,9 @@ function PostsPage({ t }) {
                         type="button"
                         onClick={() => setEditEditorMode('html')}
                         className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                          editEditorMode === 'html' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
+                          editEditorMode === 'html'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                         }`}
                       >
                         {t.editorModeHtml || 'HTML'}
@@ -1201,12 +1311,12 @@ function PostsPage({ t }) {
                   {editEditorMode === 'visual' ? (
                     <div className="mt-2 space-y-2">
                       {tinyLoadError ? (
-                        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300">
                           {tinyLoadError}
                         </div>
                       ) : null}
                       {!tinyLoaded ? (
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300">
                           {t.loadingEditor || 'Loading editor...'}
                         </div>
                       ) : null}
@@ -1216,8 +1326,8 @@ function PostsPage({ t }) {
                     <textarea
                       value={editForm.content}
                       onChange={(e) => setEditForm((prev) => ({ ...prev, content: e.target.value }))}
-                      className="mt-2 h-60 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                      placeholder="Post content (HTML supported)"
+                      className="mt-2 h-60 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      placeholder={t.postContentPlaceholder || 'Post content (HTML supported)'}
                     />
                   )}
                 </div>
@@ -1225,7 +1335,7 @@ function PostsPage({ t }) {
                 <div className="flex justify-end gap-2">
                   <button
                     onClick={() => setEditModalOpen(false)}
-                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300"
                   >{t.cancel || 'Cancel'}</button>
                   <button
                     onClick={handleSaveEdit}

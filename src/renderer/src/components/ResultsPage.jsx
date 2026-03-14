@@ -1,8 +1,8 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import MarkdownIt from 'markdown-it';
-import { Download, Copy, Sparkles, FileText, FileCode2, Send, X, ExternalLink, CheckCircle, Clock } from 'lucide-react';
+import { Download, Copy, Sparkles, FileText, FileCode2, Send, X, ExternalLink, CheckCircle, Clock, Plus, Upload } from 'lucide-react';
 
-function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
+function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit, openPublishOnMount = false, onPublishModalOpened }) {
   const keywords = Array.isArray(blog.keywords) ? blog.keywords : [];
   const [viewMode, setViewMode] = useState('rendered');
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
@@ -18,7 +18,15 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
   const [selectedCategories, setSelectedCategories] = useState(blog.categories || []);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [newCategory, setNewCategory] = useState('');
+  const [imageActionModalOpen, setImageActionModalOpen] = useState(false);
+  const [uploadingLocalImage, setUploadingLocalImage] = useState(false);
+  const [removedImageUrls, setRemovedImageUrls] = useState([]);
+  const [showImageDeleteConfirm, setShowImageDeleteConfirm] = useState(false);
+  const [showCopyToast, setShowCopyToast] = useState(false);
   const contentRef = useRef(null);
+  const renderedContentRef = useRef(null);
+  const inlineActionBarRef = useRef(null);
+  const copyToastTimeoutRef = useRef(null);
   const [showFloatingBar, setShowFloatingBar] = useState(false);
   const normalizeImageGallery = (galleryValue, imageUrl) => {
     if (Array.isArray(galleryValue)) {
@@ -64,25 +72,79 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
     const nextGallery = normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl);
     setImageGallery(nextGallery);
     setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
+    setRemovedImageUrls([]);
+    setShowImageDeleteConfirm(false);
   }, [blog]);
 
   useEffect(() => {
     const target = contentRef.current;
-    if (!target || typeof IntersectionObserver === 'undefined') {
+    if (!target || typeof window === 'undefined') {
       setShowFloatingBar(false);
       return undefined;
     }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        setShowFloatingBar(entry.isIntersecting);
-      },
-      { threshold: 0.12 }
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
+
+    const findScrollParent = (node) => {
+      let parent = node?.parentElement || null;
+      while (parent) {
+        const style = window.getComputedStyle(parent);
+        if (/(auto|scroll)/.test(style.overflowY || '')) {
+          return parent;
+        }
+        parent = parent.parentElement;
+      }
+      return null;
+    };
+
+    const root = findScrollParent(target);
+    const onScroll = () => {
+      const rootRect = root
+        ? root.getBoundingClientRect()
+        : { top: 0, bottom: window.innerHeight };
+      const contentRect = target.getBoundingClientRect();
+      // Show once content reaches the upper-middle visible area (earlier than full view).
+      const rootHeight = Math.max(0, rootRect.bottom - rootRect.top);
+      const triggerLine = rootRect.top + Math.max(220, rootHeight * 0.42);
+      const contentStartedShowing = contentRect.top <= triggerLine;
+
+      // Hide floating bar once the inline action bar is visible near the end.
+      let inlineBarVisible = false;
+      if (inlineActionBarRef.current) {
+        const actionRect = inlineActionBarRef.current.getBoundingClientRect();
+        const visibleTop = Math.max(actionRect.top, rootRect.top);
+        const visibleBottom = Math.min(actionRect.bottom, rootRect.bottom);
+        inlineBarVisible = visibleBottom - visibleTop > 12;
+      }
+
+      setShowFloatingBar(contentStartedShowing && !inlineBarVisible);
+    };
+
+    onScroll();
+    if (root) {
+      root.addEventListener('scroll', onScroll);
+    } else {
+      window.addEventListener('scroll', onScroll);
+    }
+    window.addEventListener('resize', onScroll);
+    return () => {
+      if (root) {
+        root.removeEventListener('scroll', onScroll);
+      } else {
+        window.removeEventListener('scroll', onScroll);
+      }
+      window.removeEventListener('resize', onScroll);
+    };
   }, [blog?.id]);
 
+  useEffect(() => {
+    return () => {
+      if (copyToastTimeoutRef.current) {
+        clearTimeout(copyToastTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleSelectImage = async (url) => {
+    if (removedImageUrls.includes(url)) return;
     if (!url || url === featuredImage) return;
     const nextGallery = normalizeImageGallery(imageGallery, url);
     setFeaturedImage(url);
@@ -97,6 +159,37 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
         alert(result.error || 'Failed to update featured image');
       }
     }
+  };
+
+  const applyDeletedImages = async () => {
+    if (!removedImageUrls.length) return;
+    const nextGallery = imageGallery.filter((url) => !removedImageUrls.includes(url));
+    const nextFeatured = removedImageUrls.includes(featuredImage)
+      ? nextGallery[0] || ''
+      : featuredImage || nextGallery[0] || '';
+
+    if (!blog.id) {
+      setImageGallery(nextGallery);
+      setFeaturedImage(nextFeatured);
+      setRemovedImageUrls([]);
+      setShowImageDeleteConfirm(false);
+      return;
+    }
+
+    const result = await window.electronAPI.updateBlog({
+      blog: { ...blog, imageUrl: nextFeatured || null, imageGallery: nextGallery },
+    });
+    if (!result.success) {
+      alert(result.error || 'Failed to delete images');
+      return;
+    }
+
+    setImageGallery(nextGallery);
+    setFeaturedImage(nextFeatured);
+    setRemovedImageUrls([]);
+    setShowImageDeleteConfirm(false);
+    blog.imageUrl = nextFeatured || '';
+    blog.imageGallery = nextGallery;
   };
 
   const legacyToHtml = (text) => {
@@ -196,9 +289,21 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
     await window.electronAPI.showLinkContextMenu({ url: anchor.href });
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(blog.content);
-    alert('Blog content copied to clipboard!');
+  const handleCopy = async () => {
+    const textToCopy =
+      viewMode === 'plain'
+        ? rawContent
+        : (renderedContentRef.current?.innerText || '').trim() || rawContent;
+
+    await navigator.clipboard.writeText(textToCopy);
+    setShowCopyToast(true);
+    if (copyToastTimeoutRef.current) {
+      clearTimeout(copyToastTimeoutRef.current);
+    }
+    copyToastTimeoutRef.current = setTimeout(() => {
+      setShowCopyToast(false);
+      copyToastTimeoutRef.current = null;
+    }, 1800);
   };
 
   const [exporting, setExporting] = useState(false);
@@ -274,6 +379,26 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
   };
 
   useEffect(() => {
+    if (!openPublishOnMount || !blog?.id || publishDialogOpen) return;
+    let cancelled = false;
+    const openPublishDialog = async () => {
+      setPublishStatus({ state: 'idle', message: '', url: null });
+      setPublishMode('draft');
+      setSelectedCategories(blog.categories || []);
+      setPublishDialogOpen(true);
+      if (typeof onPublishModalOpened === 'function') {
+        onPublishModalOpened();
+      }
+      await Promise.all([loadPublishDestinations(), loadPublishHistory()]);
+      if (cancelled) return;
+    };
+    openPublishDialog();
+    return () => {
+      cancelled = true;
+    };
+  }, [openPublishOnMount, blog?.id, publishDialogOpen]);
+
+  useEffect(() => {
     const loadCategories = async () => {
       if (!publishDialogOpen || !selectedDestinationId) return;
       const destination = publishDestinations.find((item) => item.id === selectedDestinationId);
@@ -318,7 +443,13 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
       return;
     }
     setPublishing(true);
-    setPublishStatus({ state: 'loading', message: publishMode === 'publish' ? 'Publishing...' : 'Creating draft...', url: null });
+    setPublishStatus({
+      state: 'loading',
+      message: publishMode === 'publish'
+        ? (t.publishInProgress || 'Publishing...')
+        : (t.creatingDraftLabel || 'Creating draft...'),
+      url: null,
+    });
     const result = await window.electronAPI.publishBlog({
       destination,
       blog: {
@@ -373,6 +504,49 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
       alert(result.error || 'Image generation failed');
     }
     setIsGeneratingImage(false);
+  };
+
+  const handleUploadLocalImage = async () => {
+    if (!blog?.id) {
+      alert(t.imageUploadMissingBlog || 'Save the blog first before uploading an image.');
+      return;
+    }
+
+    setUploadingLocalImage(true);
+    const picked = await window.electronAPI.selectLocalImageFile();
+    if (!picked?.success) {
+      setUploadingLocalImage(false);
+      if (!picked?.canceled) {
+        alert(picked?.error || t.imageSelectFailed || 'Unable to select image file.');
+      }
+      return;
+    }
+
+    const result = await window.electronAPI.attachLocalBlogImage({
+      blogId: blog.id,
+      title: blog.title,
+      localImagePath: picked.path,
+    });
+
+    setUploadingLocalImage(false);
+    if (!result.success) {
+      alert(result.error || t.imageUploadFailed || 'Failed to upload image.');
+      return;
+    }
+
+    const nextGallery = normalizeImageGallery(
+      result.imageGallery || imageGallery,
+      result.imageUrl || featuredImage
+    );
+    setImageGallery(nextGallery);
+    setFeaturedImage(result.imageUrl || nextGallery[0] || featuredImage);
+    setLocalImagePath(result.localPath || '');
+    blog.imageUrl = result.imageUrl || blog.imageUrl;
+    blog.localImagePath = result.localPath || '';
+    blog.local_image_path = result.localPath || '';
+    blog.imageGallery = nextGallery;
+    setImageActionModalOpen(false);
+    setPublishStatus({ state: 'idle', message: '', url: null });
   };
 
   return (
@@ -442,28 +616,59 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
             </div>
           )}
 
-          {imageGallery.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-600">
-                {t.generatedImagesLabel || 'Generated images'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {imageGallery.map((url) => (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-slate-600">
+              {t.generatedImagesLabel || 'Generated images'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {imageGallery.map((url) => (
+                <div key={url} className="relative h-16 w-20">
                   <button
-                    key={url}
                     type="button"
                     onClick={() => handleSelectImage(url)}
-                    className={`h-16 w-20 overflow-hidden rounded-md border ${
+                    className={`h-full w-full overflow-hidden rounded-md border ${
                       url === featuredImage ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
-                    }`}
+                    } ${removedImageUrls.includes(url) ? 'opacity-40' : ''}`}
                     title={t.selectImageLabel || 'Use as featured image'}
                   >
                     <img src={url} alt="Generated" className="h-full w-full object-cover" />
                   </button>
-                ))}
-              </div>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setRemovedImageUrls((prev) =>
+                        prev.includes(url) ? prev.filter((item) => item !== url) : [...prev, url]
+                      );
+                    }}
+                    className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow hover:bg-white"
+                    title={t.deleteLabel || 'Delete'}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setImageActionModalOpen(true)}
+                className="flex h-16 w-20 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-slate-500 hover:border-blue-400 hover:text-blue-600"
+                title={t.addImageLabel || 'Add image'}
+              >
+                <Plus className="h-5 w-5" />
+              </button>
             </div>
-          )}
+            {removedImageUrls.length > 0 && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowImageDeleteConfirm(true)}
+                  className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700"
+                >
+                  {t.saveChanges || 'Save changes'}
+                </button>
+              </div>
+            )}
+          </div>
 
           <div ref={contentRef} className="space-y-6">
             {looksLikeHtml && (
@@ -493,6 +698,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
 
             {viewMode === 'rendered' ? (
               <div
+                ref={renderedContentRef}
                 className="blog-rendered"
                 dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
                 onClick={handleRenderedClick}
@@ -525,6 +731,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
         {canExport && (
           <>
             <div
+              ref={inlineActionBarRef}
               className={`border-t border-slate-200 bg-slate-50 px-8 py-4 ${
                 showFloatingBar ? 'opacity-0 pointer-events-none' : ''
               }`}
@@ -598,12 +805,12 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
               </div>
             </div>
             {showFloatingBar && (
-              <div className="fixed bottom-6 left-[calc(50%+8rem)] z-40 w-[min(1024px,calc(100%-20rem))] -translate-x-1/2 rounded-2xl border border-slate-700/60 bg-slate-900/90 px-4 py-3 shadow-2xl backdrop-blur">
+              <div className="fixed bottom-6 left-[calc(50%+8rem)] z-40 w-[min(1024px,calc(100%-20rem))] -translate-x-1/2 rounded-2xl border border-slate-200/90 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur dark:border-slate-700/60 dark:bg-slate-900/90">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="inline-flex items-center gap-2">
                     <button
                       onClick={handleCopy}
-                      className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 transition"
+                      className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 transition dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
                     >
                       <Copy className="w-4 h-4" />
                       <span>{t.copy}</span>
@@ -611,7 +818,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                     {onEdit && (
                       <button
                         onClick={onEdit}
-                        className="inline-flex items-center space-x-2 px-4 py-2 bg-slate-100 text-slate-900 rounded-lg hover:bg-white transition"
+                        className="inline-flex items-center space-x-2 rounded-lg bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 transition dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
                       >
                         <FileText className="w-4 h-4" />
                         <span>{t.editLabel}</span>
@@ -630,7 +837,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                     <button
                       onClick={() => handleExport('markdown')}
                       disabled={exporting}
-                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`inline-flex items-center space-x-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 hover:bg-slate-100 transition dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900 ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
                       title={t.exportMarkdown}
                     >
                       <FileText className="w-4 h-4" />
@@ -639,7 +846,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                     <button
                       onClick={() => handleExport('html')}
                       disabled={exporting}
-                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`inline-flex items-center space-x-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 hover:bg-slate-100 transition dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900 ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
                       title={t.exportHtml}
                     >
                       <FileCode2 className="w-4 h-4" />
@@ -648,7 +855,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                     <button
                       onClick={() => handleExport('pdf')}
                       disabled={exporting}
-                      className={`inline-flex items-center space-x-2 px-3 py-2 bg-slate-950 text-slate-100 rounded-lg border border-slate-700 hover:bg-slate-900 transition ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`inline-flex items-center space-x-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 hover:bg-slate-100 transition dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900 ${exporting ? 'opacity-50 cursor-not-allowed' : ''}`}
                       title={t.exportPdf}
                     >
                       <Download className={`w-4 h-4 ${exporting ? 'animate-pulse' : ''}`} />
@@ -692,13 +899,13 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
             {publishHistory.length > 0 && (
               <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
                 <p className="text-xs font-medium text-blue-800 mb-2 flex items-center gap-1">
-                  <Clock className="w-3 h-3" /> Previously Published
+                  <Clock className="w-3 h-3" /> {t.previouslyPublishedLabel || 'Previously Published'}
                 </p>
                 <div className="space-y-1.5">
                   {publishHistory.slice(0, 3).map((item) => (
                     <div key={item.id} className="flex items-center justify-between text-xs">
                       <span className="text-blue-700">
-                        {item.destinationName} • {item.status === 'publish' ? 'Live' : 'Draft'}
+                        {item.destinationName} • {item.status === 'publish' ? (t.liveLabel || 'Live') : (t.statusDraft || 'Draft')}
                       </span>
                       <div className="flex items-center gap-2">
                         <span className="text-blue-600">
@@ -771,13 +978,13 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                         }`}
                       >
                         <CheckCircle className={`w-4 h-4 ${publishMode === 'publish' ? 'text-emerald-600' : 'text-slate-400'}`} />
-                        <span className="font-medium">{t.statusPublish || 'Publish Now'}</span>
+                        <span className="font-medium">{t.publishNow || 'Publish Now'}</span>
                       </button>
                     </div>
                     <p className="text-xs text-slate-500 mt-1.5">
                       {publishMode === 'draft'
-                        ? 'Save as draft for later editing before publishing'
-                        : 'Publish immediately and make visible to readers'}
+                        ? (t.publishModeDraftHint || 'Save as draft for later editing before publishing')
+                        : (t.publishModePublishHint || 'Publish immediately and make visible to readers')}
                     </p>
                   </div>
 
@@ -786,7 +993,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                       <label className="block text-sm font-medium text-slate-700">
                         {t.categoriesLabel || 'Categories'}
                       </label>
-                      {categoriesLoading && <span className="text-xs text-slate-500">Loading…</span>}
+                      {categoriesLoading && <span className="text-xs text-slate-500">{t.loading || 'Loading...'}</span>}
                     </div>
                     {categoryOptions.length > 0 ? (
                       <div className="flex flex-wrap gap-2 mb-2">
@@ -862,7 +1069,7 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                     className="mt-2 inline-flex items-center gap-1 text-emerald-800 hover:text-emerald-900 font-medium"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    View on site
+                    {t.viewOnSite || 'View on site'}
                   </button>
                 )}
               </div>
@@ -888,12 +1095,93 @@ function ResultsPage({ blog, onGenerateAnother, t, canExport, onEdit }) {
                   }`}
                 >
                   {publishing
-                    ? (publishMode === 'publish' ? 'Publishing...' : 'Creating draft...')
+                    ? (publishMode === 'publish'
+                        ? (t.publishInProgress || 'Publishing...')
+                        : (t.creatingDraftLabel || 'Creating draft...'))
                     : (publishMode === 'publish' ? (t.publishNow || 'Publish Now') : (t.saveDraft || 'Save as Draft'))}
                 </button>
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {imageActionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 px-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.imageActionsTitle || 'Image actions'}
+            </h3>
+            <p className="mt-1 text-sm text-slate-600">
+              {t.imageActionsHint || 'Generate a new image or upload one from your computer.'}
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  setImageActionModalOpen(false);
+                  await handleGenerateImage();
+                }}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-500 bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500"
+              >
+                <Sparkles className="h-4 w-4" />
+                {isGeneratingImage ? (t.generatingImageLabel || 'Generating...') : (t.generateImageLabel || 'Generate image')}
+              </button>
+              <button
+                type="button"
+                onClick={handleUploadLocalImage}
+                disabled={uploadingLocalImage}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                <Upload className="h-4 w-4" />
+                {uploadingLocalImage ? (t.uploadingLabel || 'Uploading...') : (t.uploadImageLabel || 'Upload image')}
+              </button>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setImageActionModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImageDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.deleteConfirmTitle || 'Delete selected images'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.deleteConfirm || 'Delete selected images? This action cannot be undone.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowImageDeleteConfirm(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={applyDeletedImages}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+              >
+                {t.deleteLabel || 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCopyToast && (
+        <div className="fixed right-6 top-24 z-[90] rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+          {t.copySuccess || 'Content copied to clipboard!'}
         </div>
       )}
     </div>

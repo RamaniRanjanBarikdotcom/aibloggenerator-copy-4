@@ -19,12 +19,14 @@ function App() {
   const BLOG_FORM_DRAFT_KEY = 'blog_form_draft_v1';
   const BLOG_FAILED_DRAFTS_KEY = 'blog_failed_generations_v2';
   const LEGACY_FAILED_DRAFT_KEY = 'blog_failed_generation_v1';
+  const historyCacheKey = (userId) => `history_cache_v1_${userId || 'anon'}`;
   const [currentView, setCurrentView] = useState('home');
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState({ step: 0, message: '' });
   const progressRef = useRef(progress);
   const [generatedBlog, setGeneratedBlog] = useState(null);
   const [lastViewedBlog, setLastViewedBlog] = useState(null);
+  const [openPublishForBlogId, setOpenPublishForBlogId] = useState(null);
   const [editingBlog, setEditingBlog] = useState(null);
   const [editSessionId, setEditSessionId] = useState(0);
   const [activeBlogId, setActiveBlogId] = useState(null);
@@ -61,6 +63,7 @@ function App() {
   const [settingsLeaveModalOpen, setSettingsLeaveModalOpen] = useState(false);
   const [pendingView, setPendingView] = useState(null);
   const settingsLeaveActionsRef = useRef(null);
+  const bootstrappedHistoryUserRef = useRef(null);
   const [sessionId] = useState(() => {
     const gCrypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
     if (gCrypto?.randomUUID) return gCrypto.randomUUID();
@@ -83,6 +86,14 @@ function App() {
   };
 
   const t = useMemo(() => getTranslations(language), [language]);
+  const permissionFallbacks = useMemo(
+    () => ({
+      posts: ['history'],
+      scraper: ['generate'],
+      logs: ['notifications'],
+    }),
+    []
+  );
   const can = (permission) => {
     if (!currentUser) {
       return false;
@@ -90,7 +101,12 @@ function App() {
     if (currentUser.role === 'admin') {
       return true;
     }
-    return currentUser.permissions?.includes(permission);
+    const userPermissions = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
+    if (userPermissions.includes(permission)) {
+      return true;
+    }
+    const fallbacks = permissionFallbacks[permission] || [];
+    return fallbacks.some((perm) => userPermissions.includes(perm));
   };
 
   const navigateTo = (view, options = {}) => {
@@ -231,22 +247,59 @@ function App() {
       setViewHistory(['home']);
       setCurrentView('home');
     }
+    if (!currentUser?.id) {
+      bootstrappedHistoryUserRef.current = null;
+      return;
+    }
+    if (!can('history')) {
+      return;
+    }
+    if (bootstrappedHistoryUserRef.current === String(currentUser.id)) {
+      return;
+    }
     const loadHistory = async () => {
+      try {
+        const rawCached = sessionStorage.getItem(historyCacheKey(currentUser.id));
+        if (rawCached) {
+          const cached = JSON.parse(rawCached);
+          if (Array.isArray(cached?.history)) {
+            setHistory(cached.history);
+          }
+          if (cached?.summary && typeof cached.summary === 'object') {
+            setHistorySummary(cached.summary);
+          }
+          if (cached && Object.prototype.hasOwnProperty.call(cached, 'wpCounts')) {
+            setWpCounts(cached.wpCounts || null);
+          }
+        }
+      } catch (_cacheError) {
+        // Ignore malformed cache and continue with remote fetch.
+      }
+
       const result = await window.electronAPI.getHistory();
       if (result.success) {
         setHistory(result.history);
         if (result.summary) {
           setHistorySummary(result.summary);
         }
-        if (result.wpCounts) {
-          setWpCounts(result.wpCounts);
+        setWpCounts(result.wpCounts || null);
+        try {
+          sessionStorage.setItem(
+            historyCacheKey(currentUser.id),
+            JSON.stringify({
+              history: result.history || [],
+              summary: result.summary || { totalCount: 0, totalCost: 0 },
+              wpCounts: result.wpCounts || null,
+            })
+          );
+        } catch (_cacheWriteError) {
+          // Ignore session storage write errors.
         }
+        bootstrappedHistoryUserRef.current = String(currentUser.id);
       }
     };
 
-    if (currentUser && can('history')) {
-      loadHistory();
-    }
+    loadHistory();
   }, [currentUser]);
 
   useEffect(() => {
@@ -302,8 +355,20 @@ function App() {
       if (refreshed.summary) {
         setHistorySummary(refreshed.summary);
       }
-      if (refreshed.wpCounts) {
-        setWpCounts(refreshed.wpCounts);
+      setWpCounts(refreshed.wpCounts || null);
+      if (currentUser?.id) {
+        try {
+          sessionStorage.setItem(
+            historyCacheKey(currentUser.id),
+            JSON.stringify({
+              history: refreshed.history || [],
+              summary: refreshed.summary || { totalCount: 0, totalCost: 0 },
+              wpCounts: refreshed.wpCounts || null,
+            })
+          );
+        } catch (_cacheWriteError) {
+          // Ignore session storage write errors.
+        }
       }
     }
   };
@@ -425,6 +490,8 @@ function App() {
     setNotificationsOpen(false);
     setHistory([]);
     setHistorySummary({ totalCount: 0, totalCost: 0 });
+    setWpCounts(null);
+    bootstrappedHistoryUserRef.current = null;
     setGeneratedBlog(null);
     setEditingBlog(null);
     setViewHistory(['home']);
@@ -463,6 +530,7 @@ function App() {
     setActiveBlogId(id);
     setBlogLoadError('');
     setBlogLoading(true);
+    setOpenPublishForBlogId(null);
     const result = await window.electronAPI.getBlog({ id });
     if (result.success) {
       setGeneratedBlog(result.blog);
@@ -478,6 +546,7 @@ function App() {
     setActiveBlogId(id);
     setBlogLoadError('');
     setBlogLoading(true);
+    setOpenPublishForBlogId(null);
     const result = await window.electronAPI.getBlog({ id });
     if (result.success) {
       openEditorWithBlog(result.blog, currentView || 'history');
@@ -536,6 +605,23 @@ function App() {
     }
   };
 
+  const handlePostBlogFromHistory = async (id) => {
+    setActiveBlogId(id);
+    setBlogLoadError('');
+    setBlogLoading(true);
+    const result = await window.electronAPI.getBlog({ id });
+    if (result.success) {
+      setGeneratedBlog(result.blog);
+      setLastViewedBlog(result.blog);
+      setOpenPublishForBlogId(result.blog?.id || id);
+      navigateTo('results');
+    } else {
+      setOpenPublishForBlogId(null);
+      alert(result.error || 'Blog not found');
+    }
+    setBlogLoading(false);
+  };
+
   const handleClearAll = async () => {
     const result = await window.electronAPI.clearBlogs();
     if (result.success) {
@@ -582,11 +668,11 @@ function App() {
       canNotifications={can('notifications')}
       canGenerate={can('generate')}
       canHistory={can('history')}
-      canPosts={can('history')}
+      canPosts={can('posts')}
       canSettings={can('settings')}
-      canScraper={can('generate')}
-      canLogs={can('notifications')}
-      canScheduler={can('history')}
+      canScraper={can('scraper')}
+      canLogs={can('logs')}
+      canScheduler={can('scheduler')}
       canAdmin={currentUser?.role === 'admin'}
     >
       {currentView === 'home' && can('generate') && (
@@ -617,18 +703,19 @@ function App() {
           t={t}
           canExport={can('export')}
           canBulkExport={can('bulkExport')}
-          canDelete={currentUser?.role === 'admin'}
+          canDelete={can('delete.history')}
           onViewBlog={handleViewBlog}
           onEditBlog={handleEditBlog}
+          onPostBlog={handlePostBlogFromHistory}
           onGenerateImage={handleGenerateImageFromHistory}
           onDeleteBlog={handleDeleteBlog}
           onClearAll={handleClearAll}
         />
       )}
-      {currentView === 'posts' && can('history') && <PostsPage t={t} />}
-      {currentView === 'scraper' && <ProductScraperPage t={t} />}
-      {currentView === 'logs' && <LogsPage t={t} />}
-      {currentView === 'scheduler' && <SchedulerPage />}
+      {currentView === 'posts' && can('posts') && <PostsPage t={t} canDelete={can('delete.posts')} />}
+      {currentView === 'scraper' && can('scraper') && <ProductScraperPage t={t} />}
+      {currentView === 'logs' && can('logs') && <LogsPage t={t} canDelete={can('delete.logs')} />}
+      {currentView === 'scheduler' && can('scheduler') && <SchedulerPage />}
       {currentView === 'edit' && editingBlog && (
         <EditBlogPage
           key={`${editingBlog.id}-${editSessionId}`}
@@ -657,6 +744,8 @@ function App() {
           onGenerateAnother={() => navigateTo('home')}
           t={t}
           canExport={can('export')}
+          openPublishOnMount={openPublishForBlogId === (generatedBlog?.id || null)}
+          onPublishModalOpened={() => setOpenPublishForBlogId(null)}
           onEdit={
             generatedBlog?.id
               ? () => {
@@ -672,6 +761,8 @@ function App() {
           onGenerateAnother={() => navigateTo('home')}
           t={t}
           canExport={can('export')}
+          openPublishOnMount={openPublishForBlogId === (lastViewedBlog?.id || null)}
+          onPublishModalOpened={() => setOpenPublishForBlogId(null)}
           onEdit={
             lastViewedBlog?.id
               ? () => {

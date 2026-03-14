@@ -77,6 +77,7 @@ const PRICING = {
     'o3-mini': { input: 0.0011, output: 0.0044 },
     'o1': { input: 0.015, output: 0.06 },
     'o1-mini': { input: 0.003, output: 0.012 },
+    default: { input: 0.00015, output: 0.0006 },
   },
   google: {
     'gemini-2.0-flash': { input: 0.0002, output: 0.0008 },
@@ -85,9 +86,34 @@ const PRICING = {
     'gemini-2.5-flash': { input: 0.00035, output: 0.00053 },
     'gemini-1.5-pro': { input: 0.0035, output: 0.0105 },
     'gemini-1.5-flash': { input: 0.00035, output: 0.00053 },
+    default: { input: 0.00035, output: 0.00053 },
   },
   openrouter: {
     default: { input: 0.005, output: 0.015 },
+  },
+  anthropic: {
+    default: { input: 0.003, output: 0.015 },
+  },
+  groq: {
+    default: { input: 0.0002, output: 0.0002 },
+  },
+  xai: {
+    default: { input: 0.005, output: 0.015 },
+  },
+  huggingface: {
+    default: { input: 0.0006, output: 0.0006 },
+  },
+  mistral: {
+    default: { input: 0.0006, output: 0.0018 },
+  },
+  together: {
+    default: { input: 0.0006, output: 0.0006 },
+  },
+  fireworks: {
+    default: { input: 0.0009, output: 0.0009 },
+  },
+  perplexity: {
+    default: { input: 0.001, output: 0.001 },
   },
   image: {
     'gpt-image-1': { perImage: 0.04 },
@@ -104,13 +130,43 @@ const IMAGE_DEFAULT_MODEL = {
   openrouter: 'openai/gpt-image-1',
 };
 
+function resolveModelPricing(providerPricing = {}, model = '') {
+  if (providerPricing[model]) {
+    return providerPricing[model];
+  }
+
+  const normalizedModel = String(model || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^models\//, '');
+  if (!normalizedModel) {
+    return providerPricing.default || { input: 0, output: 0 };
+  }
+
+  const matchedKey = Object.keys(providerPricing).find((key) => {
+    if (key === 'default') return false;
+    const normalizedKey = String(key).trim().toLowerCase().replace(/^models\//, '');
+    return (
+      normalizedKey === normalizedModel ||
+      normalizedModel.startsWith(normalizedKey) ||
+      normalizedKey.startsWith(normalizedModel)
+    );
+  });
+
+  if (matchedKey) {
+    return providerPricing[matchedKey];
+  }
+
+  return providerPricing.default || { input: 0, output: 0 };
+}
+
 function getProvider(providerId) {
   return PROVIDERS[providerId] || null;
 }
 
 function estimateCost({ provider, model, usage, images = 0 }) {
   const providerPricing = PRICING[provider] || {};
-  const modelPricing = providerPricing[model] || providerPricing.default || { input: 0, output: 0 };
+  const modelPricing = resolveModelPricing(providerPricing, model);
   const imagePricing = images ? PRICING.image[model] || PRICING.image['gpt-image-1'] || PRICING.image['dall-e-3'] : null;
 
   const inputTokens = usage?.promptTokens || 0;

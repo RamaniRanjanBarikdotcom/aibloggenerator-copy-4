@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 
 const TINYMCE_SCRIPT_ID = 'tinymce-local-script';
 const TINYMCE_SCRIPT_SRC = './tinymce/tinymce.min.js';
@@ -69,6 +70,10 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   );
   const [featuredImage, setFeaturedImage] = useState(blog.imageUrl || '');
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [imageActionModalOpen, setImageActionModalOpen] = useState(false);
+  const [uploadingLocalImage, setUploadingLocalImage] = useState(false);
+  const [removedImageUrls, setRemovedImageUrls] = useState([]);
+  const [showImageDeleteConfirm, setShowImageDeleteConfirm] = useState(false);
   const [showUnsavedImageWarning, setShowUnsavedImageWarning] = useState(false);
   const [isSavingBeforeImage, setIsSavingBeforeImage] = useState(false);
   const [editorMode, setEditorMode] = useState('visual');
@@ -83,6 +88,20 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   const htmlContentRef = useRef(htmlContent);
   const [tinyLoaded, setTinyLoaded] = useState(Boolean(window.tinymce));
   const [tinyLoadError, setTinyLoadError] = useState('');
+  const [isDarkMode, setIsDarkMode] = useState(() =>
+    typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : false
+  );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const root = document.documentElement;
+    const syncTheme = () => setIsDarkMode(root.classList.contains('dark'));
+    syncTheme();
+
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     htmlContentRef.current = htmlContent;
@@ -205,6 +224,8 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     const nextGallery = normalizeImageGallery(blog.imageGallery || blog.image_gallery, blog.imageUrl);
     setImageGallery(nextGallery);
     setFeaturedImage(blog.imageUrl || nextGallery[0] || '');
+    setRemovedImageUrls([]);
+    setShowImageDeleteConfirm(false);
     setLocalImagePath('');
 
     savedDraftRef.current = {
@@ -248,6 +269,8 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         license_key: 'gpl',
         base_url: TINYMCE_BASE_URL,
         suffix: '.min',
+        skin: isDarkMode ? 'oxide-dark' : 'oxide',
+        content_css: isDarkMode ? 'dark' : 'default',
         menubar: false,
         branding: false,
         promotion: false,
@@ -259,7 +282,11 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         toolbar:
           'undo redo | blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist outdent indent | link image | blockquote code removeformat',
         content_style:
-          'body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; padding: 8px; } img { max-width: 100%; height: auto; }',
+          `body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; padding: 8px; ${
+            isDarkMode
+              ? 'background: #0f172a; color: #e2e8f0 !important; } h1, h2, h3, h4, h5, h6, p, li, blockquote, span, div, a { color: inherit !important; '
+              : ''
+          } } img { max-width: 100%; height: auto; }`,
         setup: (editor) => {
           tinyEditorRef.current = editor;
 
@@ -295,7 +322,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
       }
       tinyReadyRef.current = false;
     };
-  }, [tinyLoaded, editorMode]);
+  }, [tinyLoaded, editorMode, isDarkMode]);
 
   useEffect(() => {
     if (editorMode !== 'visual' || !tinyEditorRef.current) return;
@@ -505,6 +532,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
   };
 
   const handleSelectImage = async (url) => {
+    if (removedImageUrls.includes(url)) return;
     if (!url || url === featuredImage) return;
     const nextGallery = normalizeImageGallery(imageGallery, url);
     setFeaturedImage(url);
@@ -519,6 +547,73 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
     }
   };
 
+  const applyDeletedImages = async () => {
+    if (!removedImageUrls.length) return;
+    const nextGallery = imageGallery.filter((url) => !removedImageUrls.includes(url));
+    const nextFeatured = removedImageUrls.includes(featuredImage)
+      ? nextGallery[0] || ''
+      : featuredImage || nextGallery[0] || '';
+
+    if (!blog.id) {
+      setImageGallery(nextGallery);
+      setFeaturedImage(nextFeatured);
+      setRemovedImageUrls([]);
+      setShowImageDeleteConfirm(false);
+      return;
+    }
+
+    const result = await window.electronAPI.updateBlog({
+      blog: { ...blog, imageUrl: nextFeatured || null, imageGallery: nextGallery },
+    });
+    if (!result.success) {
+      alert(result.error || 'Failed to delete images');
+      return;
+    }
+
+    setImageGallery(nextGallery);
+    setFeaturedImage(nextFeatured);
+    setRemovedImageUrls([]);
+    setShowImageDeleteConfirm(false);
+  };
+
+  const handleUploadLocalImage = async () => {
+    if (!blog?.id) {
+      alert(t.imageUploadMissingBlog || 'Save the blog first before uploading an image.');
+      return;
+    }
+
+    setUploadingLocalImage(true);
+    const picked = await window.electronAPI.selectLocalImageFile();
+    if (!picked?.success) {
+      setUploadingLocalImage(false);
+      if (!picked?.canceled) {
+        alert(picked?.error || t.imageSelectFailed || 'Unable to select image file.');
+      }
+      return;
+    }
+
+    const result = await window.electronAPI.attachLocalBlogImage({
+      blogId: blog.id,
+      title: title || blog.title,
+      localImagePath: picked.path,
+    });
+
+    setUploadingLocalImage(false);
+    if (!result.success) {
+      alert(result.error || t.imageUploadFailed || 'Failed to upload image.');
+      return;
+    }
+
+    const nextGallery = normalizeImageGallery(
+      result.imageGallery || imageGallery,
+      result.imageUrl || featuredImage
+    );
+    setImageGallery(nextGallery);
+    setFeaturedImage(result.imageUrl || nextGallery[0] || featuredImage);
+    setLocalImagePath(result.localPath || '');
+    setImageActionModalOpen(false);
+  };
+
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-6">
       <div>
@@ -528,18 +623,11 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
 
       <div className="bg-white rounded-xl shadow-sm p-6 space-y-4">
         <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <div>
               <p className="text-sm font-semibold text-slate-900">{t.featuredImageLabel}</p>
               <p className="text-xs text-slate-500">{t.featuredImageHint}</p>
             </div>
-            <button
-              type="button"
-              onClick={handleGenerateImage}
-              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-            >
-              {isGeneratingImage ? t.generatingImageLabel : t.generateImageLabel}
-            </button>
           </div>
           {featuredImage ? (
             <img
@@ -551,28 +639,59 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
             <p className="text-xs text-slate-500">{t.noImageLabel}</p>
           )}
           {localImagePath && <p className="text-xs text-slate-500 break-all">Saved locally: {localImagePath}</p>}
-          {imageGallery.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-600">
-                {t.generatedImagesLabel || 'Generated images'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {imageGallery.map((url) => (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-slate-600">
+              {t.generatedImagesLabel || 'Generated images'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {imageGallery.map((url) => (
+                <div key={url} className="relative h-16 w-20">
                   <button
-                    key={url}
                     type="button"
                     onClick={() => handleSelectImage(url)}
-                    className={`h-16 w-20 overflow-hidden rounded-md border ${
+                    className={`h-full w-full overflow-hidden rounded-md border ${
                       url === featuredImage ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
-                    }`}
+                    } ${removedImageUrls.includes(url) ? 'opacity-40' : ''}`}
                     title={t.selectImageLabel || 'Use as featured image'}
                   >
                     <img src={url} alt="Generated" className="h-full w-full object-cover" />
                   </button>
-                ))}
-              </div>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setRemovedImageUrls((prev) =>
+                        prev.includes(url) ? prev.filter((item) => item !== url) : [...prev, url]
+                      );
+                    }}
+                    className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow hover:bg-white"
+                    title={t.deleteLabel || 'Delete'}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setImageActionModalOpen(true)}
+                className="flex h-16 w-20 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-lg font-semibold text-slate-500 hover:border-blue-400 hover:text-blue-600"
+                title={t.addImageLabel || 'Add image'}
+              >
+                +
+              </button>
             </div>
-          )}
+            {removedImageUrls.length > 0 && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowImageDeleteConfirm(true)}
+                  className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700"
+                >
+                  {t.saveChanges || 'Save changes'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div>
@@ -618,15 +737,17 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
         </div>
 
         <div>
-          <div className="sticky top-4 z-20 -mx-2 mb-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur">
+          <div className="sticky top-4 z-20 -mx-2 mb-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
             <div className="flex items-center justify-between gap-2">
-              <label className="block text-sm font-medium text-slate-700">{t.contentLabel}</label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">{t.contentLabel}</label>
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => handleModeChange('visual')}
                   className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    editorMode === 'visual' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                    editorMode === 'visual'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                   }`}
                 >
                   {t.editorModeVisual}
@@ -635,7 +756,9 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
                   type="button"
                   onClick={() => handleModeChange('plain')}
                   className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    editorMode === 'plain' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                    editorMode === 'plain'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                   }`}
                 >
                   {t.editorModePlain}
@@ -644,14 +767,16 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
                   type="button"
                   onClick={() => handleModeChange('html')}
                   className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    editorMode === 'html' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                    editorMode === 'html'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                   }`}
                 >
                   {t.editorModeHtml || 'Code'}
                 </button>
               </div>
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               {t.editorHelp || 'Visual = WYSIWYG, Plain = text only, Code = raw HTML editor with monospaced view.'}
             </p>
           </div>
@@ -659,12 +784,12 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           {editorMode === 'visual' && (
             <div className="space-y-2">
               {tinyLoadError ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300">
                   {tinyLoadError}
                 </div>
               ) : null}
               {!tinyLoaded ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300">
                   Loading TinyMCE editor...
                 </div>
               ) : null}
@@ -677,7 +802,7 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
               value={plainContent}
               onChange={(event) => setPlainContent(event.target.value)}
               rows={12}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono text-sm"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
           )}
 
@@ -692,17 +817,88 @@ function EditBlogPage({ blog, t, onSave, onCancel }) {
           )}
         </div>
 
-        <div className="sticky bottom-4 z-20 -mx-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur">
+        <div className="sticky bottom-4 z-20 -mx-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-2 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
           <div className="flex items-center gap-3">
             <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-blue-500 text-white">
               {t.saveChanges}
             </button>
-            <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600">
+            <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300">
               {t.cancel}
             </button>
           </div>
         </div>
       </div>
+
+      {imageActionModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.imageActionsTitle || 'Image actions'}
+            </h3>
+            <p className="mt-1 text-sm text-slate-600">
+              {t.imageActionsHint || 'Generate a new image or upload one from your computer.'}
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  setImageActionModalOpen(false);
+                  await handleGenerateImage();
+                }}
+                className="rounded-lg border border-blue-500 bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500"
+              >
+                {isGeneratingImage ? (t.generatingImageLabel || 'Generating...') : (t.generateImageLabel || 'Generate image')}
+              </button>
+              <button
+                type="button"
+                onClick={handleUploadLocalImage}
+                disabled={uploadingLocalImage}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {uploadingLocalImage ? (t.uploadingLabel || 'Uploading...') : (t.uploadImageLabel || 'Upload image')}
+              </button>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setImageActionModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImageDeleteConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.deleteConfirmTitle || 'Delete selected images'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.deleteConfirm || 'Delete selected images? This action cannot be undone.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowImageDeleteConfirm(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={applyDeletedImages}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+              >
+                {t.deleteLabel || 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showUnsavedImageWarning && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">

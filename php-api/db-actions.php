@@ -63,6 +63,8 @@ function bgMapUser(array $doc): array
         'status' => (string)($doc['status'] ?? 'active'),
         'permissions' => is_array($doc['permissions'] ?? null) ? $doc['permissions'] : [],
         'createdAt' => $doc['created_at'] ?? null,
+        'lastOnlineAt' => $doc['last_online_at'] ?? null,
+        'lastLoginAt' => $doc['last_login_at'] ?? null,
     ];
 }
 
@@ -145,6 +147,26 @@ function bgIsoToMonth(?string $value): ?string
     } catch (Throwable $e) {
         return null;
     }
+}
+
+function bgActionToLogCategory(string $action): string
+{
+    $prefix = strtolower(trim(explode('.', $action)[0] ?? ''));
+    if ($prefix === '') {
+        return 'activity';
+    }
+    $map = [
+        'blog' => 'history',
+        'auth' => 'auth',
+        'admin' => 'admin',
+        'logs' => 'logs',
+        'posts' => 'posts',
+        'settings' => 'settings',
+        'scheduler' => 'scheduler',
+        'notification' => 'notifications',
+        'notifications' => 'notifications',
+    ];
+    return $map[$prefix] ?? $prefix;
 }
 
 function bgDbAction(array $cfg, string $action, array $args)
@@ -343,7 +365,20 @@ function bgDbAction(array $cfg, string $action, array $args)
             mongoUpdateOne($cfg, 'users', ['_id' => parseObjectId((string)($payload['id'] ?? ''))], ['$set' => $set]);
             return true;
         }
-
+        case 'touchUserLastOnline': {
+            $payload = is_array($args[0] ?? null) ? $args[0] : [];
+            $id = trim((string)($payload['id'] ?? ''));
+            if ($id === '') {
+                return false;
+            }
+            $now = bgUtcNow();
+            mongoUpdateOne($cfg, 'users', ['_id' => parseObjectId($id)], ['$set' => [
+                'last_online_at' => $now,
+                'last_login_at' => $now,
+                'updated_at' => $now,
+            ]]);
+            return true;
+        }
         case 'deleteUser': {
             $payload = is_array($args[0] ?? null) ? $args[0] : [];
             return mongoDeleteOne($cfg, 'users', ['_id' => parseObjectId((string)($payload['id'] ?? ''))]);
@@ -400,11 +435,25 @@ function bgDbAction(array $cfg, string $action, array $args)
 
         case 'logActivity': {
             $payload = is_array($args[0] ?? null) ? $args[0] : [];
+            $action = (string)($payload['action'] ?? '');
+            $details = (string)($payload['details'] ?? '');
+            $userId = $payload['userId'] ?? null;
             mongoInsertOne($cfg, 'activities', [
-                'user_id' => $payload['userId'] ?? null,
-                'action' => (string)($payload['action'] ?? ''),
-                'details' => (string)($payload['details'] ?? ''),
+                'user_id' => $userId,
+                'action' => $action,
+                'details' => $details,
                 'created_at' => bgUtcNow(),
+            ]);
+            mongoInsertOne($cfg, 'logs', [
+                'timestamp' => bgUtcNow(),
+                'level' => 'info',
+                'category' => bgActionToLogCategory($action),
+                'message' => $details !== '' ? $details : ($action !== '' ? $action : 'Activity'),
+                'details' => json_encode(['source' => 'activity', 'action' => $action], JSON_UNESCAPED_SLASHES),
+                'blog_id' => null,
+                'tokens_used' => null,
+                'cost' => null,
+                'user_id' => $userId,
             ]);
             return true;
         }
@@ -1161,3 +1210,6 @@ function bgDbAction(array $cfg, string $action, array $args)
             throw new RuntimeException('Unsupported db action: ' . $action);
     }
 }
+
+
+

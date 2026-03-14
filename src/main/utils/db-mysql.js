@@ -531,9 +531,36 @@ async function getSettings(userId, key) {
  */
 async function logActivity({ userId, action, details }) {
   await initDb();
+  const actionPrefix = String(action || '').split('.')[0] || 'activity';
+  const categoryMap = {
+    blog: 'history',
+    auth: 'auth',
+    admin: 'admin',
+    logs: 'logs',
+    posts: 'posts',
+    settings: 'settings',
+    scheduler: 'scheduler',
+    notification: 'notifications',
+    notifications: 'notifications',
+  };
+  const category = categoryMap[actionPrefix] || actionPrefix;
   await query(
     'INSERT INTO activities (user_id, action, details) VALUES (?, ?, ?)',
     [userId, action, details]
+  );
+  await query(
+    'INSERT INTO logs (timestamp, level, category, message, details, blog_id, tokens_used, cost, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      new Date(),
+      'info',
+      category,
+      details || action || 'Activity',
+      JSON.stringify({ source: 'activity', action: String(action || '') }),
+      null,
+      null,
+      null,
+      userId || null,
+    ]
   );
 }
 
@@ -715,14 +742,28 @@ async function listRemotePosts({ status = null, limit = 200, destinationId = nul
 async function getBlogForRemotePost({ remotePostId, destinationId = null } = {}) {
   await initDb();
   if (!remotePostId) return null;
-  let sql = 'SELECT blog_id FROM publish_history WHERE remote_post_id = ?';
-  const params = [remotePostId];
-  if (destinationId) {
-    sql += ' AND destination_id = ?';
-    params.push(destinationId);
+  const rawId = String(remotePostId).trim();
+  const idCandidates = [rawId];
+  if (/^-?\d+$/.test(rawId)) {
+    idCandidates.push(Number(rawId));
   }
-  sql += ' ORDER BY published_at DESC LIMIT 1';
-  const results = await query(sql, params);
+
+  const findRows = async (withDestination) => {
+    const placeholders = idCandidates.map(() => '?').join(', ');
+    let sql = `SELECT blog_id FROM publish_history WHERE remote_post_id IN (${placeholders})`;
+    const params = [...idCandidates];
+    if (withDestination && destinationId) {
+      sql += ' AND destination_id = ?';
+      params.push(destinationId);
+    }
+    sql += ' ORDER BY published_at DESC LIMIT 1';
+    return query(sql, params);
+  };
+
+  let results = await findRows(true);
+  if ((!results || !results[0]?.blog_id) && destinationId) {
+    results = await findRows(false);
+  }
   const blogId = results[0]?.blog_id;
   if (!blogId) return null;
   return await getBlogById(blogId);

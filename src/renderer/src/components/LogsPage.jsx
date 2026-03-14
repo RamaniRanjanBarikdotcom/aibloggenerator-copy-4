@@ -1,20 +1,38 @@
 import React, { useEffect, useState } from 'react';
 
-function LogsPage({ t }) {
+function LogsPage({ t, canDelete = false }) {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const categoryOptions = [
+    { value: '', label: t.logsAllCategories || 'All categories' },
+    { value: 'generation', label: t.logsCategoryGeneration || 'Generation' },
+    { value: 'image', label: t.logsCategoryImage || 'Image' },
+    { value: 'scheduler', label: t.logsCategoryScheduler || 'Scheduler' },
+    { value: 'history', label: t.logsCategoryHistory || 'History' },
+    { value: 'posts', label: t.logsCategoryPosts || 'Posts' },
+    { value: 'settings', label: t.logsCategorySettings || 'Settings' },
+    { value: 'auth', label: t.logsCategoryAuth || 'Auth' },
+    { value: 'admin', label: t.logsCategoryAdmin || 'Admin' },
+    { value: 'logs', label: t.logsCategoryLogs || 'Logs' },
+    { value: 'notifications', label: t.logsCategoryNotifications || 'Notifications' },
+  ];
 
   const loadLogs = async () => {
+    setLoadError('');
     const result = await window.electronAPI.getLogs({
       level: level || null,
       category: category || null,
     });
     if (result.success) {
       setLogs(result.logs || []);
+      return;
     }
+    setLogs([]);
+    setLoadError(result.error || 'Failed to load logs');
   };
 
   const loadStats = async () => {
@@ -64,6 +82,11 @@ function LogsPage({ t }) {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm p-6 space-y-4">
+        {loadError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {loadError}
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center gap-4">
           <select
             value={level}
@@ -74,13 +97,17 @@ function LogsPage({ t }) {
             <option value="info">Info</option>
             <option value="error">Error</option>
           </select>
-          <input
-            type="text"
+          <select
             value={category}
             onChange={(event) => setCategory(event.target.value)}
-            placeholder={t.logsCategoryPlaceholder}
             className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          />
+          >
+            {categoryOptions.map((opt) => (
+              <option key={opt.value || 'all'} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => {
               loadLogs();
@@ -90,12 +117,14 @@ function LogsPage({ t }) {
           >
             {t.logsRefresh}
           </button>
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="px-4 py-2 rounded-lg border border-slate-200 text-sm"
-          >
-            {t.logsClear}
-          </button>
+          {canDelete && (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="px-4 py-2 rounded-lg border border-slate-200 text-sm"
+            >
+              {t.logsClear}
+            </button>
+          )}
         </div>
 
         <div className="divide-y divide-slate-200">
@@ -110,6 +139,9 @@ function LogsPage({ t }) {
                 </div>
                 <p className="text-slate-600">{log.message}</p>
                 <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
+                  {log.username && (
+                    <span>{t.logsUserLabel || 'User'}: {log.username}</span>
+                  )}
                   {typeof log.tokensUsed === 'number' && (
                     <span>{t.logsTokens || 'Tokens'}: {log.tokensUsed}</span>
                   )}

@@ -2,7 +2,7 @@
 <jtlshopplugin>
   <Name>Blog Draft Receiver</Name>
   <Description>Receives blog drafts from external apps and stores them for review.</Description>
-  <Author>AI Blog Generator</Author>
+  <Author>Blog Generator</Author>
   <URL>https://example.com</URL>
   <XMLVersion>102</XMLVersion>
   <Version>1.0.0</Version>

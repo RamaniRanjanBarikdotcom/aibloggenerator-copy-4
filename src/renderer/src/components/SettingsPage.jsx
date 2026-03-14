@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Save, Eye, EyeOff, Plus, Trash2, CheckCircle, RefreshCw, ChevronDown } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -311,6 +311,226 @@ Input text:
 {{topicParagraph}}`,
 };
 
+const USAGE_TEXT_PRICING = {
+  openai: {
+    'gpt-4o': { input: 0.005, output: 0.015 },
+    'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
+    'gpt-4.1': { input: 0.005, output: 0.015 },
+    'gpt-4.1-mini': { input: 0.0004, output: 0.0016 },
+    'gpt-4.1-nano': { input: 0.0001, output: 0.0004 },
+    'gpt-4-turbo': { input: 0.01, output: 0.03 },
+    o3: { input: 0.01, output: 0.04 },
+    'o3-mini': { input: 0.0011, output: 0.0044 },
+    o1: { input: 0.015, output: 0.06 },
+    'o1-mini': { input: 0.003, output: 0.012 },
+    default: { input: 0.00015, output: 0.0006 },
+  },
+  google: {
+    'gemini-2.0-flash': { input: 0.0002, output: 0.0008 },
+    'gemini-2.0-flash-lite': { input: 0.0001, output: 0.0004 },
+    'gemini-2.5-pro': { input: 0.0035, output: 0.0105 },
+    'gemini-2.5-flash': { input: 0.00035, output: 0.00053 },
+    'gemini-1.5-pro': { input: 0.0035, output: 0.0105 },
+    'gemini-1.5-flash': { input: 0.00035, output: 0.00053 },
+    default: { input: 0.00035, output: 0.00053 },
+  },
+  openrouter: {
+    default: { input: 0.005, output: 0.015 },
+  },
+  anthropic: {
+    default: { input: 0.003, output: 0.015 },
+  },
+  groq: {
+    default: { input: 0.0002, output: 0.0002 },
+  },
+  xai: {
+    default: { input: 0.005, output: 0.015 },
+  },
+  huggingface: {
+    default: { input: 0.0006, output: 0.0006 },
+  },
+  mistral: {
+    default: { input: 0.0006, output: 0.0018 },
+  },
+  together: {
+    default: { input: 0.0006, output: 0.0006 },
+  },
+  fireworks: {
+    default: { input: 0.0009, output: 0.0009 },
+  },
+  perplexity: {
+    default: { input: 0.001, output: 0.001 },
+  },
+};
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const parseLogDetails = (details) => {
+  if (!details) return null;
+  if (typeof details === 'object') return details;
+  if (typeof details !== 'string') return null;
+  try {
+    return JSON.parse(details);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const resolvePricingForModel = (providerPricing = {}, model = '') => {
+  if (providerPricing[model]) return providerPricing[model];
+  const normalizedModel = String(model || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^models\//, '');
+  if (!normalizedModel) {
+    return providerPricing.default || { input: 0, output: 0 };
+  }
+  const matchedKey = Object.keys(providerPricing).find((key) => {
+    if (key === 'default') return false;
+    const normalizedKey = String(key || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^models\//, '');
+    return (
+      normalizedKey === normalizedModel ||
+      normalizedModel.startsWith(normalizedKey) ||
+      normalizedKey.startsWith(normalizedModel)
+    );
+  });
+  if (matchedKey) {
+    return providerPricing[matchedKey];
+  }
+  return providerPricing.default || { input: 0, output: 0 };
+};
+
+const estimateGenerationCostFromLog = (log, details) => {
+  const providerId = String(details?.provider || '').trim().toLowerCase();
+  const modelId = String(details?.model || '').trim();
+  const promptTokens = toFiniteNumber(details?.promptTokens, NaN);
+  const completionTokens = toFiniteNumber(details?.completionTokens, NaN);
+
+  if (
+    providerId &&
+    modelId &&
+    Number.isFinite(promptTokens) &&
+    Number.isFinite(completionTokens)
+  ) {
+    const providerPricing = USAGE_TEXT_PRICING[providerId] || {};
+    const pricing = resolvePricingForModel(providerPricing, modelId);
+    const computed =
+      (promptTokens / 1000) * toFiniteNumber(pricing.input, 0) +
+      (completionTokens / 1000) * toFiniteNumber(pricing.output, 0);
+    if (Number.isFinite(computed) && computed > 0) {
+      return computed;
+    }
+  }
+
+  const totalTokens = toFiniteNumber(log?.tokensUsed, toFiniteNumber(details?.tokensUsed, NaN));
+  if (providerId && modelId && Number.isFinite(totalTokens) && totalTokens > 0) {
+    const providerPricing = USAGE_TEXT_PRICING[providerId] || {};
+    const pricing = resolvePricingForModel(providerPricing, modelId);
+    const avgPer1K =
+      (toFiniteNumber(pricing.input, 0) + toFiniteNumber(pricing.output, 0)) / 2;
+    const approximated = (totalTokens / 1000) * avgPer1K;
+    if (Number.isFinite(approximated) && approximated > 0) {
+      return approximated;
+    }
+  }
+
+  return toFiniteNumber(log?.cost, toFiniteNumber(details?.cost, 0));
+};
+
+const isLocalImageLog = (log, details) => {
+  if (String(log?.category || '') !== 'image') return false;
+  if (String(details?.source || '').toLowerCase() === 'local-upload') return true;
+  return /attached local image/i.test(String(log?.message || ''));
+};
+
+const getGeneratedImageCountFromLog = (log, details) => {
+  if (String(log?.category || '') !== 'image') return 0;
+  if (isLocalImageLog(log, details)) return 0;
+  const count = toFiniteNumber(details?.imagesGenerated, 1);
+  return count > 0 ? count : 1;
+};
+
+const normalizeUsageLogs = (logs = []) =>
+  (Array.isArray(logs) ? logs : [])
+    .filter((log) => log?.category === 'generation' || log?.category === 'image')
+    .map((log) => {
+      const details = parseLogDetails(log.details);
+      const tokensUsed = toFiniteNumber(log.tokensUsed, toFiniteNumber(details?.tokensUsed, 0));
+      const calculatedCost =
+        log?.category === 'generation'
+          ? estimateGenerationCostFromLog(log, details)
+          : toFiniteNumber(log?.cost, toFiniteNumber(details?.cost, 0));
+      const generatedImages = getGeneratedImageCountFromLog(log, details);
+      return {
+        ...log,
+        tokensUsed,
+        calculatedCost,
+        generatedImages,
+      };
+    });
+
+const buildUsageMetrics = (logs = []) => {
+  const rows = normalizeUsageLogs(logs);
+  const stats = rows.reduce(
+    (acc, row) => {
+      acc.total += 1;
+      if (String(row.level || '') === 'error') acc.errors += 1;
+      acc.totalTokens += toFiniteNumber(row.tokensUsed, 0);
+      acc.totalCost += toFiniteNumber(row.calculatedCost, 0);
+      acc.imageCount += toFiniteNumber(row.generatedImages, 0);
+      return acc;
+    },
+    { total: 0, errors: 0, totalTokens: 0, totalCost: 0, imageCount: 0 }
+  );
+
+  const usageBuckets = new Map();
+  const imageBuckets = new Map();
+  rows.forEach((row) => {
+    const dateKey = String(row.timestamp || '').slice(0, 10);
+    if (!dateKey) return;
+
+    const usageExisting = usageBuckets.get(dateKey) || {
+      date: dateKey,
+      count: 0,
+      totalTokens: 0,
+      totalCost: 0,
+      imageCount: 0,
+    };
+    usageExisting.count += 1;
+    usageExisting.totalTokens += toFiniteNumber(row.tokensUsed, 0);
+    usageExisting.totalCost += toFiniteNumber(row.calculatedCost, 0);
+    usageExisting.imageCount += toFiniteNumber(row.generatedImages, 0);
+    usageBuckets.set(dateKey, usageExisting);
+
+    if (row.generatedImages > 0) {
+      const imageExisting = imageBuckets.get(dateKey) || {
+        date: dateKey,
+        count: 0,
+        totalTokens: 0,
+        totalCost: 0,
+        imageCount: 0,
+      };
+      imageExisting.imageCount += toFiniteNumber(row.generatedImages, 0);
+      imageBuckets.set(dateKey, imageExisting);
+    }
+  });
+
+  const usageTrend = Array.from(usageBuckets.values()).sort((a, b) =>
+    String(a.date).localeCompare(String(b.date))
+  );
+  const imageTrend = Array.from(imageBuckets.values()).sort((a, b) =>
+    String(a.date).localeCompare(String(b.date))
+  );
+
+  return { rows, stats, usageTrend, imageTrend };
+};
+
 function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions }) {
   const [apiKeys, setApiKeys] = useState([]);
   const [newKeyLabel, setNewKeyLabel] = useState('');
@@ -362,6 +582,15 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     imageCount: 0,
   });
   const [usageLogs, setUsageLogs] = useState([]);
+  const [appVersion, setAppVersion] = useState('');
+  const [autoDownloadUpdates, setAutoDownloadUpdates] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [downloadedUpdatePath, setDownloadedUpdatePath] = useState('');
+  const [updateError, setUpdateError] = useState('');
+  const [updateSuccess, setUpdateSuccess] = useState('');
   const [providerCatalog, setProviderCatalog] = useState({});
   const [providerCatalogStatus, setProviderCatalogStatus] = useState({});
   const [providerCatalogError, setProviderCatalogError] = useState({});
@@ -596,6 +825,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       siteBaseUrl,
       linkPreviewApiKey: linkPreviewApiKey.trim(),
       autoSave,
+      autoDownloadUpdates,
       apiKeys: nextApiKeys,
       promptTemplates,
       publishDestinations,
@@ -621,14 +851,21 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'usage') {
-      loadUsageMonitoring();
-    }
-  }, [activeTab, usageSearch, usageDateRange, usageDateRangeEnabled]);
+    let mounted = true;
+    window.electronAPI.getAppVersion().then((result) => {
+      if (!mounted) return;
+      if (result?.success) {
+        setAppVersion(result.version || '');
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'usage') {
-      loadImageMonitoring();
+      loadUsageMonitoring();
     }
   }, [activeTab, usageSearch, usageDateRange, usageDateRangeEnabled]);
 
@@ -711,6 +948,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setSiteBaseUrl(settings.siteBaseUrl || '');
       setLinkPreviewApiKey(settings.linkPreviewApiKey || '');
       setAutoSave(settings.autoSave !== false);
+      setAutoDownloadUpdates(settings.autoDownloadUpdates === true);
       setApiKeys(Array.isArray(settings.apiKeys) ? settings.apiKeys : []);
       const storedKeys = Array.isArray(settings.apiKeys) ? settings.apiKeys : [];
       setTavilyKey(storedKeys.find((item) => item.provider === 'tavily')?.key || '');
@@ -748,6 +986,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         siteBaseUrl: settings.siteBaseUrl || '',
         linkPreviewApiKey: settings.linkPreviewApiKey || '',
         autoSave: settings.autoSave !== false,
+        autoDownloadUpdates: settings.autoDownloadUpdates === true,
         apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
           promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
           publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
@@ -790,38 +1029,21 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       dateFrom: from,
       dateTo: to,
     };
-    const [statsResult, trendResult, logsResult] = await Promise.all([
-      window.electronAPI.getLogsStats(payload),
-      window.electronAPI.getLogsTrend(payload),
-      window.electronAPI.getLogs({ ...payload, limit: 200, offset: 0 }),
-    ]);
-    if (statsResult?.success) {
-      setUsageLogStats(statsResult.stats || usageLogStats);
+    const logsResult = await window.electronAPI.getLogs({
+      ...payload,
+      limit: 5000,
+      offset: 0,
+    });
+    if (!logsResult?.success) {
+      return;
     }
-    if (trendResult?.success) {
-      setUsageTrend(trendResult.trend || []);
-    }
-    if (logsResult?.success) {
-      const filtered = (logsResult.logs || []).filter(
-        (log) => log.category === 'generation' || log.category === 'image'
-      );
-      setUsageLogs(filtered);
-    }
-  };
-
-  const loadImageMonitoring = async () => {
-    const from = usageDateRangeEnabled ? formatDateInput(usageDateRange.startDate) : null;
-    const to = usageDateRangeEnabled ? formatDateInput(usageDateRange.endDate) : null;
-    const payload = {
-      search: usageSearch || null,
-      dateFrom: from,
-      dateTo: to,
-      category: 'image',
-    };
-    const result = await window.electronAPI.getLogsTrend(payload);
-    if (result?.success) {
-      setImageTrend(result.trend || []);
-    }
+    const { rows, stats, usageTrend: usageSeries, imageTrend: imageSeries } = buildUsageMetrics(
+      logsResult.logs || []
+    );
+    setUsageLogs(rows);
+    setUsageLogStats(stats);
+    setUsageTrend(usageSeries);
+    setImageTrend(imageSeries);
   };
 
   const loadUsers = async () => {
@@ -843,6 +1065,153 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setSelectedUserSettings(result.settings || {});
     }
   };
+
+  const resolveUpdateUrl = (payload) =>
+    payload?.update?.url ||
+    payload?.update?.downloadUrl ||
+    payload?.updateUrl ||
+    payload?.url ||
+    '';
+
+  const resolveUpdateFileName = (payload) =>
+    payload?.update?.fileName ||
+    payload?.update?.filename ||
+    payload?.fileName ||
+    '';
+
+  const downloadAppUpdateFromPayload = async (payload, { autoTriggered = false } = {}) => {
+    const url = resolveUpdateUrl(payload);
+    if (!url) {
+      setUpdateError(t.updateNoDownloadUrl || 'No download URL found in update response.');
+      return false;
+    }
+    setDownloadingUpdate(true);
+    setUpdateError('');
+    if (!autoTriggered) {
+      setUpdateSuccess('');
+    }
+    try {
+      const result = await window.electronAPI.downloadAppUpdate({
+        url,
+        fileName: resolveUpdateFileName(payload),
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || t.updateDownloadFailed || 'Update download failed');
+      }
+      setDownloadedUpdatePath(result.filePath || '');
+      setUpdateSuccess(
+        t.updateReadyToInstall ||
+          'Update downloaded. Click Install now to finish the update.'
+      );
+      return true;
+    } catch (error) {
+      setUpdateError(error?.message || t.updateDownloadFailed || 'Update download failed');
+      return false;
+    } finally {
+      setDownloadingUpdate(false);
+    }
+  };
+
+  const handleCheckAppUpdate = async () => {
+    setCheckingUpdate(true);
+    setUpdateError('');
+    setUpdateSuccess('');
+    setDownloadedUpdatePath('');
+    try {
+      const result = await window.electronAPI.checkAppUpdate({
+        currentVersion: appVersion || '0.0.0',
+        channel: 'stable',
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || t.updateCheckFailed || 'Update check failed');
+      }
+      setUpdateInfo(result);
+      if (result?.isUpdateAvailable) {
+        if (autoDownloadUpdates) {
+          setUpdateSuccess(
+            t.updateAutoDownloadStarted ||
+              'New version found. Downloading update automatically...'
+          );
+          await downloadAppUpdateFromPayload(result, { autoTriggered: true });
+        } else {
+          setUpdateSuccess(t.updateAvailableMessage || 'A new version is available.');
+        }
+      } else {
+        setUpdateSuccess(t.updateNoUpdate || 'You already have the latest version.');
+      }
+    } catch (error) {
+      setUpdateError(error?.message || t.updateCheckFailed || 'Update check failed');
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const handleDownloadAppUpdate = async () => {
+    await downloadAppUpdateFromPayload(updateInfo, { autoTriggered: false });
+  };
+
+  const handleInstallDownloadedUpdate = async () => {
+    if (!downloadedUpdatePath) {
+      setUpdateError(t.updateInstallMissing || 'Please download the update first.');
+      return;
+    }
+    const ok = window.confirm(
+      t.updateInstallConfirm || 'Installer will start and the app will close. Continue?'
+    );
+    if (!ok) return;
+
+    setInstallingUpdate(true);
+    setUpdateError('');
+    setUpdateSuccess('');
+    try {
+      const result = await window.electronAPI.installAppUpdate({
+        filePath: downloadedUpdatePath,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || t.updateInstallFailed || 'Unable to launch installer');
+      }
+      setUpdateSuccess(
+        t.updateInstallLaunched || 'Installer started. Complete the installation to update the app.'
+      );
+    } catch (error) {
+      setUpdateError(error?.message || t.updateInstallFailed || 'Unable to launch installer');
+    } finally {
+      setInstallingUpdate(false);
+    }
+  };
+
+  const updatePrimaryAction = downloadedUpdatePath
+    ? 'install'
+    : updateInfo?.isUpdateAvailable
+    ? 'download'
+    : 'check';
+
+  const handlePrimaryUpdateAction = async () => {
+    if (updatePrimaryAction === 'install') {
+      await handleInstallDownloadedUpdate();
+      return;
+    }
+    if (updatePrimaryAction === 'download') {
+      await handleDownloadAppUpdate();
+      return;
+    }
+    await handleCheckAppUpdate();
+  };
+
+  const updatePrimaryLabel =
+    updatePrimaryAction === 'install'
+      ? installingUpdate
+        ? t.updateInstalling || 'Installing...'
+        : t.updateInstallButton || 'Install now'
+      : updatePrimaryAction === 'download'
+      ? downloadingUpdate
+        ? t.updateDownloading || 'Downloading...'
+        : t.updateDownloadButton || 'Download update'
+      : checkingUpdate
+      ? t.updateChecking || 'Checking...'
+      : t.updateCheckButton || 'Check for update';
+
+  const updatePrimaryBusy = checkingUpdate || downloadingUpdate || installingUpdate;
 
   const handleAddKey = () => {
     if (!newKeyValue.trim()) {
@@ -1117,6 +1486,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     siteBaseUrl,
     linkPreviewApiKey,
     autoSave,
+    autoDownloadUpdates,
     apiKeys,
       promptTemplates,
       publishDestinations,
@@ -1232,18 +1602,38 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     return destination.endpointUrl || destination.baseUrl || '';
   };
 
-  const tabs = [
-    { id: 'ai', label: t.settingsTabAi || 'AI' },
-    { id: 'research', label: t.settingsTabResearch || 'Research' },
-    { id: 'keys', label: t.settingsTabKeys || 'API Keys' },
-    { id: 'publishing', label: t.settingsTabPublishing || 'Publishing' },
-    { id: 'storage', label: t.settingsTabStorage || 'Storage' },
-    { id: 'prompts', label: t.settingsTabPrompts || 'Prompts' },
-    { id: 'usage', label: t.settingsTabUsage || 'Usage' },
-  ];
-  if (isAdmin) {
-    tabs.push({ id: 'admin', label: t.settingsTabAdmin || 'Admin' });
-  }
+  const userPermissions = Array.isArray(currentUser?.permissions) ? currentUser.permissions : [];
+  const hasGranularSettingsTabPerms = userPermissions.some((perm) => String(perm).startsWith('settings.'));
+  const tabs = useMemo(() => {
+    const baseTabs = [
+      { id: 'ai', label: t.settingsTabAi || 'AI' },
+      { id: 'research', label: t.settingsTabResearch || 'Research' },
+      { id: 'keys', label: t.settingsTabKeys || 'API Keys' },
+      { id: 'publishing', label: t.settingsTabPublishing || 'Publishing' },
+      { id: 'storage', label: t.settingsTabStorage || 'Storage' },
+      { id: 'prompts', label: t.settingsTabPrompts || 'Prompts' },
+      { id: 'usage', label: t.settingsTabUsage || 'Usage' },
+      { id: 'updates', label: t.settingsTabUpdates || 'Updates' },
+    ];
+
+    if (isAdmin) {
+      return [...baseTabs, { id: 'admin', label: t.settingsTabAdmin || 'Admin' }];
+    }
+
+    // Backward compatibility: users that only have "settings" (no granular tab permissions) can still see all base tabs.
+    if (!hasGranularSettingsTabPerms) {
+      return baseTabs;
+    }
+
+    return baseTabs.filter((tab) => userPermissions.includes(`settings.${tab.id}`));
+  }, [isAdmin, t, hasGranularSettingsTabPerms, userPermissions]);
+
+  useEffect(() => {
+    if (tabs.length === 0) return;
+    if (!tabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab(tabs[0].id);
+    }
+  }, [activeTab, tabs]);
 
   return (
     <div className="settings-page max-w-5xl mx-auto p-8">
@@ -2617,7 +3007,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                       const tokenValue =
                         typeof log.tokensUsed === 'number' ? log.tokensUsed : '-';
                       const costValue =
-                        typeof log.cost === 'number' ? `$${log.cost.toFixed(4)}` : '-';
+                        typeof log.calculatedCost === 'number'
+                          ? `$${log.calculatedCost.toFixed(4)}`
+                          : typeof log.cost === 'number'
+                          ? `$${log.cost.toFixed(4)}`
+                          : '-';
                       return (
                         <div
                           key={log.id}
@@ -2650,6 +3044,81 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'updates' && (
+          <div className="bg-white rounded-xl shadow-sm p-8 space-y-5 dark:bg-slate-900">
+            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+              {t.updatesTitle || 'App Updates'}
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {t.updatesSubtitle || 'Check, download, and install new app versions from your update server.'}
+            </p>
+
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {(t.currentVersionLabel || 'Current version') + ': '} {appVersion || '-'}
+            </p>
+
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/40">
+              <div className="pr-4">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  {t.updateAutoDownloadLabel || 'Auto-download updates'}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.updateAutoDownloadHint || 'If a new version is found, download it automatically and notify to install.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoDownloadUpdates}
+                onClick={() => setAutoDownloadUpdates((prev) => !prev)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                  autoDownloadUpdates ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                    autoDownloadUpdates ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handlePrimaryUpdateAction}
+                disabled={updatePrimaryBusy}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+              >
+                {updatePrimaryLabel}
+              </button>
+
+              {updatePrimaryAction === 'download' && resolveUpdateUrl(updateInfo) && (
+                <button
+                  type="button"
+                  onClick={() => window.electronAPI.openExternal({ url: resolveUpdateUrl(updateInfo) })}
+                  className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  {t.updateOpenDownloadUrl || 'Open download URL'}
+                </button>
+              )}
+            </div>
+
+            {downloadedUpdatePath && (
+              <p className="text-xs text-slate-500 break-all dark:text-slate-400">
+                {t.updateDownloadedPath || 'Downloaded file'}: {downloadedUpdatePath}
+              </p>
+            )}
+
+            {updateError ? (
+              <p className="text-sm text-red-600 dark:text-red-400">{updateError}</p>
+            ) : null}
+            {updateSuccess ? (
+              <p className="text-sm text-emerald-600 dark:text-emerald-400">{updateSuccess}</p>
+            ) : null}
           </div>
         )}
 

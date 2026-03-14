@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle, Clock, ExternalLink, X } from 'lucide-react';
+import { CheckCircle, Clock, ExternalLink, X, Plus, Upload } from 'lucide-react';
+
+const HISTORY_PUBLISH_STATUS_CACHE_KEY = 'history_publish_status_cache_v1';
+const HISTORY_PUBLISH_STATUS_TTL_MS = 60 * 60 * 1000;
 
 function HistoryPage({
   history,
@@ -11,15 +14,37 @@ function HistoryPage({
   canDelete,
   onViewBlog,
   onEditBlog,
+  onPostBlog,
   onDeleteBlog,
   onClearAll,
   onGenerateImage,
 }) {
+  const historyList = Array.isArray(history) ? history : [];
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [bulkFormat, setBulkFormat] = useState('markdown');
   const [imageGeneratingId, setImageGeneratingId] = useState(null);
-  const [publishStatuses, setPublishStatuses] = useState({});
+  const [publishStatuses, setPublishStatuses] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(HISTORY_PUBLISH_STATUS_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      const now = Date.now();
+      // Backward compatibility: old cache entries may not have a timestamp.
+      return Object.fromEntries(
+        Object.entries(parsed).map(([id, value]) => [
+          id,
+          value && typeof value === 'object'
+            ? { ...value, _cachedAt: Number(value._cachedAt || now) }
+            : value,
+        ])
+      );
+    } catch (_error) {
+      return {};
+    }
+  });
   const [selectedBlogId, setSelectedBlogId] = useState(null);
   const [selectedBlog, setSelectedBlog] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
@@ -30,10 +55,18 @@ function HistoryPage({
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [removedImageUrls, setRemovedImageUrls] = useState([]);
   const [showImageDeleteConfirm, setShowImageDeleteConfirm] = useState(false);
+  const [imageActionModalOpen, setImageActionModalOpen] = useState(false);
+  const [uploadingLocalImage, setUploadingLocalImage] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(1);
-  const summarySafe = summary || { totalCount: 0, totalCost: 0 };
-  const wpCountsSafe = wpCounts || null;
+  const getStatusLabel = (status) => {
+    if (status === 'publish') return t.statusPublish || 'Published';
+    if (status === 'draft') return t.statusDraft || 'Draft';
+    if (status === 'pending') return t.statusPending || 'Pending';
+    if (status === 'private') return t.statusPrivate || 'Private';
+    if (status === 'scheduled') return t.statusScheduled || 'Scheduled';
+    return status || '-';
+  };
   const normalizeImageGallery = (galleryValue, imageUrl) => {
     if (Array.isArray(galleryValue)) {
       const list = galleryValue.filter(Boolean);
@@ -55,35 +88,26 @@ function HistoryPage({
     return imageUrl ? [imageUrl] : [];
   };
 
-  // Load publish status for all blogs
-  useEffect(() => {
-    const loadPublishStatuses = async () => {
-      const statuses = {};
-      for (const item of history) {
-        const result = await window.electronAPI.getBlogPublishStatus({ blogId: item.id });
-        if (result.success && result.history?.length > 0) {
-          statuses[item.id] = result.history[0]; // Get most recent publish
-        }
-      }
-      setPublishStatuses(statuses);
-    };
-    if (history.length > 0) {
-      loadPublishStatuses();
-    }
-  }, [history]);
+  const getBlogStatusType = (blogId) => {
+    const status = String(publishStatuses?.[blogId]?.status || '').toLowerCase();
+    if (status === 'publish') return 'published';
+    if (status === 'draft') return 'draft';
+    return 'nonPosted';
+  };
 
-  const filteredHistory = useMemo(() => {
+  const baseHistory = useMemo(() => {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfYear = new Date(now.getFullYear(), 0, 1);
 
-    return history.filter((item) => {
-      const matchesSearch = item.title
+    return historyList.filter((item) => {
+      const safeTitle = String(item?.title || '');
+      const matchesSearch = safeTitle
         .toLowerCase()
         .includes(searchTerm.trim().toLowerCase());
 
-      const itemDate = new Date(item.generatedAt);
+      const itemDate = new Date(item?.generatedAt || 0);
       let matchesFilter = true;
 
       if (dateFilter === 'today') {
@@ -100,7 +124,32 @@ function HistoryPage({
 
       return matchesSearch && matchesFilter;
     });
-  }, [history, searchTerm, dateFilter]);
+  }, [historyList, searchTerm, dateFilter]);
+
+  const statusCounts = useMemo(() => {
+    let published = 0;
+    let draft = 0;
+    let nonPosted = 0;
+    baseHistory.forEach((item) => {
+      const bucket = getBlogStatusType(item?.id);
+      if (bucket === 'published') published += 1;
+      else if (bucket === 'draft') draft += 1;
+      else nonPosted += 1;
+    });
+    return {
+      all: baseHistory.length,
+      published,
+      draft,
+      nonPosted,
+    };
+  }, [baseHistory, publishStatuses]);
+
+  const filteredHistory = useMemo(() => {
+    if (statusFilter === 'all') {
+      return baseHistory;
+    }
+    return baseHistory.filter((item) => getBlogStatusType(item?.id) === statusFilter);
+  }, [baseHistory, statusFilter, publishStatuses]);
 
   const totalPages = Math.max(1, Math.ceil(filteredHistory.length / pageSize));
   const safePageIndex = Math.min(pageIndex, totalPages);
@@ -108,9 +157,63 @@ function HistoryPage({
   const pageEnd = pageStart + pageSize;
   const pagedHistory = filteredHistory.slice(pageStart, pageEnd);
 
+  // Load publish status only for visible rows, in parallel, and cache in state.
+  useEffect(() => {
+    let cancelled = false;
+    const now = Date.now();
+    const idsToLoad = baseHistory
+      .map((item) => item?.id)
+      .filter(Boolean)
+      .filter((id) => {
+        const cached = publishStatuses[id];
+        if (!cached) return true;
+        const cachedAt = Number(cached?._cachedAt || 0);
+        if (!cachedAt) return true;
+        return now - cachedAt > HISTORY_PUBLISH_STATUS_TTL_MS;
+      });
+    if (!idsToLoad.length) return () => {
+      cancelled = true;
+    };
+
+    const load = async () => {
+      const results = await Promise.allSettled(
+        idsToLoad.map((id) => window.electronAPI.getBlogPublishStatus({ blogId: id }))
+      );
+      if (cancelled) return;
+
+      setPublishStatuses((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        results.forEach((result, index) => {
+          if (result.status !== 'fulfilled') return;
+          const payload = result.value;
+          if (payload?.success && payload.history?.length > 0) {
+            const id = idsToLoad[index];
+            next[id] = { ...payload.history[0], _cachedAt: Date.now() };
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseHistory, publishStatuses]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(HISTORY_PUBLISH_STATUS_CACHE_KEY, JSON.stringify(publishStatuses));
+    } catch (_error) {
+      // Ignore browser storage quota/access issues.
+    }
+  }, [publishStatuses]);
+
   useEffect(() => {
     setPageIndex(1);
-  }, [searchTerm, dateFilter, pageSize]);
+  }, [searchTerm, dateFilter, statusFilter, pageSize]);
 
   const selectedPublishStatus = selectedBlogId ? publishStatuses[selectedBlogId] : null;
   const selectedGallery = useMemo(
@@ -189,6 +292,58 @@ function HistoryPage({
     setPendingDeleteId(null);
   };
 
+  const handleGenerateFromImageModal = async () => {
+    if (!selectedBlogId || !onGenerateImage) return;
+    setImageActionModalOpen(false);
+    setImageGeneratingId(selectedBlogId);
+    await onGenerateImage(selectedBlogId);
+    const updated = await window.electronAPI.getBlog({ id: selectedBlogId });
+    if (updated.success && updated.blog) {
+      setSelectedBlog(updated.blog);
+    }
+    setImageGeneratingId(null);
+  };
+
+  const handleUploadFromImageModal = async () => {
+    if (!selectedBlogId) return;
+    setUploadingLocalImage(true);
+    const picked = await window.electronAPI.selectLocalImageFile();
+    if (!picked?.success) {
+      setUploadingLocalImage(false);
+      if (!picked?.canceled) {
+        alert(picked?.error || t.imageSelectFailed || 'Unable to select image file.');
+      }
+      return;
+    }
+
+    const result = await window.electronAPI.attachLocalBlogImage({
+      blogId: selectedBlogId,
+      title: selectedBlog?.title || '',
+      localImagePath: picked.path,
+    });
+    setUploadingLocalImage(false);
+    if (!result.success) {
+      alert(result.error || t.imageUploadFailed || 'Failed to upload image.');
+      return;
+    }
+
+    if (result.blog) {
+      setSelectedBlog(result.blog);
+    } else if (result.imageUrl) {
+      setSelectedBlog((prev) =>
+        prev
+          ? {
+              ...prev,
+              imageUrl: result.imageUrl,
+              imageGallery: normalizeImageGallery(result.imageGallery || prev.imageGallery || prev.image_gallery, result.imageUrl),
+            }
+          : prev
+      );
+    }
+    setRemovedImageUrls([]);
+    setImageActionModalOpen(false);
+  };
+
   return (
     <div className="max-w-5xl mx-auto p-8">
       <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.historyTitle}</h2>
@@ -228,35 +383,50 @@ function HistoryPage({
         </div>
         <div className="flex flex-col gap-3 text-sm text-slate-600">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
-              {t.historyTotalBlogs}: <strong>{summarySafe.totalCount || 0}</strong>
-            </div>
-            <div className="rounded-lg bg-purple-50 px-3 py-2 text-purple-700">
-              {t.historyTotalCost}: <strong>${(summarySafe.totalCost || 0).toFixed(2)}</strong>
-            </div>
-            <div className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700">
-              {t.historyShowing}: <strong>{filteredHistory.length}</strong>
-            </div>
-            {wpCountsSafe && (
-              <>
-                <div className="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
-                  Published: <strong>{wpCountsSafe.published ?? '-'}</strong>
-                </div>
-                <div className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
-                  Draft: <strong>{wpCountsSafe.draft ?? '-'}</strong>
-                </div>
-                {wpCountsSafe.scheduled !== undefined && (
-                  <div className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
-                    Scheduled: <strong>{wpCountsSafe.scheduled ?? '-'}</strong>
-                  </div>
-                )}
-                {wpCountsSafe.pending !== undefined && (
-                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-700">
-                    Pending: <strong>{wpCountsSafe.pending ?? '-'}</strong>
-                  </div>
-                )}
-              </>
-            )}
+            <button
+              type="button"
+              onClick={() => setStatusFilter('all')}
+              className={`rounded-lg px-3 py-2 transition ${
+                statusFilter === 'all'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+              }`}
+            >
+              {t.historyFilterAll || 'All'}: <strong>{statusCounts.all}</strong>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('published')}
+              className={`rounded-lg px-3 py-2 transition ${
+                statusFilter === 'published'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              }`}
+            >
+              {t.statusPublish || 'Published'}: <strong>{statusCounts.published}</strong>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('draft')}
+              className={`rounded-lg px-3 py-2 transition ${
+                statusFilter === 'draft'
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+              }`}
+            >
+              {t.statusDraft || 'Draft'}: <strong>{statusCounts.draft}</strong>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('nonPosted')}
+              className={`rounded-lg px-3 py-2 transition ${
+                statusFilter === 'nonPosted'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              {t.notPublished || 'Non posted'}: <strong>{statusCounts.nonPosted}</strong>
+            </button>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {canBulkExport && (
@@ -264,7 +434,7 @@ function HistoryPage({
               {selectedIds.length > 0 ? (
                 <>
                   <span className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
-                    {selectedIds.length} selected
+                    {selectedIds.length} {t.selectedLabel || 'selected'}
                   </span>
                   <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
                     {t.exportFormat}
@@ -274,10 +444,10 @@ function HistoryPage({
                     onChange={(event) => setBulkFormat(event.target.value)}
                     className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
                   >
-                    <option value="markdown">Markdown</option>
-                    <option value="html">HTML</option>
-                    <option value="pdf">PDF</option>
-                    <option value="docx">DOCX</option>
+                    <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
+                    <option value="html">{t.exportHtml || 'HTML'}</option>
+                    <option value="pdf">{t.exportPdf || 'PDF'}</option>
+                    <option value="docx">{t.exportDocx || 'DOCX'}</option>
                   </select>
                   <button
                     type="button"
@@ -329,10 +499,10 @@ function HistoryPage({
                     onChange={(event) => setBulkFormat(event.target.value)}
                     className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
                   >
-                    <option value="markdown">Markdown</option>
-                    <option value="html">HTML</option>
-                    <option value="pdf">PDF</option>
-                    <option value="docx">DOCX</option>
+                    <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
+                    <option value="html">{t.exportHtml || 'HTML'}</option>
+                    <option value="pdf">{t.exportPdf || 'PDF'}</option>
+                    <option value="docx">{t.exportDocx || 'DOCX'}</option>
                   </select>
                   <button
                     type="button"
@@ -407,18 +577,18 @@ function HistoryPage({
               <div className="flex items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="font-semibold text-slate-900 truncate">{item.title}</p>
+                  <p className="font-semibold text-slate-900 truncate">{item.title || t.untitledLabel || 'Untitled'}</p>
                   {publishStatus && (
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {publishStatus.status === 'publish' ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
                           <CheckCircle className="w-3 h-3" />
-                          Published
+                          {getStatusLabel('publish')}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
                           <Clock className="w-3 h-3" />
-                          Draft
+                          {getStatusLabel('draft')}
                         </span>
                       )}
                       {publishStatus.publishedUrl && (
@@ -429,7 +599,7 @@ function HistoryPage({
                             window.electronAPI.openExternal({ url: publishStatus.publishedUrl });
                           }}
                           className="text-blue-600 hover:text-blue-800 p-0.5"
-                          title="View on site"
+                          title={t.viewOnSite || 'View on site'}
                         >
                           <ExternalLink className="w-3 h-3" />
                         </button>
@@ -438,7 +608,7 @@ function HistoryPage({
                   )}
                 </div>
                 <p className="text-xs text-slate-500">
-                  {new Date(item.generatedAt).toLocaleString()} • {item.wordCount} {t.historyWords}
+                  {(item.generatedAt ? new Date(item.generatedAt).toLocaleString() : '-') } • {item.wordCount || 0} {t.historyWords}
                   {publishStatus && (
                     <span className="ml-2 text-slate-400">
                       • {publishStatus.destinationName} ({new Date(publishStatus.publishedAt).toLocaleDateString()})
@@ -509,7 +679,7 @@ function HistoryPage({
             <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">
-                  {selectedBlog?.title || 'Blog'}
+                  {selectedBlog?.title || t.blogLabel || 'Blog'}
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
                   {selectedBlog?.generatedAt ? new Date(selectedBlog.generatedAt).toLocaleString() : ''}
@@ -527,7 +697,7 @@ function HistoryPage({
 
             <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
               {detailsLoading ? (
-                <p className="text-sm text-slate-500">Loading blog details...</p>
+                <p className="text-sm text-slate-500">{t.loadingBlogDetails || 'Loading blog details...'}</p>
               ) : (
                 <div className="space-y-5">
                   <div className="flex flex-wrap items-center gap-2">
@@ -538,17 +708,17 @@ function HistoryPage({
                       selectedPublishStatus.status === 'publish' ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
                           <CheckCircle className="w-3 h-3" />
-                          Published
+                          {getStatusLabel('publish')}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
                           <Clock className="w-3 h-3" />
-                          Draft
+                          {getStatusLabel('draft')}
                         </span>
                       )
                     ) : (
                       <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
-                        Not published
+                        {t.notPublished || 'Not published'}
                       </span>
                     )}
                     {selectedPublishStatus?.publishedUrl && (
@@ -558,7 +728,7 @@ function HistoryPage({
                         className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50"
                       >
                         <ExternalLink className="h-3 w-3" />
-                        Open Live URL
+                        {t.openLiveUrl || 'Open Live URL'}
                       </button>
                     )}
                   </div>
@@ -595,6 +765,14 @@ function HistoryPage({
                             )}
                           </button>
                         ))}
+                        <button
+                          type="button"
+                          onClick={() => setImageActionModalOpen(true)}
+                          className="flex h-20 w-28 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-slate-500 hover:border-blue-400 hover:text-blue-600"
+                          title={t.addImageLabel || 'Add image'}
+                        >
+                          <Plus className="h-5 w-5" />
+                        </button>
                       </div>
                       {canDelete && removedImageUrls.length > 0 && (
                         <div className="flex items-center justify-end gap-2">
@@ -609,8 +787,20 @@ function HistoryPage({
                       )}
                     </div>
                   ) : (
-                    <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
-                      No image available yet.
+                    <div className="space-y-2">
+                      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                        {t.noImageLabel || 'No image available yet.'}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setImageActionModalOpen(true)}
+                          className="flex h-20 w-28 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-slate-500 hover:border-blue-400 hover:text-blue-600"
+                          title={t.addImageLabel || 'Add image'}
+                        >
+                          <Plus className="h-5 w-5" />
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -635,21 +825,13 @@ function HistoryPage({
                     >
                       {t.editLabel}
                     </button>
-                    {onGenerateImage && (
+                    {onPostBlog && (
                       <button
                         type="button"
-                        onClick={async () => {
-                          setImageGeneratingId(selectedBlogId);
-                          await onGenerateImage(selectedBlogId);
-                          const updated = await window.electronAPI.getBlog({ id: selectedBlogId });
-                          if (updated.success && updated.blog) {
-                            setSelectedBlog(updated.blog);
-                          }
-                          setImageGeneratingId(null);
-                        }}
-                        className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                        onClick={() => onPostBlog(selectedBlogId)}
+                        className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                       >
-                        {imageGeneratingId === selectedBlogId ? t.generatingImageLabel : t.generateImageLabel}
+                        {t.publishDraft || 'Post Blog'}
                       </button>
                     )}
                     {canDelete && (
@@ -677,10 +859,10 @@ function HistoryPage({
                           onChange={(event) => setDetailsExportFormat(event.target.value)}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                         >
-                          <option value="markdown">Markdown</option>
-                          <option value="html">HTML</option>
-                          <option value="pdf">PDF</option>
-                          <option value="docx">DOCX</option>
+                          <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
+                          <option value="html">{t.exportHtml || 'HTML'}</option>
+                          <option value="pdf">{t.exportPdf || 'PDF'}</option>
+                          <option value="docx">{t.exportDocx || 'DOCX'}</option>
                         </select>
                         <button
                           type="button"
@@ -736,6 +918,49 @@ function HistoryPage({
                 className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
               >
                 {deletingSelected ? (t.deletingLabel || 'Deleting...') : (t.deleteLabel || 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {imageActionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">
+              {t.imageActionsTitle || 'Image actions'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {t.imageActionsHint || 'Generate a new image or upload one from your computer.'}
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              {onGenerateImage && (
+                <button
+                  type="button"
+                  onClick={handleGenerateFromImageModal}
+                  disabled={imageGeneratingId === selectedBlogId}
+                  className="rounded-lg border border-blue-500 bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-60"
+                >
+                  {imageGeneratingId === selectedBlogId ? (t.generatingImageLabel || 'Generating...') : (t.generateImageLabel || 'Generate image')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleUploadFromImageModal}
+                disabled={uploadingLocalImage}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                <Upload className="h-4 w-4" />
+                {uploadingLocalImage ? (t.uploadingLabel || 'Uploading...') : (t.uploadImageLabel || 'Upload image')}
+              </button>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setImageActionModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              >
+                {t.cancel || 'Cancel'}
               </button>
             </div>
           </div>

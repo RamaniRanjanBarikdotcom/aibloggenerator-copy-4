@@ -132,7 +132,7 @@ function setStore(store) {
  * Priority: electron-store > environment variables > localhost
  */
 async function initDb() {
-  if (isInitialized && db && client && client.topology && client.topology.isConnected()) {
+  if (isInitialized && db && client) {
     return db;
   }
 
@@ -331,7 +331,24 @@ async function getBlogs({ userId = null, isAdmin = false, limit = 50, offset = 0
 
   const results = await db
     .collection('blogs')
-    .find(filter)
+    .find(filter, {
+      projection: {
+        user_id: 1,
+        title: 1,
+        meta_description: 1,
+        keywords: 1,
+        categories: 1,
+        image_url: 1,
+        image_gallery: 1,
+        local_image_path: 1,
+        word_count: 1,
+        seo_score: 1,
+        language: 1,
+        cost: 1,
+        created_at: 1,
+        updated_at: 1,
+      },
+    })
     .sort({ created_at: -1 })
     .skip(offset)
     .limit(limit)
@@ -342,7 +359,8 @@ async function getBlogs({ userId = null, isAdmin = false, limit = 50, offset = 0
     id: doc._id.toString(),
     user_id: doc.user_id,
     title: doc.title,
-    content: doc.content,
+    // History list does not require full content body.
+    content: '',
     metaDescription: doc.meta_description,
     keywords: doc.keywords,
     categories: safeParseJson(doc.categories, []),
@@ -558,11 +576,40 @@ async function getSettings(userId, key) {
 async function logActivity({ userId, action, details }) {
   await initDb();
 
+  const actionPrefix = String(action || '').split('.')[0] || 'activity';
+  const categoryMap = {
+    blog: 'history',
+    auth: 'auth',
+    admin: 'admin',
+    logs: 'logs',
+    posts: 'posts',
+    settings: 'settings',
+    scheduler: 'scheduler',
+    notification: 'notifications',
+    notifications: 'notifications',
+  };
+  const category = categoryMap[actionPrefix] || actionPrefix;
+
   await db.collection('activities').insertOne({
     user_id: userId,
     action,
     details,
     created_at: new Date(),
+  });
+
+  await db.collection('logs').insertOne({
+    timestamp: new Date(),
+    level: 'info',
+    category,
+    message: String(details || action || 'Activity'),
+    details: JSON.stringify({
+      source: 'activity',
+      action: String(action || ''),
+    }),
+    blog_id: null,
+    tokens_used: null,
+    cost: null,
+    user_id: userId || null,
   });
 }
 
@@ -764,15 +811,39 @@ async function listRemotePosts({ status = null, limit = 200, destinationId = nul
 async function getBlogForRemotePost({ remotePostId, destinationId = null } = {}) {
   await initDb();
   if (!remotePostId) return null;
-  const filter = { remote_post_id: remotePostId };
-  if (destinationId) filter.destination_id = destinationId;
-  const historyEntry = await db
+
+  const rawId = String(remotePostId).trim();
+  const idCandidates = [rawId];
+  if (/^-?\d+$/.test(rawId)) {
+    idCandidates.push(Number(rawId));
+  }
+
+  const makeFilter = (withDestination) => {
+    const filter = {
+      remote_post_id: idCandidates.length > 1 ? { $in: idCandidates } : idCandidates[0],
+    };
+    if (withDestination && destinationId) filter.destination_id = destinationId;
+    return filter;
+  };
+
+  let historyEntry = await db
     .collection('publish_history')
-    .find(filter)
+    .find(makeFilter(true))
     .sort({ published_at: -1 })
     .limit(1)
     .toArray();
-  const blogId = historyEntry[0]?.blog_id;
+
+  // Fallback for legacy rows without destination_id or with mismatched id typing.
+  if ((!historyEntry || !historyEntry[0]?.blog_id) && destinationId) {
+    historyEntry = await db
+      .collection('publish_history')
+      .find(makeFilter(false))
+      .sort({ published_at: -1 })
+      .limit(1)
+      .toArray();
+  }
+
+  const blogId = historyEntry?.[0]?.blog_id;
   if (!blogId) return null;
   return await getBlogById(blogId);
 }
@@ -1249,6 +1320,7 @@ async function listUsers() {
     status: doc.status || 'active',
     permissions: Array.isArray(doc.permissions) ? doc.permissions : [],
     createdAt: doc.created_at?.toISOString(),
+    lastOnlineAt: doc.last_online_at?.toISOString?.() || doc.last_online_at || null,
   }));
 }
 
@@ -1277,6 +1349,28 @@ async function updateUserAccess({ id, role, permissions, email, status }) {
   }
 
   await db.collection('users').updateOne(buildIdFilter(id), { $set: nextValues });
+}
+
+async function updateUserPassword({ id, passwordHash, passwordSalt }) {
+  await initDb();
+  await db.collection('users').updateOne(buildIdFilter(id), {
+    $set: {
+      password_hash: passwordHash,
+      password_salt: passwordSalt,
+    },
+  });
+}
+
+async function touchUserLastOnline({ id }) {
+  await initDb();
+  const now = new Date();
+  await db.collection('users').updateOne(buildIdFilter(id), {
+    $set: {
+      last_online_at: now,
+      last_login_at: now,
+      updated_at: now,
+    },
+  });
 }
 
 /**
@@ -1775,6 +1869,8 @@ module.exports = {
   getUserCount,
   listUsers,
   updateUserAccess,
+  updateUserPassword,
+  touchUserLastOnline,
   deleteUser,
   saveSettings,
   getSettings,

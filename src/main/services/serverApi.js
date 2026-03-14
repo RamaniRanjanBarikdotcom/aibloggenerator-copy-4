@@ -55,8 +55,13 @@ function buildHeaders(accessToken = '') {
 
 function buildRequestUrl(baseUrl, path) {
   const normalizedPath = String(path || '').startsWith('/') ? String(path) : `/${String(path || '')}`;
-  const isPhpEndpoint = /\.php(?:$|\?)/i.test(baseUrl);
-  if (!isPhpEndpoint) {
+  // Support both explicit PHP endpoints (.../blog-gen.php) and extensionless
+  // routed endpoints (.../blog-gen) that expect ?route=/...
+  const isRoutedEndpoint =
+    /\.php(?:$|\?)/i.test(baseUrl) ||
+    /\/blog-gen(?:\.php)?(?:$|\?)/i.test(baseUrl);
+
+  if (!isRoutedEndpoint) {
     return `${baseUrl}${normalizedPath}`;
   }
 
@@ -143,10 +148,19 @@ async function getAuthState({ accessToken = '' } = {}) {
   });
 }
 
-async function listSchedulerJobs({ accessToken, status = '', shopId = '', limit = 500 } = {}) {
+async function listSchedulerJobs({
+  accessToken,
+  status = '',
+  shopId = '',
+  destinationId = '',
+  platform = '',
+  limit = 500,
+} = {}) {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (shopId) qs.set('shopId', shopId);
+  if (destinationId) qs.set('destinationId', destinationId);
+  if (platform) qs.set('platform', platform);
   if (limit) qs.set('limit', String(limit));
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return request(`/scheduler/jobs${suffix}`, { method: 'GET', accessToken });

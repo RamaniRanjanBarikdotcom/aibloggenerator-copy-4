@@ -349,3 +349,49 @@ body {
 .dark .settings-page .text-slate-500 {
   color: #93a8c8;
 }
+
+/* TinyMCE dark-mode fallback styling */
+.dark .tox {
+  border-color: #334155 !important;
+}
+
+.dark .tox .tox-editor-header,
+.dark .tox .tox-toolbar-overlord,
+.dark .tox .tox-toolbar,
+.dark .tox .tox-toolbar__primary,
+.dark .tox .tox-menubar {
+  background: #0f172a !important;
+  border-color: #334155 !important;
+}
+
+.dark .tox .tox-edit-area,
+.dark .tox .tox-edit-area__iframe,
+.dark .tox .tox-statusbar {
+  background: #0f172a !important;
+  border-color: #334155 !important;
+}
+
+.dark .tox .tox-statusbar,
+.dark .tox .tox-statusbar * {
+  color: #94a3b8 !important;
+}
+
+.dark .tox .tox-tbtn,
+.dark .tox .tox-mbtn {
+  color: #cbd5e1 !important;
+}
+
+.dark .tox .tox-tbtn svg,
+.dark .tox .tox-mbtn svg {
+  fill: #cbd5e1 !important;
+}
+
+.dark .tox .tox-tbtn:hover,
+.dark .tox .tox-mbtn:hover {
+  background: #1e293b !important;
+}
+
+.dark .tox .tox-tbtn--enabled,
+.dark .tox .tox-tbtn--enabled:hover {
+  background: #2563eb !important;
+}

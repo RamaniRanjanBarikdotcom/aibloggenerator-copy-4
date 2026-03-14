@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
 
 // Load environment variables (packaged build reads from resources/.env)
 const envPath = app?.isPackaged
@@ -49,6 +51,8 @@ const {
   createUser,
   listUsers,
   updateUserAccess,
+  updateUserPassword,
+  touchUserLastOnline,
   deleteUser,
   logActivity,
   listActivities,
@@ -190,9 +194,23 @@ seedServerApiConfigFromStore();
 
 let mainWindow;
 let currentUser = null;
+const USER_LIST_CACHE_TTL_MS = 30 * 1000;
+let userListCache = { ts: 0, users: null, promise: null };
+const HISTORY_SUMMARY_CACHE_TTL_MS = 60 * 1000;
+const historySummaryCache = new Map(); // key => { ts, summary }
+const historyInFlightRequests = new Map(); // key => Promise<{ success, history, summary, wpCounts }>
+const HISTORY_RESPONSE_CACHE_TTL_MS = 30 * 1000;
+const historyResponseCache = new Map(); // key => { ts, result }
+
+function invalidateHistoryCaches() {
+  historySummaryCache.clear();
+  historyResponseCache.clear();
+}
 setAuthTokenGetter(() => String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || ''));
 setUnauthorizedHandler(() => {
   currentUser = null;
+  workspaceOwnerCache.clear();
+  invalidateHistoryCaches();
   store.delete(SERVER_API_ACCESS_TOKEN_KEY);
   store.delete(CURRENT_USER_KEY);
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -214,8 +232,10 @@ function normalizeBaseUrl(url) {
 
 function buildServerApiUrl(baseUrl, routePath) {
   const normalizedPath = String(routePath || '').startsWith('/') ? String(routePath) : `/${String(routePath || '')}`;
-  const isPhpEndpoint = /\.php(?:$|\?)/i.test(baseUrl);
-  if (!isPhpEndpoint) {
+  const isRoutedEndpoint =
+    /\.php(?:$|\?)/i.test(baseUrl) ||
+    /\/blog-gen(?:\.php)?(?:$|\?)/i.test(baseUrl);
+  if (!isRoutedEndpoint) {
     return `${baseUrl}${normalizedPath}`;
   }
 
@@ -577,6 +597,25 @@ async function uploadImageToStorage({ blog, imageUrl, localImagePath, storage, f
 
 const WP_STATS_CACHE_MS = 60 * 1000; // 1 minute cache for status counters
 let wpStatsCache = new Map(); // key: destinationId|baseUrl, value: { ts, data }
+const REMOTE_BLOG_LINK_CACHE_MS = 5 * 60 * 1000;
+let remoteBlogLinkCache = new Map(); // key: userId|destinationId|postId => { blogId, ts }
+let workspaceOwnerCache = new Map(); // key: userId => ownerUserId
+
+function getRemoteBlogLinkCache(key = '') {
+  if (!key) return null;
+  const entry = remoteBlogLinkCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - (entry.ts || 0) > REMOTE_BLOG_LINK_CACHE_MS) {
+    remoteBlogLinkCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function setRemoteBlogLinkCache(key = '', blogId = '') {
+  if (!key || !blogId) return;
+  remoteBlogLinkCache.set(key, { blogId, ts: Date.now() });
+}
 
 function buildWpAuthHeader(destination) {
   const apiToken = (destination.apiToken || destination.token || destination.authToken || '').trim();
@@ -603,7 +642,7 @@ async function fetchWordpressCategories(destination) {
   return Array.isArray(response.data) ? response.data : [];
 }
 
-async function fetchWordpressStatusCounts(destination) {
+async function fetchWordpressStatusCounts(destination, { timeoutMs = PUBLISH_AXIOS_DEFAULTS.timeout } = {}) {
   const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
   const cacheKey = `${destination.id || 'default'}|${baseUrl}`;
   const now = Date.now();
@@ -614,8 +653,12 @@ async function fetchWordpressStatusCounts(destination) {
 
   const endpoint = `${baseUrl}/wp-json/aiblog/v1/site`;
   const authHeader = buildWpAuthHeader(destination);
+  const requestTimeout =
+    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : PUBLISH_AXIOS_DEFAULTS.timeout;
   const res = await axios.get(endpoint, {
-    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    timeout: requestTimeout,
     headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
   });
   const postCounts = res.data?.postCounts || {};
@@ -712,6 +755,128 @@ async function getUserSettings(userId) {
   return raw ? JSON.parse(raw) : {};
 }
 
+function isBlankWorkspaceSettingsValue(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return true;
+  }
+  const text = String(rawValue).trim();
+  if (!text) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.keys(parsed).length === 0;
+    }
+  } catch (_error) {
+    // If it's non-JSON text, treat as non-blank to avoid destructive overwrite.
+  }
+  return false;
+}
+
+async function cloneWorkspaceConfig({ sourceUserId, targetUserId, overwrite = false }) {
+  if (!sourceUserId || !targetUserId) {
+    return false;
+  }
+  if (String(sourceUserId) === String(targetUserId)) {
+    return false;
+  }
+
+  const entries = [
+    { sourceKey: `user_settings_${sourceUserId}`, targetKey: `user_settings_${targetUserId}` },
+    { sourceKey: `api_key_${sourceUserId}`, targetKey: `api_key_${targetUserId}` },
+  ];
+
+  let changed = false;
+  for (const entry of entries) {
+    if (!overwrite) {
+      const existing = await getSetting({ userId: targetUserId, key: entry.targetKey });
+      if (!isBlankWorkspaceSettingsValue(existing)) {
+        continue;
+      }
+    }
+
+    const sourceValue = await getSetting({ userId: sourceUserId, key: entry.sourceKey });
+    if (isBlankWorkspaceSettingsValue(sourceValue)) {
+      continue;
+    }
+
+    await setSetting({
+      userId: targetUserId,
+      key: entry.targetKey,
+      value: sourceValue,
+    });
+    changed = true;
+  }
+
+  return changed;
+}
+
+async function ensureUserWorkspaceConfig(user) {
+  if (!user?.id || user.role === 'admin') {
+    return false;
+  }
+
+  const targetUserId = user.id;
+  const ownSettings = await getSetting({
+    userId: targetUserId,
+    key: `user_settings_${targetUserId}`,
+  });
+  if (!isBlankWorkspaceSettingsValue(ownSettings)) {
+    return false;
+  }
+
+  let sourceUserId = null;
+  if (currentUser?.role === 'admin' && String(currentUser.id) !== String(targetUserId)) {
+    sourceUserId = currentUser.id;
+  } else {
+    const users = await listUsers();
+    const adminUser = Array.isArray(users)
+      ? users.find((item) => item?.role === 'admin' && String(item?.id) !== String(targetUserId))
+      : null;
+    sourceUserId = adminUser?.id || null;
+  }
+
+  if (!sourceUserId) {
+    return false;
+  }
+
+  return cloneWorkspaceConfig({ sourceUserId, targetUserId, overwrite: false });
+}
+
+async function getWorkspaceOwnerId(user = currentUser) {
+  if (!user?.id) {
+    return null;
+  }
+  const userId = String(user.id);
+  if (user.role === 'admin') {
+    workspaceOwnerCache.set(userId, userId);
+    return userId;
+  }
+
+  const cached = workspaceOwnerCache.get(userId);
+  if (cached) {
+    return cached;
+  }
+
+  const ownerKey = `workspace_owner_${userId}`;
+  const explicitOwner = await getSetting({ userId, key: ownerKey });
+  if (explicitOwner && String(explicitOwner).trim()) {
+    const ownerId = String(explicitOwner).trim();
+    workspaceOwnerCache.set(userId, ownerId);
+    return ownerId;
+  }
+
+  const users = await listUsers();
+  const adminUser = Array.isArray(users) ? users.find((item) => item?.role === 'admin') : null;
+  const ownerId = adminUser?.id ? String(adminUser.id) : userId;
+  workspaceOwnerCache.set(userId, ownerId);
+  if (ownerId !== userId) {
+    await setSetting({ userId, key: ownerKey, value: ownerId });
+  }
+  return ownerId;
+}
+
 async function getPublishDestination(destinationId, userId) {
   const settings = await getUserSettings(userId);
   const destinations = Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [];
@@ -767,11 +932,27 @@ async function loadPersistedUser() {
 const PERMISSIONS = [
   'generate',
   'history',
+  'posts',
   'export',
   'bulkExport',
   'settings',
+  'settings.ai',
+  'settings.research',
+  'settings.keys',
+  'settings.publishing',
+  'settings.storage',
+  'settings.prompts',
+  'settings.usage',
+  'settings.updates',
+  'settings.admin',
+  'scraper',
+  'logs',
+  'scheduler',
   'notifications',
   'manageUsers',
+  'delete.history',
+  'delete.posts',
+  'delete.logs',
 ];
 
 const ALL_PERMISSIONS = [...PERMISSIONS];
@@ -1412,10 +1593,30 @@ function requirePermission(permission) {
   }
 }
 
+function requireAnyPermission(permissions = []) {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('Access denied');
+  }
+  const allowed = permissions.some((permission) => hasPermission(permission));
+  if (!allowed) {
+    throw new Error('Access denied');
+  }
+}
+
 function requireAdmin() {
   if (!currentUser || currentUser.role !== 'admin') {
     throw new Error('Admin access required');
   }
+}
+
+function logAuthError(context, error, meta = {}) {
+  console.error(`[Auth] ${context} failed`, {
+    message: error?.message,
+    code: error?.code,
+    statusCode: error?.statusCode || error?.response?.status || null,
+    stack: error?.stack,
+    ...meta,
+  });
 }
 
 ipcMain.handle('save-api-key', async (event, apiKey) => {
@@ -1539,10 +1740,23 @@ ipcMain.handle('get-settings', async () => {
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    const raw = await getSetting({
+    let raw = await getSetting({
       userId: currentUser.id,
       key: `user_settings_${currentUser.id}`,
     });
+    if ((!raw || String(raw).trim() === '') && currentUser.role !== 'admin') {
+      try {
+        const seeded = await ensureUserWorkspaceConfig(currentUser);
+        if (seeded) {
+          raw = await getSetting({
+            userId: currentUser.id,
+            key: `user_settings_${currentUser.id}`,
+          });
+        }
+      } catch (_seedError) {
+        // Fallback to empty settings if seeding fails.
+      }
+    }
     const parsed = raw ? JSON.parse(raw) : {};
     const oauthClients = Array.isArray(parsed.shopifyOauthClients) ? parsed.shopifyOauthClients : [];
     parsed.shopifyOauthClients = sanitizeShopifyOauthClientsForUi(oauthClients);
@@ -1551,6 +1765,22 @@ ipcMain.handle('get-settings', async () => {
     return { success: true, settings: parsed };
   } catch (error) {
     console.error('[IPC] get-settings error:', error.message);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-publish-destinations', async () => {
+  try {
+    requireAnyPermission(['scheduler', 'settings']);
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const settings = await getUserSettings(currentUser.id);
+    const destinations = Array.isArray(settings.publishDestinations)
+      ? settings.publishDestinations
+      : [];
+    return { success: true, destinations };
+  } catch (error) {
     return { success: false, error: error.message };
   }
 });
@@ -1839,32 +2069,96 @@ ipcMain.handle('save-user-settings', async (event, { userId, settings }) => {
 
 ipcMain.handle('get-history', async (event, { userId } = {}) => {
   try {
+    const startedAt = Date.now();
     requirePermission('history');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    const targetUserId = isAdmin() ? (userId || null) : currentUser.id;
-    const history = await listBlogs({
-      limit: 50,
-      userId: targetUserId,
-      isAdmin: isAdmin(),
-    });
-    const summary = await getHistorySummary({
-      userId: targetUserId,
-      isAdmin: isAdmin(),
-    });
-    // Try to append WordPress status counts for the default destination (best effort)
-    let wpCounts = null;
-    try {
-      const destination = await getPublishDestination(null, currentUser.id);
-      if (destination && ['wordpress', 'wordpress-token'].includes(destination.platform)) {
-        wpCounts = await fetchWordpressStatusCounts(destination);
-      }
-    } catch (e) {
-      wpCounts = null; // silent; UI can ignore if null
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const targetUserId = isAdmin() ? (userId || null) : workspaceOwnerId;
+    const cacheKey = `${isAdmin() ? 'admin' : 'user'}:${targetUserId || 'all'}`;
+    const now = Date.now();
+    const cachedResponse = historyResponseCache.get(cacheKey);
+    if (cachedResponse && now - cachedResponse.ts <= HISTORY_RESPONSE_CACHE_TTL_MS) {
+      console.log('[IPC] get-history cache hit in', Date.now() - startedAt, 'ms');
+      return cachedResponse.result;
+    }
+    if (historyInFlightRequests.has(cacheKey)) {
+      const sharedResult = await historyInFlightRequests.get(cacheKey);
+      console.log('[IPC] get-history shared pending request in', Date.now() - startedAt, 'ms');
+      return sharedResult;
     }
 
-    return { success: true, history, summary, wpCounts };
+    const requestPromise = (async () => {
+      const requestNow = Date.now();
+      const cachedSummaryEntry = historySummaryCache.get(cacheKey);
+      const cachedSummary =
+        cachedSummaryEntry && requestNow - cachedSummaryEntry.ts <= HISTORY_SUMMARY_CACHE_TTL_MS
+          ? cachedSummaryEntry.summary
+          : null;
+
+      const historyPromise = listBlogs({
+        limit: 50,
+        userId: targetUserId,
+        isAdmin: isAdmin(),
+      });
+
+      const summaryPromise = getHistorySummary({
+        userId: targetUserId,
+        isAdmin: isAdmin(),
+      })
+        .then((summary) => {
+          if (summary && typeof summary === 'object') {
+            historySummaryCache.set(cacheKey, { ts: Date.now(), summary });
+          }
+          return summary;
+        })
+        .catch(() => cachedSummary || null);
+
+      const history = await historyPromise;
+      const summary = await Promise.race([
+        summaryPromise,
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve(
+                cachedSummary || {
+                  totalCount: Array.isArray(history) ? history.length : 0,
+                  totalCost: 0,
+                }
+              ),
+            1200
+          )
+        ),
+      ]);
+      // Try to append WordPress status counts for the default destination (best effort)
+      let wpCounts = null;
+      try {
+        const destination = await getPublishDestination(null, targetUserId || currentUser.id);
+        if (destination && ['wordpress', 'wordpress-token'].includes(destination.platform)) {
+          const wpStatsPromise = fetchWordpressStatusCounts(destination, { timeoutMs: 700 }).catch(() => null);
+          wpCounts = await Promise.race([
+            wpStatsPromise,
+            new Promise((resolve) => setTimeout(() => resolve(null), 700)),
+          ]);
+        }
+      } catch (e) {
+        wpCounts = null; // silent; UI can ignore if null
+      }
+
+      const result = { success: true, history, summary, wpCounts };
+      historyResponseCache.set(cacheKey, { ts: Date.now(), result });
+      return result;
+    })();
+
+    historyInFlightRequests.set(cacheKey, requestPromise);
+    try {
+      const result = await requestPromise;
+      console.log('[IPC] get-history completed in', Date.now() - startedAt, 'ms');
+      return result;
+    } finally {
+      historyInFlightRequests.delete(cacheKey);
+    }
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1876,7 +2170,8 @@ ipcMain.handle('get-blog', async (event, { id }) => {
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    const blog = await getBlogById(id, { userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const blog = await getBlogById(id, { userId: workspaceOwnerId, isAdmin: isAdmin() });
     if (!blog) {
       return { success: false, error: 'Blog not found' };
     }
@@ -1892,7 +2187,9 @@ ipcMain.handle('update-blog', async (event, { blog }) => {
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    await updateBlog({ blog, userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    await updateBlog({ blog, userId: workspaceOwnerId, isAdmin: isAdmin() });
+    invalidateHistoryCaches();
     await logActivity({
       userId: currentUser.id,
       action: 'blog.update',
@@ -1907,10 +2204,13 @@ ipcMain.handle('update-blog', async (event, { blog }) => {
 ipcMain.handle('delete-blog', async (event, { id }) => {
   try {
     requirePermission('history');
+    requirePermission('delete.history');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    await deleteBlog({ id, userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    await deleteBlog({ id, userId: workspaceOwnerId, isAdmin: isAdmin() });
+    invalidateHistoryCaches();
     await logActivity({
       userId: currentUser.id,
       action: 'blog.delete',
@@ -1925,10 +2225,13 @@ ipcMain.handle('delete-blog', async (event, { id }) => {
 ipcMain.handle('clear-blogs', async () => {
   try {
     requirePermission('history');
+    requirePermission('delete.history');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    await clearBlogs({ userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    await clearBlogs({ userId: workspaceOwnerId, isAdmin: isAdmin() });
+    invalidateHistoryCaches();
     await logActivity({
       userId: currentUser.id,
       action: 'blog.clear',
@@ -1948,8 +2251,9 @@ ipcMain.handle('export-blog', async (event, { blogId, blog, formats }) => {
     const exportFormats = Array.isArray(formats) ? formats : ['markdown'];
     console.log('[IPC] Export formats:', exportFormats);
 
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     const data = blogId
-      ? await getBlogById(blogId, { userId: currentUser?.id, isAdmin: isAdmin() })
+      ? await getBlogById(blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() })
       : blog;
 
     if (!data) {
@@ -2166,7 +2470,8 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       // Pull latest stored image paths if current payload is missing them.
       if ((!imageUrl || !localImagePath) && blog?.id) {
         try {
-          const latest = await getBlogById(blog.id, { userId: currentUser.id, isAdmin: isAdmin() });
+          const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+          const latest = await getBlogById(blog.id, { userId: workspaceOwnerId, isAdmin: isAdmin() });
           if (latest) {
             imageUrl = imageUrl || latest.image_url || latest.imageUrl || null;
             localImagePath =
@@ -2391,15 +2696,31 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
     }
 
     // Record publish history
+    const remotePostId =
+      result?.id ??
+      result?.postId ??
+      result?.post_id ??
+      result?.articleId ??
+      result?.article?.id ??
+      null;
+    const publishedUrl =
+      result?.url ||
+      result?.link ||
+      result?.postUrl ||
+      result?.post_url ||
+      result?.article?.url ||
+      null;
+
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     await addPublishHistory({
       blogId: blog.id || null,
-      remotePostId: result?.id || null,
+      remotePostId,
       destinationId: destination.id || null,
       destinationName: destination.name || platform,
       platform,
       status: publishStatus,
-      publishedUrl: result?.url || result?.link || null,
-      userId: currentUser?.id,
+      publishedUrl,
+      userId: workspaceOwnerId || currentUser?.id,
     });
 
     await logActivity({
@@ -2536,7 +2857,8 @@ ipcMain.handle('export-bulk', async (event, { blogIds, format }) => {
 
     const exportDir = result.filePaths[0];
     rememberExportDir(exportDir);
-    const blogs = await getBlogsByIds(ids, { userId: currentUser?.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const blogs = await getBlogsByIds(ids, { userId: workspaceOwnerId, isAdmin: isAdmin() });
     const files = [];
 
     for (const item of blogs) {
@@ -2738,9 +3060,127 @@ ipcMain.handle('download-image', async (event, { url, title }) => {
   }
 });
 
+ipcMain.handle('select-local-image-file', async () => {
+  try {
+    requireAnyPermission(['history', 'posts', 'generate']);
+    const { dialog } = require('electron');
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Select image file',
+      filters: [
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePaths?.[0]) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, path: result.filePaths[0] };
+  } catch (error) {
+    return { success: false, error: error.message || 'Unable to select image file' };
+  }
+});
+
+ipcMain.handle('attach-local-blog-image', async (event, { blogId = null, title = '', localImagePath = '' } = {}) => {
+  try {
+    requireAnyPermission(['history', 'posts', 'generate']);
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+
+    const pickedPath = String(localImagePath || '').trim();
+    if (!pickedPath) {
+      throw new Error('Image file path is required');
+    }
+    if (!fs.existsSync(pickedPath)) {
+      throw new Error('Selected image file does not exist');
+    }
+
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    let blog = null;
+    if (blogId) {
+      blog = await getBlogById(blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() });
+    }
+
+    const rawSettings = await getSetting({
+      userId: currentUser.id,
+      key: `user_settings_${currentUser.id}`,
+    });
+    const userSettings = rawSettings ? JSON.parse(rawSettings) : {};
+
+    let finalImageUrl = pathToFileURL(pickedPath).href;
+    let finalLocalPath = pickedPath;
+
+    if (userSettings.imageStorage?.enabled) {
+      try {
+        const uploadedUrl = await uploadImageToStorage({
+          blog: blog || { id: blogId, title },
+          imageUrl: '',
+          localImagePath: pickedPath,
+          storage: userSettings.imageStorage,
+          filenameBase: title || blog?.title || path.parse(pickedPath).name || 'blog-image',
+        });
+        if (uploadedUrl) {
+          finalImageUrl = uploadedUrl;
+          finalLocalPath = '';
+        }
+      } catch (err) {
+        console.warn('[Image] Local image storage upload failed, falling back to local path:', err.message);
+      }
+    }
+
+    let updatedBlog = null;
+    if (blogId && blog) {
+      const existingGallery = normalizeImageGallery(
+        blog.imageGallery || blog.image_gallery,
+        blog.imageUrl || blog.image_url
+      );
+      const nextGallery = appendImageToGallery(existingGallery, finalImageUrl);
+      updatedBlog = {
+        ...blog,
+        imageUrl: finalImageUrl,
+        imageGallery: nextGallery,
+        localImagePath: finalLocalPath,
+      };
+      await updateBlog({ blog: updatedBlog, userId: workspaceOwnerId, isAdmin: isAdmin() });
+      invalidateHistoryCaches();
+    }
+
+    await addLog({
+      level: 'info',
+      category: 'image',
+      message: `Attached local image${title ? ` for "${title}"` : ''}`,
+      details: {
+        cost: 0,
+        tokensUsed: 0,
+        blogId: blogId || null,
+        blogTitle: title || blog?.title || '',
+        imagesGenerated: 1,
+        source: 'local-upload',
+        uploadedToStorage: finalLocalPath ? false : true,
+      },
+      blogId: blogId || null,
+      tokensUsed: 0,
+      cost: 0,
+      userId: currentUser.id,
+    });
+
+    return {
+      success: true,
+      imageUrl: finalImageUrl,
+      localPath: finalLocalPath,
+      imageGallery: updatedBlog?.imageGallery || updatedBlog?.image_gallery || null,
+      blog: updatedBlog,
+    };
+  } catch (error) {
+    return { success: false, error: error.message || 'Unable to attach local image' };
+  }
+});
+
 ipcMain.handle('upload-image-storage', async (event, { blogId = null, title = '', imageUrl = '', localImagePath = '' } = {}) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['history', 'posts', 'generate']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -2753,9 +3193,10 @@ ipcMain.handle('upload-image-storage', async (event, { blogId = null, title = ''
       return { success: false, skipped: true, error: 'Image storage not enabled' };
     }
 
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     let blog = null;
     if (blogId) {
-      blog = await getBlogById(blogId, { userId: currentUser.id, isAdmin: isAdmin() });
+      blog = await getBlogById(blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() });
     }
       const uploadedUrl = await uploadImageToStorage({
         blog: blog || { id: blogId, title },
@@ -2774,7 +3215,8 @@ ipcMain.handle('upload-image-storage', async (event, { blogId = null, title = ''
         imageUrl: uploadedUrl,
         localImagePath: '',
       };
-      await updateBlog({ blog: updated, userId: currentUser.id, isAdmin: isAdmin() });
+      await updateBlog({ blog: updated, userId: workspaceOwnerId, isAdmin: isAdmin() });
+      invalidateHistoryCaches();
     }
 
     return { success: true, url: uploadedUrl };
@@ -2920,7 +3362,8 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
       console.warn('[Image] External storage upload failed:', err.message);
     }
     if (blogId) {
-      const existing = await getBlogById(blogId, { userId: currentUser.id, isAdmin: isAdmin() });
+      const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+      const existing = await getBlogById(blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() });
       if (existing) {
         const existingGallery = normalizeImageGallery(
           existing.imageGallery || existing.image_gallery,
@@ -2934,7 +3377,8 @@ ipcMain.handle('generate-blog-image', async (event, { blogId, title, content }) 
           localImagePath: finalLocalPath || existing.local_image_path || existing.localImagePath || '',
           cost: (existing.cost || 0) + (imageResult.cost || 0),
         };
-        await updateBlog({ blog: updatedBlog, userId: currentUser.id, isAdmin: isAdmin() });
+        await updateBlog({ blog: updatedBlog, userId: workspaceOwnerId, isAdmin: isAdmin() });
+        invalidateHistoryCaches();
       }
     }
 
@@ -3592,9 +4036,11 @@ ipcMain.handle(
     sendProgress(9, 'Complete!');
 
     if (mergedSettings.autoSave !== false) {
-      const savedId = await saveBlog(result, currentUser.id);
+      const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+      const savedId = await saveBlog(result, workspaceOwnerId || currentUser.id);
       if (savedId) {
         result.id = savedId;
+        invalidateHistoryCaches();
       }
     }
     await updateApiUsage({
@@ -3619,6 +4065,10 @@ ipcMain.handle(
       details: {
         cost: estimatedCost,
         tokensUsed: usage.promptTokens + usage.completionTokens,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        provider,
+        model: chatModel,
         blogId: result.id || null,
         blogTitle: result.title,
       },
@@ -3661,6 +4111,11 @@ ipcMain.handle('get-auth-state', async () => {
       }
 
       currentUser = state?.currentUser || null;
+      try {
+        await ensureUserWorkspaceConfig(currentUser);
+      } catch (_seedError) {
+        // Ignore optional workspace-seeding errors on auth-state bootstrap.
+      }
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
       } else {
@@ -3678,9 +4133,15 @@ ipcMain.handle('get-auth-state', async () => {
 
     const count = await getUserCount();
     await loadPersistedUser();
+    try {
+      await ensureUserWorkspaceConfig(currentUser);
+    } catch (_seedError) {
+      // Ignore optional workspace-seeding errors on local auth-state bootstrap.
+    }
 
     let userData = null;
     if (currentUser) {
+      const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
       // Load user data from database on session restore
       const userSettingsRaw = await getSetting({
         userId: currentUser.id,
@@ -3692,8 +4153,9 @@ ipcMain.handle('get-auth-state', async () => {
         key: `api_key_${currentUser.id}`,
       });
       const userIsAdmin = currentUser.role === 'admin';
-      const usage = await getApiUsage({ userId: currentUser.id, isAdmin: userIsAdmin });
-      const historySummary = await getHistorySummary({ userId: currentUser.id, isAdmin: userIsAdmin });
+      const scopedUserId = userIsAdmin ? currentUser.id : workspaceOwnerId;
+      const usage = await getApiUsage({ userId: scopedUserId, isAdmin: userIsAdmin });
+      const historySummary = await getHistorySummary({ userId: scopedUserId, isAdmin: userIsAdmin });
 
       userData = {
         settings: userSettings,
@@ -3731,6 +4193,8 @@ ipcMain.handle('setup-admin', async (event, { username, password }) => {
       }
       store.set(SERVER_API_ACCESS_TOKEN_KEY, accessToken);
       currentUser = response?.user || null;
+      userListCache = { ts: 0, users: null, promise: null };
+      invalidateHistoryCaches();
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
       }
@@ -3766,6 +4230,7 @@ ipcMain.handle('setup-admin', async (event, { username, password }) => {
 
     return { success: true, user: sanitizeUser(admin) };
   } catch (error) {
+    logAuthError('setup-admin', error, { username });
     return {
       success: false,
       error: error.message,
@@ -3785,8 +4250,23 @@ ipcMain.handle('login', async (event, { username, password }) => {
       }
       store.set(SERVER_API_ACCESS_TOKEN_KEY, accessToken);
       currentUser = response?.user || null;
+      invalidateHistoryCaches();
+      try {
+        await ensureUserWorkspaceConfig(currentUser);
+      } catch (_seedError) {
+        // Keep login fast and resilient even if settings clone is unavailable.
+      }
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
+        try {
+          await logActivity({
+            userId: currentUser.id,
+            action: 'auth.login',
+            details: `${currentUser.username || 'user'} logged in`,
+          });
+        } catch (_activityError) {
+          // Ignore activity logging failures in server mode login path.
+        }
       }
       return {
         success: true,
@@ -3809,7 +4289,20 @@ ipcMain.handle('login', async (event, { username, password }) => {
     }
 
     currentUser = user;
+    try {
+      await ensureUserWorkspaceConfig(user);
+    } catch (_seedError) {
+      // Do not block local login on optional workspace seeding.
+    }
+    userListCache = { ts: 0, users: null, promise: null };
+    workspaceOwnerCache.clear();
+    invalidateHistoryCaches();
     store.set(CURRENT_USER_KEY, user.id);
+    try {
+      await touchUserLastOnline({ id: user.id });
+    } catch (_onlineError) {
+      // Keep login resilient even if last-online update fails.
+    }
     await logActivity({
       userId: user.id,
       action: 'auth.login',
@@ -3828,9 +4321,11 @@ ipcMain.handle('login', async (event, { username, password }) => {
       key: `api_key_${user.id}`,
     });
 
+    const workspaceOwnerId = await getWorkspaceOwnerId(user);
     const userIsAdmin = user.role === 'admin';
-    const usage = await getApiUsage({ userId: user.id, isAdmin: userIsAdmin });
-    const historySummary = await getHistorySummary({ userId: user.id, isAdmin: userIsAdmin });
+    const scopedUserId = userIsAdmin ? user.id : workspaceOwnerId;
+    const usage = await getApiUsage({ userId: scopedUserId, isAdmin: userIsAdmin });
+    const historySummary = await getHistorySummary({ userId: scopedUserId, isAdmin: userIsAdmin });
 
     const recentActivities = await listActivities({
       userId: user.id,
@@ -3851,6 +4346,7 @@ ipcMain.handle('login', async (event, { username, password }) => {
       },
     };
   } catch (error) {
+    logAuthError('login', error, { username });
     return {
       success: false,
       error: error.message,
@@ -3863,7 +4359,21 @@ ipcMain.handle('login', async (event, { username, password }) => {
 ipcMain.handle('logout', async () => {
   try {
     if (isServerApiEnabled()) {
+      if (currentUser?.id) {
+        try {
+          await logActivity({
+            userId: currentUser.id,
+            action: 'auth.logout',
+            details: `${currentUser.username || 'user'} logged out`,
+          });
+        } catch (_activityError) {
+          // Ignore activity logging failures in server mode logout path.
+        }
+      }
       currentUser = null;
+      workspaceOwnerCache.clear();
+      userListCache = { ts: 0, users: null, promise: null };
+      invalidateHistoryCaches();
       store.delete(SERVER_API_ACCESS_TOKEN_KEY);
       store.delete(CURRENT_USER_KEY);
       return { success: true };
@@ -3877,6 +4387,9 @@ ipcMain.handle('logout', async () => {
       });
     }
     currentUser = null;
+    workspaceOwnerCache.clear();
+    userListCache = { ts: 0, users: null, promise: null };
+    invalidateHistoryCaches();
     store.delete(CURRENT_USER_KEY);
     return { success: true };
   } catch (error) {
@@ -3886,10 +4399,34 @@ ipcMain.handle('logout', async () => {
 
 ipcMain.handle('list-users', async () => {
   try {
+    const startedAt = Date.now();
     requireAdmin();
-    const users = await listUsers();
+    const now = Date.now();
+    if (userListCache.users && now - userListCache.ts <= USER_LIST_CACHE_TTL_MS) {
+      console.log('[IPC] list-users cache hit in', Date.now() - startedAt, 'ms');
+      return { success: true, users: userListCache.users };
+    }
+    if (userListCache.promise) {
+      const users = await userListCache.promise;
+      console.log('[IPC] list-users shared pending request in', Date.now() - startedAt, 'ms');
+      return { success: true, users };
+    }
+
+    userListCache.promise = listUsers().then((users) => {
+      const nextUsers = Array.isArray(users) ? users : [];
+      userListCache = {
+        ts: Date.now(),
+        users: nextUsers,
+        promise: null,
+      };
+      return nextUsers;
+    });
+
+    const users = await userListCache.promise;
+    console.log('[IPC] list-users completed in', Date.now() - startedAt, 'ms');
     return { success: true, users };
   } catch (error) {
+    userListCache.promise = null;
     return { success: false, error: error.message };
   }
 });
@@ -3916,7 +4453,7 @@ ipcMain.handle('create-user', async (event, { username, password, role, status, 
 
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = hashPassword(nextPassword, salt);
-    await createUser({
+    const createdUserId = await createUser({
       username: nextUsername,
       email: '',
       passwordHash: hash,
@@ -3926,11 +4463,31 @@ ipcMain.handle('create-user', async (event, { username, password, role, status, 
       permissions: nextRole === 'admin' ? ALL_PERMISSIONS : safePermissions,
     });
 
+    const createdUser = await getUserByUsername(nextUsername);
+    const targetUserId = createdUser?.id || createdUserId || null;
+    if (currentUser?.id && targetUserId) {
+      const ownerId = nextRole === 'admin' ? String(targetUserId) : String(currentUser.id);
+      await setSetting({
+        userId: targetUserId,
+        key: `workspace_owner_${targetUserId}`,
+        value: ownerId,
+      });
+      workspaceOwnerCache.set(String(targetUserId), ownerId);
+      await cloneWorkspaceConfig({
+        sourceUserId: currentUser.id,
+        targetUserId,
+        overwrite: true,
+      });
+    }
+
     await logActivity({
       userId: currentUser?.id,
       action: 'admin.createUser',
       details: `Created user "${nextUsername}"`,
     });
+
+    userListCache = { ts: 0, users: null, promise: null };
+    workspaceOwnerCache.clear();
 
     return { success: true };
   } catch (error) {
@@ -3974,6 +4531,45 @@ ipcMain.handle('update-user-access', async (event, { userId, permissions, role, 
       details: `Updated access for "${user.username}"`,
     });
 
+    userListCache = { ts: 0, users: null, promise: null };
+    workspaceOwnerCache.clear();
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('change-user-password', async (event, { userId, password }) => {
+  try {
+    requireAdmin();
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    const nextPassword = String(password || '');
+    if (!nextPassword) {
+      throw new Error('Password is required');
+    }
+    const user = await getUserById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(nextPassword, salt);
+    await updateUserPassword({
+      id: userId,
+      passwordHash: hash,
+      passwordSalt: salt,
+    });
+
+    await logActivity({
+      userId: currentUser?.id,
+      action: 'admin.changeUserPassword',
+      details: `Changed password for "${user.username}"`,
+    });
+
+    userListCache = { ts: 0, users: null, promise: null };
+
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -4006,6 +4602,8 @@ ipcMain.handle('delete-user', async (event, { userId }) => {
       details: `Deleted user "${user.username}"`,
     });
 
+    userListCache = { ts: 0, users: null, promise: null };
+
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -4031,23 +4629,126 @@ ipcMain.handle('get-activities', async () => {
 
 ipcMain.handle(
   'get-logs',
-  async (event, { limit = 100, offset = 0, level = null, category = null, dateFrom = null, dateTo = null, search = null } = {}) => {
+  async (
+    event,
+    { limit = 100, offset = 0, level = null, category = null, dateFrom = null, dateTo = null, search = null, includeActivities = true } = {}
+  ) => {
   try {
+    requireAnyPermission(['logs', 'notifications']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const scopedUserId = isAdmin() ? currentUser.id : workspaceOwnerId;
+    const mergedFetchLimit = includeActivities ? Math.min(Math.max(limit * 5, 200), 1000) : limit;
+    const mergedFetchOffset = includeActivities ? 0 : offset;
     const logs = await listLogs({
-      userId: currentUser.id,
+      userId: scopedUserId,
       isAdmin: isAdmin(),
-      limit,
-      offset,
+      limit: mergedFetchLimit,
+      offset: mergedFetchOffset,
       level,
       category,
       dateFrom,
       dateTo,
       search,
     });
-    return { success: true, logs };
+    let merged = Array.isArray(logs) ? [...logs] : [];
+
+    if (includeActivities) {
+      const actionToCategory = (action) => {
+        const prefix = String(action || '').split('.')[0];
+        if (!prefix) return 'activity';
+        if (prefix === 'blog') return 'history';
+        if (prefix === 'auth') return 'auth';
+        if (prefix === 'user' || prefix === 'users') return 'admin';
+        if (prefix === 'logs') return 'logs';
+        if (prefix === 'notification' || prefix === 'notifications') return 'notifications';
+        return prefix;
+      };
+
+      const dateFromMs = dateFrom ? new Date(dateFrom).getTime() : null;
+      const dateToMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+      const searchText = String(search || '').trim().toLowerCase();
+
+      try {
+        const activities = await listActivities({
+          userId: scopedUserId,
+          isAdmin: isAdmin(),
+          limit: Math.min(Math.max(limit * 5, 200), 1000),
+          offset: 0,
+        });
+
+        const activityLogs = (Array.isArray(activities) ? activities : [])
+          .map((activity) => {
+            const mappedCategory = actionToCategory(activity?.action);
+            const timestamp = activity?.createdAt || activity?.created_at || null;
+            return {
+              id: `activity-${activity?.id || Math.random().toString(16).slice(2)}`,
+              timestamp,
+              level: 'info',
+              category: mappedCategory,
+              message: activity?.details || activity?.action || 'Activity',
+              details: JSON.stringify({
+                source: 'activity',
+                action: activity?.action || null,
+                username: activity?.username || null,
+              }),
+              blogId: null,
+              tokensUsed: undefined,
+              cost: undefined,
+              userId: activity?.userId || activity?.user_id || scopedUserId,
+              username: activity?.username || null,
+            };
+          })
+          .filter((entry) => {
+            if (level && String(level).trim() && entry.level !== level) return false;
+            if (category && String(category).trim() && entry.category !== category) return false;
+            if (searchText) {
+              const haystack = `${entry.message || ''} ${entry.category || ''}`.toLowerCase();
+              if (!haystack.includes(searchText)) return false;
+            }
+            const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : NaN;
+            if (Number.isNaN(ts)) return true;
+            if (dateFromMs !== null && ts < dateFromMs) return false;
+            if (dateToMs !== null && ts > dateToMs) return false;
+            return true;
+          });
+
+      merged = merged.concat(activityLogs);
+      } catch (activityError) {
+        console.warn('[Logs] listActivities merge failed:', activityError?.message || activityError);
+      }
+
+      try {
+        const users = await listUsers();
+        const usernameById = new Map(
+          (Array.isArray(users) ? users : []).map((u) => [String(u?.id || ''), String(u?.username || '')])
+        );
+        merged = merged.map((entry) => {
+          const entryUserId = String(entry?.userId || '');
+          const mappedName =
+            String(entry?.username || '').trim() ||
+            (entryUserId ? String(usernameById.get(entryUserId) || '').trim() : '') ||
+            (entryUserId === String(currentUser?.id || '') ? String(currentUser?.username || '') : '');
+          return {
+            ...entry,
+            username: mappedName || null,
+          };
+        });
+      } catch (userMapError) {
+        console.warn('[Logs] user mapping failed:', userMapError?.message || userMapError);
+      }
+
+      merged.sort((a, b) => {
+        const aTime = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const bTime = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return bTime - aTime;
+      });
+      merged = merged.slice(offset, offset + limit);
+    }
+
+    return { success: true, logs: merged };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -4055,11 +4756,14 @@ ipcMain.handle(
 
 ipcMain.handle('get-logs-stats', async (event, { dateFrom = null, dateTo = null, search = null } = {}) => {
   try {
+    requireAnyPermission(['logs', 'notifications']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const scopedUserId = isAdmin() ? currentUser.id : workspaceOwnerId;
     const stats = await getLogStats({
-      userId: currentUser.id,
+      userId: scopedUserId,
       isAdmin: isAdmin(),
       dateFrom,
       dateTo,
@@ -4075,11 +4779,14 @@ ipcMain.handle(
   'get-logs-trend',
   async (event, { dateFrom = null, dateTo = null, search = null, category = null } = {}) => {
   try {
+    requireAnyPermission(['logs', 'notifications']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const scopedUserId = isAdmin() ? currentUser.id : workspaceOwnerId;
     const trend = await getLogTrend({
-      userId: currentUser.id,
+      userId: scopedUserId,
       isAdmin: isAdmin(),
       dateFrom,
       dateTo,
@@ -4094,10 +4801,14 @@ ipcMain.handle(
 
 ipcMain.handle('clear-logs', async () => {
   try {
+    requireAnyPermission(['logs', 'notifications']);
+    requirePermission('delete.logs');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    await clearLogs({ userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const scopedUserId = isAdmin() ? currentUser.id : workspaceOwnerId;
+    await clearLogs({ userId: scopedUserId, isAdmin: isAdmin() });
     await logActivity({
       userId: currentUser?.id,
       action: 'logs.clear',
@@ -4111,6 +4822,7 @@ ipcMain.handle('clear-logs', async () => {
 
 ipcMain.handle('get-notifications', async () => {
   try {
+    requirePermission('notifications');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4127,6 +4839,7 @@ ipcMain.handle('get-notifications', async () => {
 
 ipcMain.handle('mark-notification-read', async (event, { id }) => {
   try {
+    requirePermission('notifications');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4139,6 +4852,7 @@ ipcMain.handle('mark-notification-read', async (event, { id }) => {
 
 ipcMain.handle('clear-notifications', async () => {
   try {
+    requirePermission('notifications');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4154,7 +4868,11 @@ ipcMain.handle('get-api-usage', async () => {
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
-    const usage = await getApiUsage({ userId: currentUser.id, isAdmin: isAdmin() });
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const usage = await getApiUsage({
+      userId: isAdmin() ? currentUser.id : workspaceOwnerId,
+      isAdmin: isAdmin(),
+    });
     return { success: true, usage };
   } catch (error) {
     return { success: false, error: error.message };
@@ -4226,8 +4944,23 @@ ipcMain.handle('test-server-api-config', async (event, { baseUrl, timeoutMs } = 
   }
 });
 
+async function writeSchedulerLog({ level = 'info', message = '', details = null } = {}) {
+  try {
+    await addLog({
+      level,
+      category: 'scheduler',
+      message: String(message || '').trim() || 'Scheduler event',
+      details: details || null,
+      userId: currentUser?.id || null,
+    });
+  } catch (error) {
+    console.warn('[Scheduler] Unable to write app log:', error?.message || error);
+  }
+}
+
 ipcMain.handle('scheduler-list-jobs', async (event, payload = {}) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4236,6 +4969,8 @@ ipcMain.handle('scheduler-list-jobs', async (event, payload = {}) => {
       accessToken,
       status: payload.status || '',
       shopId: payload.shopId || '',
+      destinationId: payload.destinationId || '',
+      platform: payload.platform || '',
       limit: payload.limit || 500,
     });
     return { success: true, jobs: response.jobs || [] };
@@ -4246,19 +4981,38 @@ ipcMain.handle('scheduler-list-jobs', async (event, payload = {}) => {
 
 ipcMain.handle('scheduler-create-job', async (event, { job }) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
     }
     const response = await serverCreateSchedulerJob({ accessToken, job: job || {} });
+    await writeSchedulerLog({
+      level: 'info',
+      message: `Schedule created${response?.job?.topic ? `: "${response.job.topic}"` : ''}`,
+      details: {
+        action: 'scheduler.create',
+        jobId: response?.job?._id || response?.job?.id || null,
+        topic: response?.job?.topic || job?.topic || '',
+        destinationId: response?.job?.destination_id || job?.destinationId || job?.destination_id || '',
+        platform: response?.job?.platform || job?.platform || '',
+        runAt: response?.job?.run_at || job?.runAt || job?.run_at || '',
+      },
+    });
     return { success: true, job: response.job || null };
   } catch (error) {
+    await writeSchedulerLog({
+      level: 'error',
+      message: 'Failed to create schedule',
+      details: { action: 'scheduler.create', error: error.message },
+    });
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle('scheduler-update-job', async (event, { jobId, updates }) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4268,14 +5022,36 @@ ipcMain.handle('scheduler-update-job', async (event, { jobId, updates }) => {
       jobId: String(jobId || ''),
       updates: updates || {},
     });
+    const nextStatus = String(updates?.status || response?.job?.status || '').trim();
+    const isPauseToggle = nextStatus === 'paused' || nextStatus === 'pending';
+    await writeSchedulerLog({
+      level: 'info',
+      message: isPauseToggle
+        ? nextStatus === 'paused'
+          ? 'Schedule paused'
+          : 'Schedule resumed'
+        : 'Schedule updated',
+      details: {
+        action: 'scheduler.update',
+        jobId: String(jobId || ''),
+        updates: updates || {},
+        status: nextStatus,
+      },
+    });
     return { success: true, job: response.job || null };
   } catch (error) {
+    await writeSchedulerLog({
+      level: 'error',
+      message: 'Failed to update schedule',
+      details: { action: 'scheduler.update', jobId: String(jobId || ''), error: error.message },
+    });
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle('scheduler-delete-job', async (event, { jobId }) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4284,14 +5060,25 @@ ipcMain.handle('scheduler-delete-job', async (event, { jobId }) => {
       accessToken,
       jobId: String(jobId || ''),
     });
+    await writeSchedulerLog({
+      level: 'warning',
+      message: 'Schedule deleted',
+      details: { action: 'scheduler.delete', jobId: String(jobId || ''), deleted: !!response.deleted },
+    });
     return { success: true, deleted: !!response.deleted };
   } catch (error) {
+    await writeSchedulerLog({
+      level: 'error',
+      message: 'Failed to delete schedule',
+      details: { action: 'scheduler.delete', jobId: String(jobId || ''), error: error.message },
+    });
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle('scheduler-import-csv', async (event, { csvContent, defaultShopId = '' }) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4301,18 +5088,33 @@ ipcMain.handle('scheduler-import-csv', async (event, { csvContent, defaultShopId
       csvContent: String(csvContent || ''),
       defaultShopId: String(defaultShopId || ''),
     });
+    await writeSchedulerLog({
+      level: Array.isArray(response.errors) && response.errors.length > 0 ? 'warning' : 'info',
+      message: 'Scheduler CSV import completed',
+      details: {
+        action: 'scheduler.importCsv',
+        created: response.created || 0,
+        errors: Array.isArray(response.errors) ? response.errors.slice(0, 30) : [],
+      },
+    });
     return {
       success: true,
       created: response.created || 0,
       errors: Array.isArray(response.errors) ? response.errors : [],
     };
   } catch (error) {
+    await writeSchedulerLog({
+      level: 'error',
+      message: 'Scheduler CSV import failed',
+      details: { action: 'scheduler.importCsv', error: error.message },
+    });
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle('scheduler-list-logs', async (event, payload = {}) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4331,6 +5133,7 @@ ipcMain.handle('scheduler-list-logs', async (event, payload = {}) => {
 
 ipcMain.handle('scheduler-add-log', async (event, { log }) => {
   try {
+    requirePermission('scheduler');
     const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
     if (!accessToken) {
       throw new Error('Not authenticated');
@@ -4339,14 +5142,39 @@ ipcMain.handle('scheduler-add-log', async (event, { log }) => {
       accessToken,
       log: log || {},
     });
+    const normalizedStatus = String(log?.status || '').toLowerCase();
+    const level =
+      normalizedStatus === 'error'
+        ? 'error'
+        : normalizedStatus === 'warning'
+        ? 'warning'
+        : 'info';
+    await writeSchedulerLog({
+      level,
+      message: String(log?.message || 'Scheduler event'),
+      details: {
+        action: 'scheduler.log',
+        jobId: log?.jobId || null,
+        shopId: log?.shopId || null,
+        status: log?.status || 'info',
+        meta: log?.meta || null,
+        schedulerLogId: response?.id || null,
+      },
+    });
     return { success: true, id: response.id || null };
   } catch (error) {
+    await writeSchedulerLog({
+      level: 'error',
+      message: 'Failed to append scheduler log',
+      details: { action: 'scheduler.log', error: error.message },
+    });
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle('check-app-update', async (event, { currentVersion = '', channel = 'stable' } = {}) => {
   try {
+    requirePermission('settings');
     const result = await serverCheckLatestUpdate({
       currentVersion: String(currentVersion || ''),
       channel: String(channel || 'stable'),
@@ -4357,9 +5185,90 @@ ipcMain.handle('check-app-update', async (event, { currentVersion = '', channel 
   }
 });
 
+ipcMain.handle('get-app-version', async () => {
+  try {
+    return { success: true, version: app.getVersion() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('download-app-update', async (event, { url = '', fileName = '' } = {}) => {
+  try {
+    requirePermission('settings');
+    const downloadUrl = String(url || '').trim();
+    if (!/^https?:\/\//i.test(downloadUrl)) {
+      throw new Error('A valid update URL is required');
+    }
+
+    const parsed = new URL(downloadUrl);
+    const fallbackName = path.basename(parsed.pathname || '') || 'app-update.exe';
+    const safeName = String(fileName || fallbackName).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+    const targetName = safeName || `app-update-${Date.now()}.exe`;
+    const downloadsDir = app.getPath('downloads');
+    const targetPath = path.join(downloadsDir, targetName);
+    const tempPath = `${targetPath}.part`;
+
+    const response = await axios.get(downloadUrl, {
+      responseType: 'stream',
+      timeout: 10 * 60 * 1000,
+      maxRedirects: 5,
+      headers: { ...PUBLISH_AXIOS_DEFAULTS.headers },
+    });
+
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(tempPath);
+      response.data.pipe(writer);
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+      response.data.on('error', reject);
+    });
+
+    if (fs.existsSync(targetPath)) {
+      fs.unlinkSync(targetPath);
+    }
+    fs.renameSync(tempPath, targetPath);
+
+    return { success: true, filePath: targetPath };
+  } catch (error) {
+    return { success: false, error: error.message || 'Update download failed' };
+  }
+});
+
+ipcMain.handle('install-app-update', async (event, { filePath = '' } = {}) => {
+  try {
+    requirePermission('settings');
+    const installerPath = String(filePath || '').trim();
+    if (!installerPath) {
+      throw new Error('Installer path is required');
+    }
+    if (!fs.existsSync(installerPath)) {
+      throw new Error('Downloaded installer was not found');
+    }
+
+    if (process.platform === 'win32') {
+      const child = spawn(installerPath, [], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      setTimeout(() => app.quit(), 300);
+      return { success: true };
+    }
+
+    const opened = await shell.openPath(installerPath);
+    if (opened) {
+      throw new Error(opened);
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message || 'Unable to launch installer' };
+  }
+});
+
 ipcMain.handle('scrape-website', async (event, { url, platform = 'generic', mode = 'static' }) => {
   try {
-    requirePermission('generate');
+    requireAnyPermission(['scraper', 'generate']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4377,7 +5286,7 @@ ipcMain.handle('scrape-website', async (event, { url, platform = 'generic', mode
 
 ipcMain.handle('save-product-database', async (event, { products }) => {
   try {
-    requirePermission('generate');
+    requireAnyPermission(['scraper', 'generate']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4396,7 +5305,7 @@ ipcMain.handle('save-product-database', async (event, { products }) => {
 
 ipcMain.handle('get-product-database', async () => {
   try {
-    requirePermission('generate');
+    requireAnyPermission(['scraper', 'generate']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -4631,12 +5540,16 @@ async function fetchShopifyPosts({ shopDomain, accessToken, apiVersion = '2024-0
   throw new Error('Shopify sync failed after retries');
 }
 
-async function fetchWordpressPostDetail({ destination, postId }) {
+async function fetchWordpressPostDetail({ destination, postId, timeoutMs = PUBLISH_AXIOS_DEFAULTS.timeout }) {
   const baseUrl = requireHttps(normalizeBaseUrl(ensureValue('WordPress site URL', destination.baseUrl)));
   const authHeader = buildWpAuthHeader(destination);
   const endpoint = `${baseUrl}/wp-json/aiblog/v1/post/${postId}`;
+  const requestTimeout =
+    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : PUBLISH_AXIOS_DEFAULTS.timeout;
   const response = await axios.get(endpoint, {
-    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    timeout: requestTimeout,
     headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, Authorization: authHeader },
   });
   return response.data;
@@ -4678,12 +5591,23 @@ async function deleteWordpressPost({ destination, postId, force = false }) {
   return response.data;
 }
 
-async function fetchShopifyArticleDetail({ shopDomain, accessToken, apiVersion = '2024-01', blogId, articleId }) {
+async function fetchShopifyArticleDetail({
+  shopDomain,
+  accessToken,
+  apiVersion = '2024-01',
+  blogId,
+  articleId,
+  timeoutMs = PUBLISH_AXIOS_DEFAULTS.timeout,
+}) {
   const domain = normalizeShopDomain(shopDomain);
   const version = (apiVersion || '2024-01').trim();
   const endpoint = `https://${domain}/admin/api/${version}/blogs/${blogId}/articles/${articleId}.json`;
+  const requestTimeout =
+    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : PUBLISH_AXIOS_DEFAULTS.timeout;
   const response = await axios.get(endpoint, {
-    timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+    timeout: requestTimeout,
     headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
   });
   return response.data?.article || null;
@@ -4964,7 +5888,7 @@ ipcMain.handle('test-wordpress-sync', async (event, { destinationId = null } = {
 
 ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after = null } = {}) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -5104,7 +6028,7 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
 
 ipcMain.handle('get-remote-posts', async (event, { status = null, limit = 200, destinationId = null } = {}) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
     const posts = await listRemotePosts({ status, limit, destinationId });
     return { success: true, posts };
   } catch (error) {
@@ -5112,31 +6036,197 @@ ipcMain.handle('get-remote-posts', async (event, { status = null, limit = 200, d
   }
 });
 
-ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }) => {
+ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId, resolveLinkedImages = false } = {}) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
     if (!destinationId || !postId) {
       throw new Error('Destination and post ID are required');
     }
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     const destination = await getPublishDestination(destinationId, currentUser.id);
     if (!destination) {
       throw new Error('Destination not found');
     }
 
-    const localBlog = await getBlogForRemotePost({
-      remotePostId: postId,
-      destinationId: destination.id || null,
-    });
-    const localGallery = Array.isArray(localBlog?.imageGallery)
-      ? localBlog.imageGallery
-      : Array.isArray(localBlog?.image_gallery)
-      ? localBlog.image_gallery
-      : [];
-    const localFeatured = localBlog?.imageUrl || localBlog?.image_url || '';
+    const withTimeout = async (promise, ms, fallback) => {
+      try {
+        return await Promise.race([
+          promise,
+          new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+        ]);
+      } catch {
+        return fallback;
+      }
+    };
 
+    const remoteLinkCacheKey = `${currentUser.id || 'anon'}|${destination.id || ''}|${postId}`;
+    let localBlog = null;
+    if (resolveLinkedImages) {
+      const cachedLink = getRemoteBlogLinkCache(remoteLinkCacheKey);
+      if (cachedLink?.blogId) {
+        localBlog = await withTimeout(
+          getBlogById(cachedLink.blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+          3000,
+          null
+        );
+      }
+      if (!localBlog) {
+        localBlog = await withTimeout(
+          getBlogForRemotePost({
+            remotePostId: postId,
+            destinationId: destination.id || null,
+          }),
+          4000,
+          null
+        );
+      }
+      if (localBlog?.id) {
+        setRemoteBlogLinkCache(remoteLinkCacheKey, localBlog.id);
+      }
+    }
+    const normalizeComparableUrl = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = new URL(raw);
+        const pathname = parsed.pathname.replace(/\/+$/, '');
+        return `${parsed.origin}${pathname}`.toLowerCase();
+      } catch {
+        return raw.replace(/\/+$/, '').toLowerCase();
+      }
+    };
+    const historyRemoteId = (row) => String(row?.remotePostId ?? row?.remote_post_id ?? '').trim();
+    const historyUrl = (row) => String(row?.publishedUrl || row?.published_url || '').trim();
+    const historyBlogTitle = (row) =>
+      String(row?.blogTitle ?? row?.blog_title ?? row?.title ?? '')
+        .trim()
+        .toLowerCase();
+    const historyBlogId = (row) => row?.blogId || row?.blog_id || null;
+    const tryResolveLocalBlogFallback = async ({ remoteUrl = '', remoteTitle = '', remoteFeaturedImage = '' } = {}) => {
+      if (localBlog) return localBlog;
+      const loadHistoryRows = async (destinationFilter) =>
+        withTimeout(getPublishHistory({
+          userId: isAdmin() ? null : workspaceOwnerId,
+          limit: 800,
+          destinationId: destinationFilter,
+        }), 5000, []);
+      let historyRows = await loadHistoryRows(destination.id || null);
+      const idKey = String(postId || '').trim();
+      const urlKey = normalizeComparableUrl(remoteUrl);
+      const titleKey = String(remoteTitle || '').trim().toLowerCase();
+
+      let matched =
+        historyRows.find((row) => historyRemoteId(row) === idKey) ||
+        (urlKey
+          ? historyRows.find((row) => normalizeComparableUrl(historyUrl(row)) === urlKey)
+          : null) ||
+        (titleKey
+          ? historyRows.find((row) => historyBlogTitle(row) === titleKey)
+          : null) ||
+        null;
+
+      if (!historyBlogId(matched) && destination.id) {
+        historyRows = await loadHistoryRows(null);
+        matched =
+          historyRows.find((row) => historyRemoteId(row) === idKey) ||
+          (urlKey
+            ? historyRows.find((row) => normalizeComparableUrl(historyUrl(row)) === urlKey)
+            : null) ||
+          (titleKey
+            ? historyRows.find((row) => historyBlogTitle(row) === titleKey)
+            : null) ||
+          null;
+      }
+
+      if (historyBlogId(matched)) {
+        const resolved = await withTimeout(
+          getBlogById(historyBlogId(matched), { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+          3000,
+          null
+        );
+        if (resolved) {
+          localBlog = resolved;
+          if (localBlog?.id) {
+            setRemoteBlogLinkCache(remoteLinkCacheKey, localBlog.id);
+          }
+          return localBlog;
+        }
+      }
+
+      // Final fallbacks: match directly from recent blogs by featured image URL or title.
+      const titleNeedle = String(remoteTitle || '').trim().toLowerCase();
+      const featuredKey = normalizeComparableUrl(remoteFeaturedImage);
+      if (titleNeedle || featuredKey) {
+        const candidates = await withTimeout(
+          listBlogs({
+            limit: 300,
+            userId: isAdmin() ? null : workspaceOwnerId,
+            isAdmin: isAdmin(),
+          }),
+          5000,
+          []
+        );
+        const normalized = (value) =>
+          String(value || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (featuredKey) {
+          const byImage = candidates.find((blog) => {
+            const featured = normalizeComparableUrl(blog?.imageUrl || blog?.image_url || '');
+            if (featured && featured === featuredKey) return true;
+            const gallery = Array.isArray(blog?.imageGallery)
+              ? blog.imageGallery
+              : Array.isArray(blog?.image_gallery)
+              ? blog.image_gallery
+              : [];
+            return gallery.some((url) => normalizeComparableUrl(url) === featuredKey);
+          });
+          if (byImage?.id) {
+            const byImageFull = await withTimeout(
+              getBlogById(byImage.id, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+              3000,
+              null
+            );
+            if (byImageFull) {
+              localBlog = byImageFull;
+              if (localBlog?.id) {
+                setRemoteBlogLinkCache(remoteLinkCacheKey, localBlog.id);
+              }
+              return localBlog;
+            }
+          }
+        }
+
+        if (titleNeedle) {
+          const exact = candidates.find((blog) => normalized(blog?.title) === normalized(titleNeedle));
+          const partial =
+            exact ||
+            candidates.find((blog) => {
+              const bt = normalized(blog?.title);
+              return bt && (bt.includes(normalized(titleNeedle)) || normalized(titleNeedle).includes(bt));
+            });
+          if (partial?.id) {
+            const byTitle = await withTimeout(
+              getBlogById(partial.id, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+              3000,
+              null
+            );
+            if (byTitle) {
+              localBlog = byTitle;
+              if (localBlog?.id) {
+                setRemoteBlogLinkCache(remoteLinkCacheKey, localBlog.id);
+              }
+            }
+          }
+        }
+      }
+
+      return localBlog;
+    };
     if (destination.platform === 'shopify') {
       const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
       const accessToken = ensureValue('Shopify access token', destination.accessToken);
@@ -5148,6 +6238,7 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
         apiVersion,
         blogId,
         articleId: postId,
+        timeoutMs: 10000,
       });
       if (!article) {
         throw new Error('Shopify article not found');
@@ -5160,6 +6251,19 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
         isPublicHttpUrl(article.url || '')
           ? article.url
           : buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
+      if (resolveLinkedImages && !localBlog) {
+        await tryResolveLocalBlogFallback({
+          remoteUrl: articleUrl,
+          remoteTitle: article.title || '',
+          remoteFeaturedImage: article.image?.src || '',
+        });
+      }
+      const resolvedGallery = Array.isArray(localBlog?.imageGallery)
+        ? localBlog.imageGallery
+        : Array.isArray(localBlog?.image_gallery)
+        ? localBlog.image_gallery
+        : [];
+      const resolvedFeatured = localBlog?.imageUrl || localBlog?.image_url || '';
       return {
         success: true,
         post: {
@@ -5171,14 +6275,14 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
           url: articleUrl || null,
           tags: article.tags || '',
           featuredImage: article.image?.src || '',
-          imageGallery: localGallery,
-          localImageUrl: localFeatured || '',
+          imageGallery: resolvedGallery,
+          localImageUrl: resolvedFeatured || '',
           provider: 'shopify',
         },
       };
     }
 
-    const data = await fetchWordpressPostDetail({ destination, postId });
+    const data = await fetchWordpressPostDetail({ destination, postId, timeoutMs: 10000 });
     const content =
       typeof data?.content === 'string'
         ? data.content
@@ -5187,6 +6291,19 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
       typeof data?.excerpt === 'string'
         ? data.excerpt
         : data?.excerpt?.rendered || '';
+    if (resolveLinkedImages && !localBlog) {
+      await tryResolveLocalBlogFallback({
+        remoteUrl: data.url || data.link || '',
+        remoteTitle: data.title || data?.title?.rendered || '',
+        remoteFeaturedImage: data.featuredImage || '',
+      });
+    }
+    const resolvedGallery = Array.isArray(localBlog?.imageGallery)
+      ? localBlog.imageGallery
+      : Array.isArray(localBlog?.image_gallery)
+      ? localBlog.image_gallery
+      : [];
+    const resolvedFeatured = localBlog?.imageUrl || localBlog?.image_url || '';
     return {
       success: true,
       post: {
@@ -5198,8 +6315,8 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
         url: data.url || data.link || null,
         tags: Array.isArray(data.tags) ? data.tags : [],
         featuredImage: data.featuredImage || '',
-        imageGallery: localGallery,
-        localImageUrl: localFeatured || '',
+        imageGallery: resolvedGallery,
+        localImageUrl: resolvedFeatured || '',
         provider: 'wordpress',
       },
     };
@@ -5208,9 +6325,201 @@ ipcMain.handle('get-remote-post-detail', async (event, { destinationId, postId }
   }
 });
 
+ipcMain.handle(
+  'get-remote-post-linked-images',
+  async (event, { destinationId, postId, remoteUrl = '', remoteTitle = '', remoteFeaturedImage = '' } = {}) => {
+    try {
+      requireAnyPermission(['posts', 'history']);
+      if (!currentUser) {
+        throw new Error('Not authenticated');
+      }
+      if (!destinationId || !postId) {
+        throw new Error('Destination and post ID are required');
+      }
+      const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+
+      const destination = await getPublishDestination(destinationId, currentUser.id);
+      if (!destination) {
+        throw new Error('Destination not found');
+      }
+
+      const withTimeout = async (promise, ms, fallback) => {
+        try {
+          return await Promise.race([
+            promise,
+            new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+          ]);
+        } catch {
+          return fallback;
+        }
+      };
+      const normalizeComparableUrl = (value) => {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        try {
+          const parsed = new URL(raw);
+          const pathname = parsed.pathname.replace(/\/+$/, '');
+          return `${parsed.origin}${pathname}`.toLowerCase();
+        } catch {
+          return raw.replace(/\/+$/, '').toLowerCase();
+        }
+      };
+      const historyRemoteId = (row) => String(row?.remotePostId ?? row?.remote_post_id ?? '').trim();
+      const historyUrl = (row) => String(row?.publishedUrl || row?.published_url || '').trim();
+      const historyBlogTitle = (row) =>
+        String(row?.blogTitle ?? row?.blog_title ?? row?.title ?? '')
+          .trim()
+          .toLowerCase();
+      const historyBlogId = (row) => row?.blogId || row?.blog_id || null;
+
+      const remoteLinkCacheKey = `${currentUser.id || 'anon'}|${destination.id || ''}|${postId}`;
+      let localBlog = null;
+      const cachedLink = getRemoteBlogLinkCache(remoteLinkCacheKey);
+      if (cachedLink?.blogId) {
+        localBlog = await withTimeout(
+          getBlogById(cachedLink.blogId, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+          3000,
+          null
+        );
+      }
+
+      if (!localBlog) {
+        localBlog = await withTimeout(
+          getBlogForRemotePost({ remotePostId: postId, destinationId: destination.id || null }),
+          4000,
+          null
+        );
+      }
+
+      if (!localBlog) {
+        const loadHistoryRows = async (destinationFilter) =>
+          withTimeout(
+            getPublishHistory({
+              userId: isAdmin() ? null : workspaceOwnerId,
+              limit: 800,
+              destinationId: destinationFilter,
+            }),
+            5000,
+            []
+          );
+
+        const idKey = String(postId || '').trim();
+        const urlKey = normalizeComparableUrl(remoteUrl);
+        const titleKey = String(remoteTitle || '').trim().toLowerCase();
+
+        let historyRows = await loadHistoryRows(destination.id || null);
+        let matched =
+          historyRows.find((row) => historyRemoteId(row) === idKey) ||
+          (urlKey
+            ? historyRows.find((row) => normalizeComparableUrl(historyUrl(row)) === urlKey)
+            : null) ||
+          (titleKey
+            ? historyRows.find((row) => historyBlogTitle(row) === titleKey)
+            : null) ||
+          null;
+
+        if (!historyBlogId(matched) && destination.id) {
+          historyRows = await loadHistoryRows(null);
+          matched =
+            historyRows.find((row) => historyRemoteId(row) === idKey) ||
+            (urlKey
+              ? historyRows.find((row) => normalizeComparableUrl(historyUrl(row)) === urlKey)
+              : null) ||
+            (titleKey
+              ? historyRows.find((row) => historyBlogTitle(row) === titleKey)
+              : null) ||
+            null;
+        }
+
+        if (historyBlogId(matched)) {
+          localBlog = await withTimeout(
+            getBlogById(historyBlogId(matched), { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+            3000,
+            null
+          );
+        }
+
+        if (!localBlog) {
+          const candidates = await withTimeout(
+            listBlogs({
+              limit: 300,
+              userId: isAdmin() ? null : workspaceOwnerId,
+              isAdmin: isAdmin(),
+            }),
+            5000,
+            []
+          );
+          const featuredKey = normalizeComparableUrl(remoteFeaturedImage);
+          const normalized = (value) =>
+            String(value || '')
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          if (featuredKey) {
+            const byImage = candidates.find((blog) => {
+              const featured = normalizeComparableUrl(blog?.imageUrl || blog?.image_url || '');
+              if (featured && featured === featuredKey) return true;
+              const gallery = Array.isArray(blog?.imageGallery)
+                ? blog.imageGallery
+                : Array.isArray(blog?.image_gallery)
+                ? blog.image_gallery
+                : [];
+              return gallery.some((url) => normalizeComparableUrl(url) === featuredKey);
+            });
+            if (byImage?.id) {
+              localBlog = await withTimeout(
+                getBlogById(byImage.id, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+                3000,
+                null
+              );
+            }
+          }
+
+          if (!localBlog && titleKey) {
+            const exact = candidates.find((blog) => normalized(blog?.title) === normalized(titleKey));
+            const partial =
+              exact ||
+              candidates.find((blog) => {
+                const bt = normalized(blog?.title);
+                return bt && (bt.includes(normalized(titleKey)) || normalized(titleKey).includes(bt));
+              });
+            if (partial?.id) {
+              localBlog = await withTimeout(
+                getBlogById(partial.id, { userId: workspaceOwnerId, isAdmin: isAdmin() }),
+                3000,
+                null
+              );
+            }
+          }
+        }
+      }
+
+      if (localBlog?.id) {
+        setRemoteBlogLinkCache(remoteLinkCacheKey, localBlog.id);
+      }
+
+      const imageGallery = Array.isArray(localBlog?.imageGallery)
+        ? localBlog.imageGallery
+        : Array.isArray(localBlog?.image_gallery)
+        ? localBlog.image_gallery
+        : [];
+      const localImageUrl = localBlog?.imageUrl || localBlog?.image_url || '';
+
+      return {
+        success: true,
+        imageGallery,
+        localImageUrl,
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+);
+
 ipcMain.handle('update-remote-post', async (event, { destinationId, postId, title, content, status, imageUrl }) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -5322,7 +6631,8 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
 
 ipcMain.handle('delete-remote-post', async (event, { destinationId, postId, force = false }) => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
+    requirePermission('delete.posts');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
@@ -5354,7 +6664,7 @@ ipcMain.handle('delete-remote-post', async (event, { destinationId, postId, forc
 
 ipcMain.handle('get-remote-post-analytics', async () => {
   try {
-    requirePermission('history');
+    requireAnyPermission(['posts', 'history']);
     const analytics = await getRemotePostAnalytics();
     return { success: true, analytics };
   } catch (error) {
@@ -5366,8 +6676,9 @@ ipcMain.handle('get-remote-post-analytics', async () => {
 
 ipcMain.handle('get-publish-history', async (event, { limit = 100, offset = 0, dateFrom, dateTo, platform, status, destinationId = null } = {}) => {
   try {
-    requirePermission('history');
-    const userId = isAdmin() ? null : currentUser?.id;
+    requireAnyPermission(['posts', 'history']);
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const userId = isAdmin() ? null : workspaceOwnerId;
     const history = await getPublishHistory({ userId, limit, offset, dateFrom, dateTo, platform, status, destinationId });
     return { success: true, history };
   } catch (error) {
@@ -5390,8 +6701,9 @@ ipcMain.handle('get-blog-publish-status', async (event, { blogId }) => {
 
 ipcMain.handle('get-publish-analytics', async (event, { dateFrom, dateTo, destinationId = null } = {}) => {
   try {
-    requirePermission('history');
-    const userId = isAdmin() ? null : currentUser?.id;
+    requireAnyPermission(['posts', 'history']);
+    const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
+    const userId = isAdmin() ? null : workspaceOwnerId;
     const analytics = await getPublishAnalytics({ userId, dateFrom, dateTo, destinationId });
     return { success: true, analytics };
   } catch (error) {
@@ -5476,4 +6788,5 @@ ipcMain.handle('get-realtime-analytics', async (event, payload) => {
     return { success: false, error: error.message };
   }
 });
+
 

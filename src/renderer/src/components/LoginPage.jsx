@@ -1,6 +1,35 @@
 import React, { useState } from 'react';
 import { User, Lock, Eye, EyeOff, ArrowRight, Loader2, AlertTriangle, Shield } from 'lucide-react';
 
+const formatAuthError = (result, fallbackMessage) => {
+  const rawError = String(result?.error || fallbackMessage || 'Request failed');
+  const normalized = rawError.toLowerCase();
+
+  if (normalized.includes('invalid credentials')) {
+    return 'Invalid username or password.';
+  }
+  if (normalized.includes('deactive') || normalized.includes('inactive')) {
+    return 'Your account is inactive. Please contact the administrator.';
+  }
+
+  const isConnectivityError =
+    normalized.includes('database connection failed') ||
+    normalized.includes('econnrefused') ||
+    normalized.includes('enotfound') ||
+    normalized.includes('etimedout') ||
+    normalized.includes('econnaborted') ||
+    normalized.includes('eai_again') ||
+    normalized.includes('route not found') ||
+    normalized.includes('server api') ||
+    normalized.includes('network');
+
+  if (isConnectivityError) {
+    return 'Unable to connect to server. Please try again.';
+  }
+
+  return 'Login failed. Please try again.';
+};
+
 function LoginPage({ t, onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -19,18 +48,7 @@ function LoginPage({ t, onLogin }) {
     setIsSubmitting(false);
 
     if (!result.success) {
-      const rawError = result.error || 'Login failed';
-      const statusCode = result.statusCode;
-      const errorCode = result.errorCode;
-      const hasHttpInMessage = statusCode && rawError.includes(`HTTP ${statusCode}`);
-      const hasCodeInMessage = errorCode && rawError.includes(errorCode);
-      if (statusCode && !hasHttpInMessage) {
-        setError(`[HTTP ${statusCode}] ${rawError}`);
-      } else if (errorCode && !hasCodeInMessage) {
-        setError(`[${errorCode}] ${rawError}`);
-      } else {
-        setError(rawError);
-      }
+      setError(formatAuthError(result, 'Login failed'));
     }
   };
 
