@@ -209,7 +209,7 @@ function Layout({
 
         <div className="p-4 border-t border-purple-100 dark:border-slate-800">
           <p className="text-xs text-slate-500 text-center dark:text-slate-500">
-            Version 1.0.0
+            Version 1.0.1
           </p>
         </div>
       </div>

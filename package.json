@@ -1,6 +1,6 @@
 {
   "name": "Blog-generator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered blog generator built by List and Sell Ecomerce team",
   "main": "src/main/index.js",
   "private": true,
