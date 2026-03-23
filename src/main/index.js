@@ -2111,13 +2111,6 @@ function ensureFocusKeywordUsage(content, keyword) {
     return `${h2start}${kw} - ${pText}${pend}`;
   });
 
-  // Ensure keyword appears a few times in body
-  const occurrences = (updated.toLowerCase().match(new RegExp(kw.toLowerCase(), 'g')) || []).length;
-  if (occurrences < 5) {
-    updated += `\n<p>${kw} is essential for smooth printing results and should be done carefully.</p>`;
-    updated += `\n<p>Always ${kw} following the manufacturer guidelines to protect your printer.</p>`;
-    updated += `\n<p>Remember to ${kw} whenever print quality declines.</p>`;
-  }
   return updated;
 }
 
