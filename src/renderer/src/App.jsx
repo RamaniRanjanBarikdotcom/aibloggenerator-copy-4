@@ -20,6 +20,8 @@ function App() {
   const BLOG_FAILED_DRAFTS_KEY = 'blog_failed_generations_v2';
   const LEGACY_FAILED_DRAFT_KEY = 'blog_failed_generation_v1';
   const historyCacheKey = (userId) => `history_cache_v1_${userId || 'anon'}`;
+  const historyPersistKey = (userId) => `history_cache_persist_v1_${userId || 'anon'}`;
+  const HISTORY_PERSIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
   const [currentView, setCurrentView] = useState('home');
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState({ step: 0, message: '' });
@@ -260,6 +262,7 @@ function App() {
     const loadHistory = async () => {
       try {
         const rawCached = sessionStorage.getItem(historyCacheKey(currentUser.id));
+        let hasSessionCache = false;
         if (rawCached) {
           const cached = JSON.parse(rawCached);
           if (Array.isArray(cached?.history)) {
@@ -270,6 +273,29 @@ function App() {
           }
           if (cached && Object.prototype.hasOwnProperty.call(cached, 'wpCounts')) {
             setWpCounts(cached.wpCounts || null);
+          }
+          hasSessionCache = true;
+        }
+        if (!hasSessionCache) {
+          const rawPersistent = localStorage.getItem(historyPersistKey(currentUser.id));
+          if (rawPersistent) {
+            const cached = JSON.parse(rawPersistent);
+            if (
+              cached &&
+              typeof cached === 'object' &&
+              typeof cached.ts === 'number' &&
+              Date.now() - cached.ts <= HISTORY_PERSIST_CACHE_TTL_MS
+            ) {
+              if (Array.isArray(cached?.history)) {
+                setHistory(cached.history);
+              }
+              if (cached?.summary && typeof cached.summary === 'object') {
+                setHistorySummary(cached.summary);
+              }
+              if (Object.prototype.hasOwnProperty.call(cached, 'wpCounts')) {
+                setWpCounts(cached.wpCounts || null);
+              }
+            }
           }
         }
       } catch (_cacheError) {
@@ -287,6 +313,15 @@ function App() {
           sessionStorage.setItem(
             historyCacheKey(currentUser.id),
             JSON.stringify({
+              history: result.history || [],
+              summary: result.summary || { totalCount: 0, totalCost: 0 },
+              wpCounts: result.wpCounts || null,
+            })
+          );
+          localStorage.setItem(
+            historyPersistKey(currentUser.id),
+            JSON.stringify({
+              ts: Date.now(),
               history: result.history || [],
               summary: result.summary || { totalCount: 0, totalCost: 0 },
               wpCounts: result.wpCounts || null,
@@ -361,6 +396,15 @@ function App() {
           sessionStorage.setItem(
             historyCacheKey(currentUser.id),
             JSON.stringify({
+              history: refreshed.history || [],
+              summary: refreshed.summary || { totalCount: 0, totalCost: 0 },
+              wpCounts: refreshed.wpCounts || null,
+            })
+          );
+          localStorage.setItem(
+            historyPersistKey(currentUser.id),
+            JSON.stringify({
+              ts: Date.now(),
               history: refreshed.history || [],
               summary: refreshed.summary || { totalCount: 0, totalCost: 0 },
               wpCounts: refreshed.wpCounts || null,
@@ -710,12 +754,13 @@ function App() {
           onGenerateImage={handleGenerateImageFromHistory}
           onDeleteBlog={handleDeleteBlog}
           onClearAll={handleClearAll}
+          onRefreshHistory={refreshHistory}
         />
       )}
       {currentView === 'posts' && can('posts') && <PostsPage t={t} canDelete={can('delete.posts')} />}
       {currentView === 'scraper' && can('scraper') && <ProductScraperPage t={t} />}
       {currentView === 'logs' && can('logs') && <LogsPage t={t} canDelete={can('delete.logs')} />}
-      {currentView === 'scheduler' && can('scheduler') && <SchedulerPage />}
+      {currentView === 'scheduler' && can('scheduler') && <SchedulerPage t={t} />}
       {currentView === 'edit' && editingBlog && (
         <EditBlogPage
           key={`${editingBlog.id}-${editSessionId}`}

@@ -7,14 +7,6 @@ const STYLES = ['professional', 'conversational', 'educational', 'persuasive', '
 const TONES = ['friendly', 'formal', 'persuasive', 'casual'];
 const PLATFORMS = ['generic', 'shopify', 'woocommerce', 'magento', 'custom'];
 const STATUS_FILTERS = ['all', 'pending', 'paused', 'running', 'completed', 'failed', 'cancelled'];
-const JOB_TABLE_TABS = [
-  { value: 'scheduled', label: 'Scheduled jobs' },
-  { value: 'completed', label: 'Completed jobs' },
-];
-const SCHEDULE_MODES = [
-  { value: 'generate', label: 'Generate new blog' },
-  { value: 'existing', label: 'Use existing history blog' },
-];
 const CSV_HEADERS = [
   'destination_id',
   'destination',
@@ -158,6 +150,10 @@ function HistoryBlogDropdown({
   onSelect,
   onRefresh,
   placeholder = 'Select a generated blog',
+  searchPlaceholder = 'Search by title or keyword',
+  refreshLabel = 'Refresh',
+  loadingLabel = 'Loading blogs...',
+  emptyLabel = 'No matching blogs found.',
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -190,21 +186,21 @@ function HistoryBlogDropdown({
               className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               value={query}
               onChange={(e) => onQueryChange(e.target.value)}
-              placeholder="Search by title or keyword"
+              placeholder={searchPlaceholder}
             />
             <button
               type="button"
               onClick={onRefresh}
               className="rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              Refresh
+              {refreshLabel}
             </button>
           </div>
           <div className="max-h-64 overflow-auto rounded-md border border-slate-200 dark:border-slate-700">
             {loading ? (
-              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Loading blogs...</div>
+              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">{loadingLabel}</div>
             ) : options.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No matching blogs found.</div>
+              <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">{emptyLabel}</div>
             ) : (
               options.map((item) => (
                 <button
@@ -519,7 +515,112 @@ function formFromJob(job) {
   };
 }
 
-function SchedulerPage() {
+function SchedulerPage({ t }) {
+  const tr = useCallback(
+    (key, fallback, vars) => {
+      let text = (t && t[key]) || fallback;
+      if (!vars) return text;
+      Object.entries(vars).forEach(([token, value]) => {
+        text = text.replace(new RegExp(`\\{${token}\\}`, 'g'), String(value));
+      });
+      return text;
+    },
+    [t]
+  );
+  const jobTableTabs = useMemo(
+    () => [
+      { value: 'scheduled', label: tr('schedulerTabScheduled', 'Scheduled jobs') },
+      { value: 'completed', label: tr('schedulerTabCompleted', 'Completed jobs') },
+    ],
+    [tr]
+  );
+  const scheduleModes = useMemo(
+    () => [
+      { value: 'generate', label: tr('schedulerModeGenerate', 'Generate new blog') },
+      { value: 'existing', label: tr('schedulerModeExisting', 'Use existing history blog') },
+    ],
+    [tr]
+  );
+  const importFieldLabels = useMemo(
+    () => ({
+      '': tr('schedulerFieldNotMapped', 'Not mapped'),
+      destination_id: tr('schedulerFieldDestinationId', 'Destination ID'),
+      destination: tr('schedulerFieldDestinationName', 'Destination name'),
+      shop_id: tr('schedulerFieldShopId', 'Shop ID (legacy)'),
+      platform: tr('schedulerFieldPlatformLegacy', 'Platform (legacy)'),
+      schedule_mode: tr('schedulerFieldScheduleMode', 'Schedule mode (generate/existing)'),
+      source_blog_id: tr('schedulerFieldSourceBlogId', 'Source blog ID'),
+      topic: tr('schedulerFieldTopic', 'Topic'),
+      keywords: tr('schedulerFieldKeywords', 'Keywords'),
+      focus_keyword: tr('schedulerFieldFocusKeyword', 'Focus keyword'),
+      run_at: tr('schedulerFieldRunAt', 'Run at (DD-MM-YYYY HH:mm)'),
+      date: tr('schedulerFieldDate', 'Date'),
+      time: tr('schedulerFieldTime', 'Time'),
+      datetime: tr('schedulerFieldDatetime', 'Datetime'),
+      generate_image: tr('schedulerFieldGenerateImage', 'Generate image'),
+      auto_post: tr('schedulerFieldAutoPost', 'Auto post'),
+      publish_status: tr('schedulerFieldPublishStatus', 'Publish status'),
+      writing_style: tr('schedulerFieldWritingStyle', 'Writing style'),
+      writing_tone: tr('schedulerFieldWritingTone', 'Writing tone'),
+      target_word_count: tr('schedulerFieldTargetWordCount', 'Target word count'),
+      language: tr('schedulerFieldLanguage', 'Language'),
+      use_product_context: tr('schedulerFieldUseProductContext', 'Use product context'),
+      website_url: tr('schedulerFieldWebsiteUrl', 'Website URL'),
+      scraper_platform: tr('schedulerFieldScraperPlatform', 'Scraper platform'),
+      categories: tr('schedulerFieldCategories', 'Categories'),
+      payload_json: tr('schedulerFieldPayloadJson', 'Payload JSON'),
+    }),
+    [tr]
+  );
+  const importFieldOptions = useMemo(
+    () =>
+      IMPORT_FIELD_OPTIONS.map((option) => ({
+        ...option,
+        label: importFieldLabels[option.value] || option.label,
+      })),
+    [importFieldLabels]
+  );
+  const styleLabels = useMemo(
+    () => ({
+      professional: tr('schedulerStyleProfessional', 'professional'),
+      conversational: tr('schedulerStyleConversational', 'conversational'),
+      educational: tr('schedulerStyleEducational', 'educational'),
+      persuasive: tr('schedulerStylePersuasive', 'persuasive'),
+      storytelling: tr('schedulerStyleStorytelling', 'storytelling'),
+    }),
+    [tr]
+  );
+  const toneLabels = useMemo(
+    () => ({
+      friendly: tr('schedulerToneFriendly', 'friendly'),
+      formal: tr('schedulerToneFormal', 'formal'),
+      persuasive: tr('schedulerTonePersuasive', 'persuasive'),
+      casual: tr('schedulerToneCasual', 'casual'),
+    }),
+    [tr]
+  );
+  const platformLabels = useMemo(
+    () => ({
+      generic: tr('schedulerPlatformGeneric', 'generic'),
+      shopify: tr('schedulerPlatformShopify', 'shopify'),
+      woocommerce: tr('schedulerPlatformWoo', 'woocommerce'),
+      magento: tr('schedulerPlatformMagento', 'magento'),
+      custom: tr('schedulerPlatformCustom', 'custom'),
+    }),
+    [tr]
+  );
+  const statusLabels = useMemo(
+    () => ({
+      all: tr('schedulerStatusAll', 'All status'),
+      pending: tr('schedulerStatusPending', 'pending'),
+      paused: tr('schedulerStatusPaused', 'paused'),
+      running: tr('schedulerStatusRunning', 'running'),
+      completed: tr('schedulerStatusCompleted', 'completed'),
+      failed: tr('schedulerStatusFailed', 'failed'),
+      cancelled: tr('schedulerStatusCancelled', 'cancelled'),
+    }),
+    [tr]
+  );
   const [apiEnabled, setApiEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -612,8 +713,14 @@ function SchedulerPage() {
   );
 
   const visibleJobs = jobTableTab === 'completed' ? completedJobs : scheduledJobs;
-  const countLabel = jobTableTab === 'completed' ? `${visibleJobs.length} completed` : `${visibleJobs.length} scheduled`;
-  const timeColumnLabel = jobTableTab === 'completed' ? 'Completed on' : 'Run at';
+  const countLabel =
+    jobTableTab === 'completed'
+      ? tr('schedulerCountCompleted', '{count} completed', { count: visibleJobs.length })
+      : tr('schedulerCountScheduled', '{count} scheduled', { count: visibleJobs.length });
+  const timeColumnLabel =
+    jobTableTab === 'completed'
+      ? tr('schedulerCompletedOn', 'Completed on')
+      : tr('schedulerRunAt', 'Run at');
   const totalJobPages = Math.max(1, Math.ceil(visibleJobs.length / jobsPerPage));
   const pagedVisibleJobs = useMemo(() => {
     const startIndex = (jobsPage - 1) * jobsPerPage;
@@ -649,12 +756,16 @@ function SchedulerPage() {
         window.electronAPI.schedulerListJobs({ limit: 1000 }),
       ]);
       setApiEnabled(!!cfg?.enabled);
-      if (!destinationsRes?.success) throw new Error(destinationsRes?.error || 'Failed to load destinations');
-      if (!jobsRes?.success) throw new Error(jobsRes?.error || 'Failed to load scheduler jobs');
+      if (!destinationsRes?.success) {
+        throw new Error(destinationsRes?.error || tr('schedulerErrorLoadDestinations', 'Failed to load destinations'));
+      }
+      if (!jobsRes?.success) {
+        throw new Error(jobsRes?.error || tr('schedulerErrorLoadJobs', 'Failed to load scheduler jobs'));
+      }
       setDestinations(Array.isArray(destinationsRes.destinations) ? destinationsRes.destinations : []);
       setJobs(Array.isArray(jobsRes.jobs) ? jobsRes.jobs : []);
     } catch (e) {
-      setError(e.message || 'Failed to load scheduler data');
+      setError(e.message || tr('schedulerErrorLoadData', 'Failed to load scheduler data'));
     } finally {
       setLoading(false);
     }
@@ -695,7 +806,7 @@ function SchedulerPage() {
           limit: Math.max(120, Math.min(500, Number(limit) || 300)),
         });
         if (!fallback?.success) {
-          throw new Error(fallback?.error || 'Failed to load history blogs');
+          throw new Error(fallback?.error || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
         }
         const mappedItems = mapHistoryRowsToOptions(fallback?.history || []);
         historyBlogCacheRef.current.set(cacheKey, mappedItems);
@@ -708,7 +819,7 @@ function SchedulerPage() {
         search: normalizedSearch,
       });
       if (!response?.success) {
-        throw new Error(response?.error || 'Failed to load history blogs');
+        throw new Error(response?.error || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
       }
       let items = mapHistoryRowsToOptions(response?.blogs || []);
 
@@ -718,7 +829,7 @@ function SchedulerPage() {
       try {
         const fallback = await window.electronAPI.getHistory({ limit: 120 });
         if (!fallback?.success) {
-          throw new Error(fallback?.error || 'Failed to load history blogs');
+          throw new Error(fallback?.error || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
         }
         const mappedItems = mapHistoryRowsToOptions(fallback?.history || []);
         const fallbackFiltered = normalizedSearch
@@ -733,13 +844,13 @@ function SchedulerPage() {
           fallbackFiltered
         );
       } catch (fallbackErr) {
-        setError(fallbackErr.message || e.message || 'Failed to load history blogs');
+        setError(fallbackErr.message || e.message || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
       }
     } finally {
       historyBlogLoadingRef.current = false;
       setHistoryBlogLoading(false);
     }
-  }, [mapHistoryRowsToOptions]);
+  }, [mapHistoryRowsToOptions, tr]);
 
   useEffect(() => {
     loadAll();
@@ -887,15 +998,15 @@ function SchedulerPage() {
     const resolvedPlatform = String(selectedDestination?.platform || '').trim();
 
     if (scheduleMode === 'existing' && !sourceBlogId) {
-      throw new Error('Select a history blog to schedule.');
+      throw new Error(tr('schedulerErrorSelectHistory', 'Select a history blog to schedule.'));
     }
     if (scheduleMode === 'existing' && !sourceBlog && !String(sourceForm.topic || '').trim()) {
-      throw new Error('Selected history blog was not found.');
+      throw new Error(tr('schedulerErrorHistoryNotFound', 'Selected history blog was not found.'));
     }
-    if (!topic) throw new Error('Topic is required.');
-    if (!runAt) throw new Error('Valid run date/time is required.');
+    if (!topic) throw new Error(tr('schedulerErrorTopicRequired', 'Topic is required.'));
+    if (!runAt) throw new Error(tr('schedulerErrorRunAtRequired', 'Valid run date/time is required.'));
     if (sourceForm.autoPost && !String(sourceForm.destinationId || '').trim()) {
-      throw new Error('Destination is required when auto post is enabled.');
+      throw new Error(tr('schedulerErrorDestinationRequired', 'Destination is required when auto post is enabled.'));
     }
 
     const sourceCategories = Array.isArray(sourceBlog?.categories) ? sourceBlog.categories : [];
@@ -967,13 +1078,13 @@ function SchedulerPage() {
     try {
       const payload = buildPayload();
       const result = await window.electronAPI.schedulerCreateJob({ job: payload });
-      if (!result?.success) throw new Error(result?.error || 'Failed to create scheduler job');
-      setSuccess('Scheduler job created.');
+      if (!result?.success) throw new Error(result?.error || tr('schedulerErrorCreateFailed', 'Failed to create scheduler job'));
+      setSuccess(tr('schedulerCreateSuccess', 'Scheduler job created.'));
       setForm(defaultForm());
       setShowCreateModal(false);
       await loadAll();
     } catch (err) {
-      setError(err.message || 'Failed to create scheduler job');
+      setError(err.message || tr('schedulerErrorCreateFailed', 'Failed to create scheduler job'));
     }
   };
 
@@ -988,7 +1099,7 @@ function SchedulerPage() {
     e.preventDefault();
     clearMessages();
     if (!editTargetId) {
-      setError('No schedule selected for edit.');
+      setError(tr('schedulerErrorNoEdit', 'No schedule selected for edit.'));
       return;
     }
     try {
@@ -1003,13 +1114,13 @@ function SchedulerPage() {
         jobId: editTargetId,
         updates,
       });
-      if (!result?.success) throw new Error(result?.error || 'Failed to update schedule');
-      setSuccess('Schedule updated.');
+      if (!result?.success) throw new Error(result?.error || tr('schedulerErrorUpdateFailed', 'Failed to update schedule'));
+      setSuccess(tr('schedulerUpdateSuccess', 'Schedule updated.'));
       setShowEditModal(false);
       setEditTargetId('');
       await loadAll();
     } catch (err) {
-      setError(err.message || 'Failed to update schedule');
+      setError(err.message || tr('schedulerErrorUpdateFailed', 'Failed to update schedule'));
     }
   };
 
@@ -1021,10 +1132,10 @@ function SchedulerPage() {
       updates: { status: nextStatus },
     });
     if (!result?.success) {
-      setError(result?.error || 'Failed to update schedule status');
+      setError(result?.error || tr('schedulerErrorUpdateStatus', 'Failed to update schedule status'));
       return;
     }
-    setSuccess(nextStatus === 'paused' ? 'Schedule paused.' : 'Schedule resumed.');
+    setSuccess(nextStatus === 'paused' ? tr('schedulerPaused', 'Schedule paused.') : tr('schedulerResumed', 'Schedule resumed.'));
     await loadAll();
   };
 
@@ -1035,10 +1146,10 @@ function SchedulerPage() {
       updates: { status: 'pending' },
     });
     if (!result?.success) {
-      setError(result?.error || 'Failed to retry schedule');
+      setError(result?.error || tr('schedulerErrorRetry', 'Failed to retry schedule'));
       return;
     }
-    setSuccess('Schedule moved to pending. It will retry shortly.');
+    setSuccess(tr('schedulerRetryQueued', 'Schedule moved to pending. It will retry shortly.'));
     await loadAll();
   };
 
@@ -1047,18 +1158,18 @@ function SchedulerPage() {
     clearMessages();
     const result = await window.electronAPI.schedulerDeleteJob({ jobId: deleteTarget.id });
     if (!result?.success) {
-      setError(result?.error || 'Failed to delete schedule');
+      setError(result?.error || tr('schedulerErrorDeleteFailed', 'Failed to delete schedule'));
       return;
     }
     setDeleteTarget(null);
-    setSuccess('Schedule deleted.');
+    setSuccess(tr('schedulerDeleteSuccess', 'Schedule deleted.'));
     await loadAll();
   };
 
   const handleImportCsv = async () => {
     clearMessages();
     if (!csvContent.trim()) {
-      setError('CSV content is empty.');
+      setError(tr('schedulerErrorCsvEmpty', 'CSV content is empty.'));
       return;
     }
 
@@ -1068,7 +1179,7 @@ function SchedulerPage() {
       .filter(Boolean);
 
     if (lines.length < 2) {
-      setError('CSV has no usable rows.');
+      setError(tr('schedulerErrorCsvNoRows', 'CSV has no usable rows.'));
       return;
     }
 
@@ -1079,7 +1190,12 @@ function SchedulerPage() {
     const hasTopicField = mappedFields.includes('topic') || mappedFields.includes('source_blog_id');
     const hasRunField = mappedFields.some((f) => f === 'run_at' || f === 'datetime' || f === 'date');
     if (!hasTopicField || !hasRunField) {
-      setError('Map CSV columns first. Required fields: topic or source_blog_id, and run_at (or date/datetime).');
+      setError(
+        tr(
+          'schedulerErrorCsvMapFirst',
+          'Map CSV columns first. Required fields: topic or source_blog_id, and run_at (or date/datetime).'
+        )
+      );
       return;
     }
     const rows = lines.slice(1).map((line) => {
@@ -1143,15 +1259,23 @@ function SchedulerPage() {
       const runAt = toIso(runAtRaw);
 
       if ((!topic && scheduleMode !== 'existing') || !runAt) {
-        errors.push(`Row ${i + 2}: Missing topic/run_at`);
+        errors.push(tr('schedulerErrorCsvRowMissing', 'Row {row}: Missing topic/run_at', { row: i + 2 }));
         continue;
       }
       if (scheduleMode === 'existing' && !sourceBlogId) {
-        errors.push(`Row ${i + 2}: source_blog_id is required when schedule_mode is existing`);
+        errors.push(
+          tr('schedulerErrorCsvRowSource', 'Row {row}: source_blog_id is required when schedule_mode is existing', {
+            row: i + 2,
+          })
+        );
         continue;
       }
       if (autoPost && !destinationId) {
-        errors.push(`Row ${i + 2}: Destination is required when auto_post is true`);
+        errors.push(
+          tr('schedulerErrorCsvRowDestination', 'Row {row}: Destination is required when auto_post is true', {
+            row: i + 2,
+          })
+        );
         continue;
       }
 
@@ -1217,7 +1341,12 @@ function SchedulerPage() {
 
       const result = await window.electronAPI.schedulerCreateJob({ job: jobPayload });
       if (!result?.success) {
-        errors.push(`Row ${i + 2}: ${result?.error || 'Create failed'}`);
+        errors.push(
+          tr('schedulerErrorCsvRowCreate', 'Row {row}: {error}', {
+            row: i + 2,
+            error: result?.error || tr('schedulerErrorCsvCreateFailed', 'Create failed'),
+          })
+        );
       } else {
         created += 1;
         existingPendingSignatures.add(signature);
@@ -1225,14 +1354,19 @@ function SchedulerPage() {
     }
 
     const msg =
-      'Imported ' +
-      created +
-      ' schedule(s).' +
-      (skippedDuplicates ? ' Skipped ' + skippedDuplicates + ' duplicate pending row(s).' : '') +
-      (errors.length ? ' ' + errors.length + ' row(s) failed.' : '');
+      tr('schedulerImportSummary', 'Imported {count} schedule(s).', { count: created }) +
+      (skippedDuplicates
+        ? ' ' +
+          tr('schedulerImportSkipped', 'Skipped {count} duplicate pending row(s).', {
+            count: skippedDuplicates,
+          })
+        : '') +
+      (errors.length
+        ? ' ' + tr('schedulerImportFailed', '{count} row(s) failed.', { count: errors.length })
+        : '');
 
     if (errors.length) {
-      setError(msg + ' Check Logs menu for row details.');
+      setError(msg + ' ' + tr('schedulerImportCheckLogs', 'Check Logs menu for row details.'));
     } else {
       setSuccess(msg);
       setShowImportModal(false);
@@ -1329,13 +1463,18 @@ function SchedulerPage() {
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Scheduler</h2>
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+          {tr('schedulerTitle', 'Scheduler')}
+        </h2>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-          Build full generation schedules with auto-post settings and CSV import/export.
+          {tr(
+            'schedulerSubtitle',
+            'Build full generation schedules with auto-post settings and CSV import/export.'
+          )}
         </p>
         {!apiEnabled && (
           <p className="mt-3 text-sm text-amber-600 dark:text-amber-400">
-            Server API is not configured. Set APP_SERVER_API_BASE_URL.
+            {tr('schedulerApiWarning', 'Server API is not configured. Set APP_SERVER_API_BASE_URL.')}
           </p>
         )}
         {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -1349,19 +1488,19 @@ function SchedulerPage() {
               className={inputClass}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search schedules by topic, keyword, destination..."
+              placeholder={tr('schedulerSearchPlaceholder', 'Search schedules by topic, keyword, destination...')}
             />
           </div>
           <div className="w-full sm:w-[180px]">
             <select className={inputClass} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               {STATUS_FILTERS.map((s) => (
-                <option key={s} value={s}>{s === 'all' ? 'All status' : s}</option>
+                <option key={s} value={s}>{statusLabels[s] || s}</option>
               ))}
             </select>
           </div>
           <div className="w-full sm:w-[220px]">
             <select className={inputClass} value={destinationFilter} onChange={(e) => setDestinationFilter(e.target.value)}>
-              <option value="">All destinations</option>
+              <option value="">{tr('schedulerAllDestinations', 'All destinations')}</option>
               {destinations.map((d) => (
                 <option key={d.id} value={d.id}>{d.name || d.id}</option>
               ))}
@@ -1369,7 +1508,7 @@ function SchedulerPage() {
           </div>
           <div className="w-full sm:w-[180px]">
             <select className={inputClass} value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}>
-              <option value="">All platforms</option>
+              <option value="">{tr('schedulerAllPlatforms', 'All platforms')}</option>
               {[...new Set(destinations.map((d) => d.platform).filter(Boolean))].map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
@@ -1381,21 +1520,21 @@ function SchedulerPage() {
               onClick={loadAll}
               className="whitespace-nowrap rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              Refresh
+              {tr('schedulerRefresh', 'Refresh')}
             </button>
             <button
               type="button"
               onClick={handleExportCsv}
               className="whitespace-nowrap rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              Export schedules
+              {tr('schedulerExportSchedules', 'Export schedules')}
             </button>
             <button
               type="button"
               onClick={() => setShowImportModal(true)}
               className="whitespace-nowrap rounded-lg border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-900/20"
             >
-              + Import
+              {tr('schedulerImport', '+ Import')}
             </button>
             <button
               type="button"
@@ -1406,7 +1545,7 @@ function SchedulerPage() {
               }}
               className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
             >
-              + Create schedule
+              {tr('schedulerCreateSchedule', '+ Create schedule')}
             </button>
           </div>
         </div>
@@ -1415,7 +1554,7 @@ function SchedulerPage() {
       <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div className="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1.5 dark:border-slate-700/80 dark:bg-slate-800/70">
-            {JOB_TABLE_TABS.map((tab) => (
+            {jobTableTabs.map((tab) => (
               <button
                 key={tab.value}
                 type="button"
@@ -1437,20 +1576,28 @@ function SchedulerPage() {
             <thead>
               <tr className="text-left text-slate-500 dark:text-slate-400">
                 <th className="py-2 pr-3">{timeColumnLabel}</th>
-                <th className="py-2 pr-3">Topic</th>
-                <th className="py-2 pr-3">Destination</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Post</th>
-                <th className="py-2 pr-3">Image</th>
-                <th className="py-2">Action</th>
+                <th className="py-2 pr-3">{tr('schedulerTopic', 'Topic')}</th>
+                <th className="py-2 pr-3">{tr('schedulerDestination', 'Destination')}</th>
+                <th className="py-2 pr-3">{tr('schedulerStatus', 'Status')}</th>
+                <th className="py-2 pr-3">{tr('schedulerPost', 'Post')}</th>
+                <th className="py-2 pr-3">{tr('schedulerImage', 'Image')}</th>
+                <th className="py-2">{tr('schedulerAction', 'Action')}</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? <tr><td className="py-3 text-slate-500" colSpan={7}>Loading...</td></tr> : null}
+              {loading ? (
+                <tr>
+                  <td className="py-3 text-slate-500" colSpan={7}>
+                    {tr('schedulerLoading', 'Loading...')}
+                  </td>
+                </tr>
+              ) : null}
               {!loading && visibleJobs.length === 0 ? (
                 <tr>
                   <td className="py-3 text-slate-500" colSpan={7}>
-                    {jobTableTab === 'completed' ? 'No completed jobs found.' : 'No scheduler jobs found.'}
+                    {jobTableTab === 'completed'
+                      ? tr('schedulerNoCompleted', 'No completed jobs found.')
+                      : tr('schedulerNoScheduled', 'No scheduler jobs found.')}
                   </td>
                 </tr>
               ) : null}
@@ -1460,6 +1607,10 @@ function SchedulerPage() {
                 const isFailed = String(job.status || '').toLowerCase() === 'failed';
                 const primaryTime =
                   jobTableTab === 'completed' ? job.completedAt || job.updatedAt || job.runAt : job.runAt;
+                const publishLabel =
+                  job.publishStatus === 'publish'
+                    ? tr('schedulerPublishStatusPublish', 'publish')
+                    : tr('schedulerPublishStatusDraft', 'draft');
                 return (
                   <tr key={job.id} className="border-t border-slate-200 dark:border-slate-700">
                     <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{formatDatetime(primaryTime)}</td>
@@ -1467,26 +1618,46 @@ function SchedulerPage() {
                       <div className="font-medium">{job.topic}</div>
                     </td>
                     <td className="py-2 pr-3 text-slate-700 dark:text-slate-200"><div>{d?.name || job.destinationId || '-'}</div><div className="text-xs text-slate-500 dark:text-slate-400">{job.platform || d?.platform || '-'}</div></td>
-                    <td className="py-2 pr-3"><span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${statusClass(job.status)}`}>{job.status}</span></td>
-                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{job.autoPost ? `Auto (${job.publishStatus})` : 'Generate only'}</td>
-                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">{job.generateImage ? 'Yes' : 'No'}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${statusClass(job.status)}`}>
+                        {statusLabels[String(job.status || '').toLowerCase()] || job.status}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">
+                      {job.autoPost
+                        ? `${tr('schedulerPostAuto', 'Auto')} (${publishLabel})`
+                        : tr('schedulerPostGenerateOnly', 'Generate only')}
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700 dark:text-slate-200">
+                      {job.generateImage ? tr('schedulerYes', 'Yes') : tr('schedulerNo', 'No')}
+                    </td>
                     <td className="py-2">
                       <div className="flex items-center gap-2">
-                        <button type="button" onClick={() => openEditModal(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Edit</button>
+                        <button type="button" onClick={() => openEditModal(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">
+                          {tr('schedulerEdit', 'Edit')}
+                        </button>
                         {isFailed ? (
                           <button
                             type="button"
                             onClick={() => handleRetryFailed(job)}
                             className="rounded-lg border border-emerald-300 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
                           >
-                            Retry
+                            {tr('schedulerRetry', 'Retry')}
                           </button>
                         ) : canPauseResume ? (
-                          <button type="button" onClick={() => handlePauseToggle(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{job.status === 'paused' ? 'Resume' : 'Pause'}</button>
+                          <button type="button" onClick={() => handlePauseToggle(job)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">
+                            {String(job.status || '').toLowerCase() === 'paused'
+                              ? tr('schedulerResume', 'Resume')
+                              : tr('schedulerPause', 'Pause')}
+                          </button>
                         ) : (
-                          <span className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400">Done</span>
+                          <span className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400">
+                            {tr('schedulerDone', 'Done')}
+                          </span>
                         )}
-                        <button type="button" onClick={() => setDeleteTarget(job)} className="rounded-lg border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/20">Delete</button>
+                        <button type="button" onClick={() => setDeleteTarget(job)} className="rounded-lg border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/20">
+                          {tr('schedulerDelete', 'Delete')}
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1500,6 +1671,14 @@ function SchedulerPage() {
           page={jobsPage}
           perPage={jobsPerPage}
           perPageOptions={[10, 20, 50, 100]}
+          labels={{
+            showing: tr('schedulerPaginationShowing', 'Showing'),
+            of: tr('schedulerPaginationOf', 'of'),
+            perPage: tr('schedulerPaginationPerPage', 'Per page'),
+            prev: tr('schedulerPaginationPrev', 'Prev'),
+            page: tr('schedulerPaginationPage', 'Page'),
+            next: tr('schedulerPaginationNext', 'Next'),
+          }}
           onPageChange={setJobsPage}
           onPerPageChange={(value) => {
             setJobsPerPage(value);
@@ -1512,16 +1691,20 @@ function SchedulerPage() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
           <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Create schedule</h3>
-              <ModalCloseButton onClick={() => setShowCreateModal(false)} label="Close" />
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                {tr('schedulerCreateTitle', 'Create schedule')}
+              </h3>
+              <ModalCloseButton onClick={() => setShowCreateModal(false)} label={tr('schedulerClose', 'Close')} />
             </div>
 
             <form onSubmit={handleCreate} className="mt-4">
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Schedule type</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {tr('schedulerScheduleType', 'Schedule type')}
+                  </p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {SCHEDULE_MODES.map((mode) => (
+                    {scheduleModes.map((mode) => (
                       <button
                         key={`create-mode-${mode.value}`}
                         type="button"
@@ -1542,11 +1725,11 @@ function SchedulerPage() {
                   {form.scheduleMode === 'existing' ? (
                     <>
                       <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        1. Select existing history blog
+                        {tr('schedulerStepSelectExisting', '1. Select existing history blog')}
                       </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
                         <div className="md:col-span-2">
-                          <label className={labelClass}>History blog</label>
+                          <label className={labelClass}>{tr('schedulerHistoryBlog', 'History blog')}</label>
                           <HistoryBlogDropdown
                             value={form.sourceBlogId}
                             options={createFilteredHistoryBlogOptions}
@@ -1557,63 +1740,110 @@ function SchedulerPage() {
                             onRefresh={() =>
                               loadHistoryBlogOptions({ search: '', force: true })
                             }
-                            placeholder="Select a generated blog"
+                            placeholder={tr('schedulerHistoryBlogPlaceholder', 'Select a generated blog')}
+                            searchPlaceholder={tr('schedulerHistorySearchPlaceholder', 'Search by title or keyword')}
+                            refreshLabel={tr('schedulerHistoryRefresh', 'Refresh')}
+                            loadingLabel={tr('schedulerHistoryDropdownLoading', 'Loading blogs...')}
+                            emptyLabel={tr('schedulerHistoryDropdownEmpty', 'No matching blogs found.')}
                           />
                           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                             {historyBlogLoading
-                              ? 'Loading history blogs...'
-                              : `${createFilteredHistoryBlogOptions.length} blog(s) found`}
+                              ? tr('schedulerHistoryLoading', 'Loading history blogs...')
+                              : tr('schedulerBlogsFound', '{count} blog(s) found', {
+                                  count: createFilteredHistoryBlogOptions.length,
+                                })}
                           </p>
                         </div>
                       </div>
                     </>
                   ) : (
                     <>
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">1. Blog content</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepBlogContent', '1. Blog content')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={form.topic} onChange={(e) => setForm((p) => ({ ...p, topic: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Keywords</label><input className={inputClass} value={form.keywords} onChange={(e) => setForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={form.focusKeyword} onChange={(e) => setForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
-                        <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={form.categories} onChange={(e) => setForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>{tr('schedulerBlogTopic', 'Blog topic')}</label>
+                          <input className={inputClass} value={form.topic} onChange={(e) => setForm((p) => ({ ...p, topic: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerKeywords', 'Keywords')}</label>
+                          <input className={inputClass} value={form.keywords} onChange={(e) => setForm((p) => ({ ...p, keywords: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerFocusKeyword', 'Focus keyword')}</label>
+                          <input className={inputClass} value={form.focusKeyword} onChange={(e) => setForm((p) => ({ ...p, focusKeyword: e.target.value }))} />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>{tr('schedulerCategories', 'Categories (comma separated)')}</label>
+                          <input className={inputClass} value={form.categories} onChange={(e) => setForm((p) => ({ ...p, categories: e.target.value }))} />
+                        </div>
                       </div>
                     </>
                   )}
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">2. Destination and run time</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {tr('schedulerStepDestination', '2. Destination and run time')}
+                  </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
-                      <label className={labelClass}>Post destination</label>
+                      <label className={labelClass}>{tr('schedulerPostDestinationLabel', 'Post destination')}</label>
                       <select className={inputClass} value={form.destinationId} onChange={(e) => onDestinationChange(e.target.value)}>
-                        <option value="">Select destination</option>
+                        <option value="">{tr('schedulerSelectDestination', 'Select destination')}</option>
                         {destinations.map((d) => (
                           <option key={d.id} value={d.id}>{d.name || d.id} ({d.platform || 'unknown'})</option>
                         ))}
                       </select>
                     </div>
-                    <div><label className={labelClass}>Run date & time</label><input className={inputClass} type="datetime-local" value={form.runAt} onChange={(e) => setForm((p) => ({ ...p, runAt: e.target.value }))} /></div>
+                    <div>
+                      <label className={labelClass}>{tr('schedulerRunDateTime', 'Run date & time')}</label>
+                      <input className={inputClass} type="datetime-local" value={form.runAt} onChange={(e) => setForm((p) => ({ ...p, runAt: e.target.value }))} />
+                    </div>
                   </div>
                 </div>
 
                 {form.scheduleMode !== 'existing' ? (
                   <>
                     <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">3. Writing setup</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepWriting', '3. Writing setup')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                        <div><label className={labelClass}>Language</label><select className={inputClass} value={form.language} onChange={(e) => setForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Style</label><select className={inputClass} value={form.writingStyle} onChange={(e) => setForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Tone</label><select className={inputClass} value={form.writingTone} onChange={(e) => setForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={form.targetWordCount} onChange={(e) => setForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerLanguage', 'Language')}</label>
+                          <select className={inputClass} value={form.language} onChange={(e) => setForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerStyle', 'Style')}</label>
+                          <select className={inputClass} value={form.writingStyle} onChange={(e) => setForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{styleLabels[x] || x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerTone', 'Tone')}</label>
+                          <select className={inputClass} value={form.writingTone} onChange={(e) => setForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{toneLabels[x] || x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerTargetWords', 'Target words')}</label>
+                          <input className={inputClass} type="number" min={300} max={10000} value={form.targetWordCount} onChange={(e) => setForm((p) => ({ ...p, targetWordCount: e.target.value }))} />
+                        </div>
                       </div>
                     </div>
 
                     <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">4. Product context and scrape</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepProduct', '4. Product context and scrape')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={form.websiteUrl} onChange={(e) => setForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={form.scraperPlatform} onChange={(e) => setForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.useProductContext} onChange={(e) => setForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerStoreUrlOptional', 'Store URL (optional)')}</label>
+                          <input className={inputClass} value={form.websiteUrl} onChange={(e) => setForm((p) => ({ ...p, websiteUrl: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerScraperPlatform', 'Scraper platform')}</label>
+                          <select className={inputClass} value={form.scraperPlatform} onChange={(e) => setForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{platformLabels[x] || x}</option>)}</select>
+                        </div>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.useProductContext} onChange={(e) => setForm((p) => ({ ...p, useProductContext: e.target.checked }))} />{tr('schedulerUseProductDb', 'Use product DB')}</label>
                       </div>
                     </div>
                   </>
@@ -1621,15 +1851,17 @@ function SchedulerPage() {
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
                   <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    {form.scheduleMode === 'existing' ? '3. Output actions' : '5. Output actions'}
+                    {form.scheduleMode === 'existing'
+                      ? tr('schedulerStepOutputActions3', '3. Output actions')
+                      : tr('schedulerStepOutputActions5', '5. Output actions')}
                   </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.generateImage} onChange={(e) => setForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.autoPost} onChange={(e) => setForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.generateImage} onChange={(e) => setForm((p) => ({ ...p, generateImage: e.target.checked }))} />{tr('schedulerGenerateImage', 'Generate image')}</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={form.autoPost} onChange={(e) => setForm((p) => ({ ...p, autoPost: e.target.checked }))} />{tr('schedulerAutoPost', 'Auto post')}</label>
                     {form.autoPost ? (
                       <select className={inputClass} value={form.publishStatus} onChange={(e) => setForm((p) => ({ ...p, publishStatus: e.target.value }))}>
-                        <option value="draft">Post as draft</option>
-                        <option value="publish">Publish live</option>
+                        <option value="draft">{tr('schedulerPostAsDraft', 'Post as draft')}</option>
+                        <option value="publish">{tr('schedulerPublishLive', 'Publish live')}</option>
                       </select>
                     ) : null}
                   </div>
@@ -1637,8 +1869,8 @@ function SchedulerPage() {
               </div>
 
               <div className="mt-5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setForm(defaultForm())} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Reset</button>
-                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Add schedule</button>
+                <button type="button" onClick={() => setForm(defaultForm())} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{tr('schedulerReset', 'Reset')}</button>
+                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">{tr('schedulerAddSchedule', 'Add schedule')}</button>
               </div>
             </form>
           </div>
@@ -1649,16 +1881,20 @@ function SchedulerPage() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
           <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Edit schedule</h3>
-              <ModalCloseButton onClick={() => setShowEditModal(false)} label="Close" />
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                {tr('schedulerEditTitle', 'Edit schedule')}
+              </h3>
+              <ModalCloseButton onClick={() => setShowEditModal(false)} label={tr('schedulerClose', 'Close')} />
             </div>
 
             <form onSubmit={handleEditSave} className="mt-4">
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Schedule type</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {tr('schedulerScheduleType', 'Schedule type')}
+                  </p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {SCHEDULE_MODES.map((mode) => (
+                    {scheduleModes.map((mode) => (
                       <button
                         key={`edit-mode-${mode.value}`}
                         type="button"
@@ -1679,11 +1915,11 @@ function SchedulerPage() {
                   {editForm.scheduleMode === 'existing' ? (
                     <>
                       <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        1. Select existing history blog
+                        {tr('schedulerStepSelectExisting', '1. Select existing history blog')}
                       </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
                         <div className="md:col-span-2">
-                          <label className={labelClass}>History blog</label>
+                          <label className={labelClass}>{tr('schedulerHistoryBlog', 'History blog')}</label>
                           <HistoryBlogDropdown
                             value={editForm.sourceBlogId}
                             options={editFilteredHistoryBlogOptions}
@@ -1694,63 +1930,110 @@ function SchedulerPage() {
                             onRefresh={() =>
                               loadHistoryBlogOptions({ search: '', force: true })
                             }
-                            placeholder="Select a generated blog"
+                            placeholder={tr('schedulerHistoryBlogPlaceholder', 'Select a generated blog')}
+                            searchPlaceholder={tr('schedulerHistorySearchPlaceholder', 'Search by title or keyword')}
+                            refreshLabel={tr('schedulerHistoryRefresh', 'Refresh')}
+                            loadingLabel={tr('schedulerHistoryDropdownLoading', 'Loading blogs...')}
+                            emptyLabel={tr('schedulerHistoryDropdownEmpty', 'No matching blogs found.')}
                           />
                           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                             {historyBlogLoading
-                              ? 'Loading history blogs...'
-                              : `${editFilteredHistoryBlogOptions.length} blog(s) found`}
+                              ? tr('schedulerHistoryLoading', 'Loading history blogs...')
+                              : tr('schedulerBlogsFound', '{count} blog(s) found', {
+                                  count: editFilteredHistoryBlogOptions.length,
+                                })}
                           </p>
                         </div>
                       </div>
                     </>
                   ) : (
                     <>
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">1. Blog content</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepBlogContent', '1. Blog content')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div className="md:col-span-2"><label className={labelClass}>Blog topic</label><input className={inputClass} value={editForm.topic} onChange={(e) => setEditForm((p) => ({ ...p, topic: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Keywords</label><input className={inputClass} value={editForm.keywords} onChange={(e) => setEditForm((p) => ({ ...p, keywords: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Focus keyword</label><input className={inputClass} value={editForm.focusKeyword} onChange={(e) => setEditForm((p) => ({ ...p, focusKeyword: e.target.value }))} /></div>
-                        <div className="md:col-span-2"><label className={labelClass}>Categories (comma separated)</label><input className={inputClass} value={editForm.categories} onChange={(e) => setEditForm((p) => ({ ...p, categories: e.target.value }))} /></div>
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>{tr('schedulerBlogTopic', 'Blog topic')}</label>
+                          <input className={inputClass} value={editForm.topic} onChange={(e) => setEditForm((p) => ({ ...p, topic: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerKeywords', 'Keywords')}</label>
+                          <input className={inputClass} value={editForm.keywords} onChange={(e) => setEditForm((p) => ({ ...p, keywords: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerFocusKeyword', 'Focus keyword')}</label>
+                          <input className={inputClass} value={editForm.focusKeyword} onChange={(e) => setEditForm((p) => ({ ...p, focusKeyword: e.target.value }))} />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>{tr('schedulerCategories', 'Categories (comma separated)')}</label>
+                          <input className={inputClass} value={editForm.categories} onChange={(e) => setEditForm((p) => ({ ...p, categories: e.target.value }))} />
+                        </div>
                       </div>
                     </>
                   )}
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">2. Destination and run time</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {tr('schedulerStepDestination', '2. Destination and run time')}
+                  </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
-                      <label className={labelClass}>Post destination</label>
+                      <label className={labelClass}>{tr('schedulerPostDestinationLabel', 'Post destination')}</label>
                       <select className={inputClass} value={editForm.destinationId} onChange={(e) => onEditDestinationChange(e.target.value)}>
-                        <option value="">Select destination</option>
+                        <option value="">{tr('schedulerSelectDestination', 'Select destination')}</option>
                         {destinations.map((d) => (
                           <option key={d.id} value={d.id}>{d.name || d.id} ({d.platform || 'unknown'})</option>
                         ))}
                       </select>
                     </div>
-                    <div><label className={labelClass}>Run date & time</label><input className={inputClass} type="datetime-local" value={editForm.runAt} onChange={(e) => setEditForm((p) => ({ ...p, runAt: e.target.value }))} /></div>
+                    <div>
+                      <label className={labelClass}>{tr('schedulerRunDateTime', 'Run date & time')}</label>
+                      <input className={inputClass} type="datetime-local" value={editForm.runAt} onChange={(e) => setEditForm((p) => ({ ...p, runAt: e.target.value }))} />
+                    </div>
                   </div>
                 </div>
 
                 {editForm.scheduleMode !== 'existing' ? (
                   <>
                     <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">3. Writing setup</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepWriting', '3. Writing setup')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                        <div><label className={labelClass}>Language</label><select className={inputClass} value={editForm.language} onChange={(e) => setEditForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Style</label><select className={inputClass} value={editForm.writingStyle} onChange={(e) => setEditForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Tone</label><select className={inputClass} value={editForm.writingTone} onChange={(e) => setEditForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <div><label className={labelClass}>Target words</label><input className={inputClass} type="number" min={300} max={10000} value={editForm.targetWordCount} onChange={(e) => setEditForm((p) => ({ ...p, targetWordCount: e.target.value }))} /></div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerLanguage', 'Language')}</label>
+                          <select className={inputClass} value={editForm.language} onChange={(e) => setEditForm((p) => ({ ...p, language: e.target.value }))}>{languages.map((x) => <option key={x} value={x}>{x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerStyle', 'Style')}</label>
+                          <select className={inputClass} value={editForm.writingStyle} onChange={(e) => setEditForm((p) => ({ ...p, writingStyle: e.target.value }))}>{STYLES.map((x) => <option key={x} value={x}>{styleLabels[x] || x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerTone', 'Tone')}</label>
+                          <select className={inputClass} value={editForm.writingTone} onChange={(e) => setEditForm((p) => ({ ...p, writingTone: e.target.value }))}>{TONES.map((x) => <option key={x} value={x}>{toneLabels[x] || x}</option>)}</select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerTargetWords', 'Target words')}</label>
+                          <input className={inputClass} type="number" min={300} max={10000} value={editForm.targetWordCount} onChange={(e) => setEditForm((p) => ({ ...p, targetWordCount: e.target.value }))} />
+                        </div>
                       </div>
                     </div>
 
                     <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
-                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">4. Product context and scrape</p>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {tr('schedulerStepProduct', '4. Product context and scrape')}
+                      </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div><label className={labelClass}>Store URL (optional)</label><input className={inputClass} value={editForm.websiteUrl} onChange={(e) => setEditForm((p) => ({ ...p, websiteUrl: e.target.value }))} /></div>
-                        <div><label className={labelClass}>Scraper platform</label><select className={inputClass} value={editForm.scraperPlatform} onChange={(e) => setEditForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></div>
-                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.useProductContext} onChange={(e) => setEditForm((p) => ({ ...p, useProductContext: e.target.checked }))} />Use product DB</label>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerStoreUrlOptional', 'Store URL (optional)')}</label>
+                          <input className={inputClass} value={editForm.websiteUrl} onChange={(e) => setEditForm((p) => ({ ...p, websiteUrl: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{tr('schedulerScraperPlatform', 'Scraper platform')}</label>
+                          <select className={inputClass} value={editForm.scraperPlatform} onChange={(e) => setEditForm((p) => ({ ...p, scraperPlatform: e.target.value }))}>{PLATFORMS.map((x) => <option key={x} value={x}>{platformLabels[x] || x}</option>)}</select>
+                        </div>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.useProductContext} onChange={(e) => setEditForm((p) => ({ ...p, useProductContext: e.target.checked }))} />{tr('schedulerUseProductDb', 'Use product DB')}</label>
                       </div>
                     </div>
                   </>
@@ -1758,15 +2041,17 @@ function SchedulerPage() {
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-700/80 dark:bg-slate-900/40">
                   <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    {editForm.scheduleMode === 'existing' ? '3. Output actions' : '5. Output actions'}
+                    {editForm.scheduleMode === 'existing'
+                      ? tr('schedulerStepOutputActions3', '3. Output actions')
+                      : tr('schedulerStepOutputActions5', '5. Output actions')}
                   </p>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.generateImage} onChange={(e) => setEditForm((p) => ({ ...p, generateImage: e.target.checked }))} />Generate image</label>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.autoPost} onChange={(e) => setEditForm((p) => ({ ...p, autoPost: e.target.checked }))} />Auto post</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.generateImage} onChange={(e) => setEditForm((p) => ({ ...p, generateImage: e.target.checked }))} />{tr('schedulerGenerateImage', 'Generate image')}</label>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200"><input type="checkbox" checked={editForm.autoPost} onChange={(e) => setEditForm((p) => ({ ...p, autoPost: e.target.checked }))} />{tr('schedulerAutoPost', 'Auto post')}</label>
                     {editForm.autoPost ? (
                       <select className={inputClass} value={editForm.publishStatus} onChange={(e) => setEditForm((p) => ({ ...p, publishStatus: e.target.value }))}>
-                        <option value="draft">Post as draft</option>
-                        <option value="publish">Publish live</option>
+                        <option value="draft">{tr('schedulerPostAsDraft', 'Post as draft')}</option>
+                        <option value="publish">{tr('schedulerPublishLive', 'Publish live')}</option>
                       </select>
                     ) : null}
                   </div>
@@ -1774,8 +2059,8 @@ function SchedulerPage() {
               </div>
 
               <div className="mt-5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setShowEditModal(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button>
-                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Save changes</button>
+                <button type="button" onClick={() => setShowEditModal(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{tr('schedulerCancel', 'Cancel')}</button>
+                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">{tr('schedulerSaveChanges', 'Save changes')}</button>
               </div>
             </form>
           </div>
@@ -1786,8 +2071,10 @@ function SchedulerPage() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
           <div className="max-h-[92vh] w-full max-w-3xl overflow-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Import schedules</h3>
-              <ModalCloseButton onClick={() => setShowImportModal(false)} label="Close" />
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                {tr('schedulerImportTitle', 'Import schedules')}
+              </h3>
+              <ModalCloseButton onClick={() => setShowImportModal(false)} label={tr('schedulerClose', 'Close')} />
             </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -1796,7 +2083,7 @@ function SchedulerPage() {
                 onClick={handleTemplateCsv}
                 className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                Export sample template
+                {tr('schedulerExportTemplate', 'Export sample template')}
               </button>
             </div>
 
@@ -1807,16 +2094,18 @@ function SchedulerPage() {
                 rows={10}
                 value={csvContent}
                 onChange={(e) => setCsvContent(e.target.value)}
-                placeholder="Paste schedule CSV content (run_at: DD-MM-YYYY HH:mm)"
+                placeholder={tr('schedulerPasteCsvPlaceholder', 'Paste schedule CSV content (run_at: DD-MM-YYYY HH:mm)')}
               />
             </div>
 
             {csvHeaders.length > 0 ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/40">
                 <div className="mb-3 flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Column mapping</p>
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                    {tr('schedulerColumnMapping', 'Column mapping')}
+                  </p>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Identified:{' '}
+                    {tr('schedulerIdentified', 'Identified')}:{' '}
                     {csvHeaders.filter((h) => (csvColumnMappings[h] || detectImportField(h))).length} / {csvHeaders.length}
                   </p>
                 </div>
@@ -1824,14 +2113,15 @@ function SchedulerPage() {
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-300">
                       <tr>
-                        <th className="px-3 py-2 text-left">CSV column</th>
-                        <th className="px-3 py-2 text-left">Detected</th>
-                        <th className="px-3 py-2 text-left">Map to</th>
+                        <th className="px-3 py-2 text-left">{tr('schedulerCsvColumn', 'CSV column')}</th>
+                        <th className="px-3 py-2 text-left">{tr('schedulerDetected', 'Detected')}</th>
+                        <th className="px-3 py-2 text-left">{tr('schedulerMapTo', 'Map to')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {csvHeaders.map((header) => {
                         const mapped = csvColumnMappings[header] || detectImportField(header);
+                        const mappedLabel = importFieldLabels[mapped] || mapped || tr('schedulerNotIdentified', 'Not identified');
                         return (
                           <tr key={header} className="border-t border-slate-200 dark:border-slate-700">
                             <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{header}</td>
@@ -1841,7 +2131,7 @@ function SchedulerPage() {
                                   mapped ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
                                 }`}
                               >
-                                {mapped || 'Not identified'}
+                                {mappedLabel}
                               </span>
                             </td>
                             <td className="px-3 py-2">
@@ -1855,7 +2145,7 @@ function SchedulerPage() {
                                   }))
                                 }
                               >
-                                {IMPORT_FIELD_OPTIONS.map((option) => (
+                                {importFieldOptions.map((option) => (
                                   <option key={`${header}-${option.value || 'empty'}`} value={option.value}>
                                     {option.label}
                                   </option>
@@ -1881,14 +2171,14 @@ function SchedulerPage() {
                 }}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                Clear
+                {tr('schedulerClear', 'Clear')}
               </button>
               <button
                 type="button"
                 onClick={handleImportCsv}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                Import CSV
+                {tr('schedulerImportCsv', 'Import CSV')}
               </button>
             </div>
           </div>
@@ -1898,11 +2188,17 @@ function SchedulerPage() {
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl">
-            <h4 className="text-lg font-semibold text-white">Delete schedule?</h4>
-            <p className="mt-2 text-sm text-slate-300">This will permanently delete the schedule for "{deleteTarget.topic}".</p>
+            <h4 className="text-lg font-semibold text-white">
+              {tr('schedulerDeleteTitle', 'Delete schedule?')}
+            </h4>
+            <p className="mt-2 text-sm text-slate-300">
+              {tr('schedulerDeleteBody', 'This will permanently delete the schedule for "{topic}".', {
+                topic: deleteTarget.topic,
+              })}
+            </p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button>
-              <button type="button" onClick={handleDelete} className="rounded-lg border border-red-800 bg-red-900/30 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/50">Delete</button>
+              <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{tr('schedulerCancel', 'Cancel')}</button>
+              <button type="button" onClick={handleDelete} className="rounded-lg border border-red-800 bg-red-900/30 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/50">{tr('schedulerDelete', 'Delete')}</button>
             </div>
           </div>
         </div>

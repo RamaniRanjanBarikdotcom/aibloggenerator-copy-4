@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle, Clock, ExternalLink, X, Plus, Upload } from 'lucide-react';
+import { CheckCircle, Clock, ExternalLink, X, Plus, Upload, RefreshCw } from 'lucide-react';
 import ModalCloseButton from './ModalCloseButton';
 
 const HISTORY_PUBLISH_STATUS_CACHE_KEY = 'history_publish_status_cache_v1';
@@ -19,12 +19,14 @@ function HistoryPage({
   onDeleteBlog,
   onClearAll,
   onGenerateImage,
+  onRefreshHistory,
 }) {
   const historyList = Array.isArray(history) ? history : [];
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [bulkFormat, setBulkFormat] = useState('markdown');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [imageGeneratingId, setImageGeneratingId] = useState(null);
   const [publishStatuses, setPublishStatuses] = useState(() => {
     try {
@@ -60,6 +62,16 @@ function HistoryPage({
   const [uploadingLocalImage, setUploadingLocalImage] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(1);
+
+  const handleRefresh = async () => {
+    if (!onRefreshHistory || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshHistory();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
   const getStatusLabel = (status) => {
     if (status === 'publish') return t.statusPublish || 'Published';
     if (status === 'draft') return t.statusDraft || 'Draft';
@@ -353,7 +365,9 @@ function HistoryPage({
 
   return (
     <div className="max-w-5xl mx-auto p-8">
-      <h2 className="text-3xl font-bold text-slate-900 mb-2">{t.historyTitle}</h2>
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between mb-2">
+        <h2 className="text-3xl font-bold text-slate-900">{t.historyTitle}</h2>
+      </div>
       <p className="text-slate-600 mb-8">{t.generateSeo}</p>
 
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 mb-6">
@@ -435,7 +449,7 @@ function HistoryPage({
               {t.notPublished || 'Non posted'}: <strong>{statusCounts.nonPosted}</strong>
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="grid grid-cols-1 items-center gap-3 lg:grid-cols-[1fr_auto]">
             {canBulkExport && (
               <div className="flex flex-wrap items-center gap-2">
               {selectedIds.length > 0 ? (
@@ -489,6 +503,16 @@ function HistoryPage({
                     className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   >
                     {t.exportHistoryCsv}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    title={t.historyRefresh || 'Refresh'}
+                    aria-label={t.historyRefresh || 'Refresh'}
+                    disabled={isRefreshing}
+                  >
+                    <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
                   </button>
                   {canDelete && (
                     <button
@@ -549,11 +573,21 @@ function HistoryPage({
                   >
                     {t.exportHistoryCsv}
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    title={t.historyRefresh || 'Refresh'}
+                    aria-label={t.historyRefresh || 'Refresh'}
+                    disabled={isRefreshing}
+                  >
+                    <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
+                  </button>
                 </>
               )}
               </div>
             )}
-            <div className="ml-auto rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
+            <div className="justify-self-end rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
               {t.historyPerPage || 'Per page'}:{' '}
               <select
                 value={pageSize}
