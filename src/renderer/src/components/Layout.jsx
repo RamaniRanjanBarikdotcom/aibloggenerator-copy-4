@@ -15,6 +15,8 @@ import {
   ChevronDown,
   User,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 
 function Layout({
@@ -46,6 +48,13 @@ function Layout({
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [isHeaderFloating, setIsHeaderFloating] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('layout.sidebarCollapsed') === '1';
+    } catch (_error) {
+      return false;
+    }
+  });
   const languageMenuRef = useRef(null);
   const accountMenuRef = useRef(null);
   const contentRef = useRef(null);
@@ -83,133 +92,146 @@ function Layout({
     return () => target.removeEventListener('scroll', handleScroll);
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('layout.sidebarCollapsed', isSidebarCollapsed ? '1' : '0');
+    } catch (_error) {
+      // ignore persistence failures
+    }
+  }, [isSidebarCollapsed]);
+
+  const navButtonClass = (active) =>
+    `flex items-center w-full py-3 mb-2 rounded-lg transition ${
+      isSidebarCollapsed ? 'justify-center px-2' : 'px-4'
+    } ${
+      active
+        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+        : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
+    }`;
+  const navIconClass = `w-5 h-5${isSidebarCollapsed ? '' : ' mr-3'}`;
+
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-100 dark:from-[#050b18] dark:via-[#07132a] dark:to-[#081835]">
-      <div className="w-64 bg-white/90 backdrop-blur border-r border-purple-100 flex flex-col dark:bg-slate-900/80 dark:border-slate-800">
-        <div className="p-6 border-b border-purple-100 dark:border-slate-800">
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-            {t.appTitle}
-          </h1>
+      <div
+        className={`${
+          isSidebarCollapsed ? 'w-20' : 'w-64'
+        } bg-white/90 backdrop-blur border-r border-purple-100 flex flex-col transition-all duration-300 dark:bg-slate-900/80 dark:border-slate-800`}
+      >
+        <div
+          className={`border-b border-purple-100 dark:border-slate-800 ${
+            isSidebarCollapsed ? 'p-3' : 'p-6'
+          }`}
+        >
+          <div className={`flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} gap-2`}>
+            {!isSidebarCollapsed ? (
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">{t.appTitle}</h1>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/80 text-slate-700 transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900"
+              title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </button>
+          </div>
         </div>
 
         <nav className="flex-1 p-4">
           {canGenerate && (
             <button
               onClick={() => setCurrentView('home')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'home'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'home')}
+              title={isSidebarCollapsed ? t.generateBlog : undefined}
             >
-              <Home className="w-5 h-5 mr-3" />
-              <span>{t.generateBlog}</span>
+              <Home className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.generateBlog}</span> : null}
             </button>
           )}
 
           {canHistory && (
             <button
               onClick={() => setCurrentView('history')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'history'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'history')}
+              title={isSidebarCollapsed ? t.historyNav : undefined}
             >
-              <History className="w-5 h-5 mr-3" />
-              <span>{t.historyNav}</span>
+              <History className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.historyNav}</span> : null}
             </button>
           )}
 
           {canPosts && (
             <button
               onClick={() => setCurrentView('posts')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'posts'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'posts')}
+              title={isSidebarCollapsed ? (t.postsNav || 'Posts') : undefined}
             >
-              <Globe className="w-5 h-5 mr-3" />
-              <span>{t.postsNav || 'Posts'}</span>
+              <Globe className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.postsNav || 'Posts'}</span> : null}
             </button>
           )}
 
           {canSettings && (
             <button
               onClick={() => setCurrentView('settings')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'settings'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'settings')}
+              title={isSidebarCollapsed ? t.settings : undefined}
             >
-              <Settings className="w-5 h-5 mr-3" />
-              <span>{t.settings}</span>
+              <Settings className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.settings}</span> : null}
             </button>
           )}
 
           {canScraper && (
             <button
               onClick={() => setCurrentView('scraper')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'scraper'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'scraper')}
+              title={isSidebarCollapsed ? t.scraperNav : undefined}
             >
-              <Database className="w-5 h-5 mr-3" />
-              <span>{t.scraperNav}</span>
+              <Database className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.scraperNav}</span> : null}
             </button>
           )}
 
           {canLogs && (
             <button
               onClick={() => setCurrentView('logs')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'logs'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'logs')}
+              title={isSidebarCollapsed ? t.logsNav : undefined}
             >
-              <ClipboardList className="w-5 h-5 mr-3" />
-              <span>{t.logsNav}</span>
+              <ClipboardList className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.logsNav}</span> : null}
             </button>
           )}
 
           {canScheduler && (
             <button
               onClick={() => setCurrentView('scheduler')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'scheduler'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'scheduler')}
+              title={isSidebarCollapsed ? 'Scheduler' : undefined}
             >
-              <CalendarClock className="w-5 h-5 mr-3" />
-              <span>Scheduler</span>
+              <CalendarClock className={navIconClass} />
+              {!isSidebarCollapsed ? <span>Scheduler</span> : null}
             </button>
           )}
 
           {canAdmin && (
             <button
               onClick={() => setCurrentView('admin')}
-              className={`flex items-center w-full px-4 py-3 mb-2 rounded-lg transition ${
-                currentView === 'admin'
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/60'
-              }`}
+              className={navButtonClass(currentView === 'admin')}
+              title={isSidebarCollapsed ? t.adminNav : undefined}
             >
-              <Shield className="w-5 h-5 mr-3" />
-              <span>{t.adminNav}</span>
+              <Shield className={navIconClass} />
+              {!isSidebarCollapsed ? <span>{t.adminNav}</span> : null}
             </button>
           )}
         </nav>
 
-        <div className="p-4 border-t border-purple-100 dark:border-slate-800">
+        <div className={`border-t border-purple-100 dark:border-slate-800 ${isSidebarCollapsed ? 'p-2' : 'p-4'}`}>
           <p className="text-xs text-slate-500 text-center dark:text-slate-500">
-            Version 1.0.1
+            {isSidebarCollapsed ? 'v1.0.1' : 'Version 1.0.1'}
           </p>
         </div>
       </div>
