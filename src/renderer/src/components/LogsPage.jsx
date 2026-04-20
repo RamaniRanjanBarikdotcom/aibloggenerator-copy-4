@@ -2,6 +2,48 @@ import React, { useEffect, useMemo, useState } from 'react';
 import ModalCloseButton from './ModalCloseButton';
 import TablePagination from './TablePagination';
 
+const decodeUnicodeEscapes = (value) =>
+  String(value || '').replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+
+const formatLogDetails = (details) => {
+  if (!details) return '';
+  if (typeof details === 'object') {
+    try {
+      return JSON.stringify(details, null, 2);
+    } catch (_error) {
+      return String(details);
+    }
+  }
+
+  let text = String(details);
+
+  // Attempt to parse JSON payloads so escaped unicode becomes real characters.
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string') {
+      text = parsed;
+    } else {
+      return JSON.stringify(parsed, null, 2);
+    }
+  } catch (_error) {
+    // Keep raw text fallback.
+  }
+
+  // Decode explicit \uXXXX sequences for legacy rows.
+  const decoded = decodeUnicodeEscapes(text);
+  try {
+    const reparsed = JSON.parse(decoded);
+    if (typeof reparsed === 'string') {
+      return reparsed;
+    }
+    return JSON.stringify(reparsed, null, 2);
+  } catch (_error) {
+    return decoded;
+  }
+};
+
 function LogsPage({ t, canDelete = false }) {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
@@ -176,7 +218,7 @@ function LogsPage({ t, canDelete = false }) {
                     </div>
                     {log.details && (
                       <pre className="mt-2 overflow-x-auto rounded-md bg-slate-50 p-2 text-xs text-slate-500 whitespace-pre-wrap break-words">
-                        {log.details}
+                        {formatLogDetails(log.details)}
                       </pre>
                     )}
                   </div>

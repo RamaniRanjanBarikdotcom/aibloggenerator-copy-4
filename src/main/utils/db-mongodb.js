@@ -1839,6 +1839,28 @@ async function getPublishHistoryByBlog(blogId) {
   }));
 }
 
+async function updatePublishHistoryStatusByRemotePost({
+  remotePostId,
+  destinationId = null,
+  status,
+} = {}) {
+  await initDb();
+  if (!remotePostId || typeof status === 'undefined') return { matchedCount: 0, modifiedCount: 0 };
+  const rawId = String(remotePostId).trim();
+  if (!rawId) return { matchedCount: 0, modifiedCount: 0 };
+  const idCandidates = [rawId];
+  if (/^-?\d+$/.test(rawId)) {
+    idCandidates.push(Number(rawId));
+  }
+  const filter = {
+    remote_post_id: idCandidates.length > 1 ? { $in: idCandidates } : idCandidates[0],
+  };
+  if (destinationId) {
+    filter.destination_id = destinationId;
+  }
+  return await db.collection('publish_history').updateMany(filter, { $set: { status } });
+}
+
 /**
  * Close database connection
  */
@@ -1900,6 +1922,7 @@ module.exports = {
   addPublishHistory: recordPublishHistory, // Alias for compatibility
   getPublishHistory,
   getPublishHistoryByBlog,
+  updatePublishHistoryStatusByRemotePost,
   getPublishAnalytics,
   getRemotePostAnalytics,
   logAnalyticsEvent,

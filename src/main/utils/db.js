@@ -1240,6 +1240,30 @@ async function getPublishHistoryByBlog(blogId) {
   }));
 }
 
+async function updatePublishHistoryStatusByRemotePost({
+  remotePostId,
+  destinationId = null,
+  status,
+} = {}) {
+  await initDb();
+  if (!remotePostId || typeof status === 'undefined') return;
+  const rawId = String(remotePostId).trim();
+  if (!rawId) return;
+  const idCandidates = [rawId];
+  if (/^-?\d+$/.test(rawId)) {
+    idCandidates.push(Number(rawId));
+  }
+  const placeholders = idCandidates.map(() => '?').join(', ');
+  let query = `UPDATE publish_history SET status = ? WHERE remote_post_id IN (${placeholders})`;
+  const params = [status, ...idCandidates];
+  if (destinationId) {
+    query += ' AND destination_id = ?';
+    params.push(destinationId);
+  }
+  db.run(query, params);
+  persistDb();
+}
+
 async function getPublishHistory({ userId, limit = 100, offset = 0, dateFrom, dateTo, platform, status, destinationId } = {}) {
   await initDb();
   let query = 'SELECT ph.*, b.title as blog_title FROM publish_history ph LEFT JOIN blogs b ON ph.blog_id = b.id WHERE 1=1';
@@ -1503,6 +1527,7 @@ module.exports = {
   getBlogForRemotePost,
   getRemotePostAnalytics,
   addPublishHistory,
+  updatePublishHistoryStatusByRemotePost,
   getPublishHistoryByBlog,
   getPublishHistory,
   getPublishAnalytics,

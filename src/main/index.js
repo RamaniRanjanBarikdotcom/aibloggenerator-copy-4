@@ -78,6 +78,7 @@ const {
   getBlogForRemotePost,
   getRemotePostAnalytics,
   addPublishHistory,
+  updatePublishHistoryStatusByRemotePost,
   getPublishHistoryByBlog,
   getPublishHistory,
   getPublishAnalytics,
@@ -6920,6 +6921,20 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
         destination.id || null
       );
 
+      try {
+        await Promise.all(
+          posts.map((item) =>
+            updatePublishHistoryStatusByRemotePost({
+              remotePostId: item.id,
+              destinationId: destination.id || null,
+              status: String(item.status || 'draft').toLowerCase(),
+            })
+          )
+        );
+      } catch (_error) {
+        // Ignore publish history sync failures in remote API mode.
+      }
+
       console.log('[Sync] Sync complete, saved posts:', posts.length);
       return { success: true, count: posts.length };
     }
@@ -6974,6 +6989,20 @@ ipcMain.handle('sync-remote-posts', async (event, { destinationId = null, after 
           'shopify',
           destination.id || null
         );
+
+        try {
+          await Promise.all(
+            articles.map((item) =>
+              updatePublishHistoryStatusByRemotePost({
+                remotePostId: item.id,
+                destinationId: destination.id || null,
+                status: item.published_at ? 'publish' : 'draft',
+              })
+            )
+          );
+        } catch (_error) {
+          // Ignore publish history sync failures in remote API mode.
+        }
 
       console.log('[Sync] Sync complete, saved posts:', articles.length);
       return { success: true, count: articles.length };
@@ -7539,6 +7568,7 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
         status,
         imageSrc: imageUrl || '',
       });
+      const nextStatus = updated?.published_at ? 'publish' : 'draft';
       const blogHandle =
         destination.blogHandle ||
         (await fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion, blogId }));
@@ -7553,7 +7583,7 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
             id: updated?.id || postId,
             destination_id: destination.id || null,
             title: updated?.title || normalizedTitle || 'Untitled',
-            status: updated?.published_at ? 'publish' : 'draft',
+            status: nextStatus,
             url: articleUrl || null,
             created_at: updated?.created_at || current?.created_at,
             updated_at: updated?.updated_at || new Date().toISOString(),
@@ -7571,6 +7601,15 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
         ],
         'shopify'
       );
+      try {
+        await updatePublishHistoryStatusByRemotePost({
+          remotePostId: updated?.id || postId,
+          destinationId: destination.id || null,
+          status: nextStatus,
+        });
+      } catch (_error) {
+        // Ignore publish history sync failures in remote API mode.
+      }
       return { success: true, postId };
     }
 
@@ -7603,6 +7642,15 @@ ipcMain.handle('update-remote-post', async (event, { destinationId, postId, titl
       ],
       'wordpress'
     );
+    try {
+      await updatePublishHistoryStatusByRemotePost({
+        remotePostId: updated.id || postId,
+        destinationId: destination.id || null,
+        status: updated.status || status || 'draft',
+      });
+    } catch (_error) {
+      // Ignore publish history sync failures in remote API mode.
+    }
     return { success: true, postId };
   } catch (error) {
     return { success: false, error: error.message };
@@ -7631,11 +7679,29 @@ ipcMain.handle('delete-remote-post', async (event, { destinationId, postId, forc
       const apiVersion = (destination.apiVersion || '2024-01').trim();
       await deleteShopifyArticle({ shopDomain, accessToken, apiVersion, blogId, articleId: postId });
       await deleteRemotePost({ id: postId, provider: 'shopify', destinationId: destination.id || null });
+      try {
+        await updatePublishHistoryStatusByRemotePost({
+          remotePostId: postId,
+          destinationId: destination.id || null,
+          status: null,
+        });
+      } catch (_error) {
+        // Ignore publish history sync failures in remote API mode.
+      }
       return { success: true };
     }
 
     await deleteWordpressPost({ destination, postId, force });
     await deleteRemotePost({ id: postId, provider: 'wordpress', destinationId: destination.id || null });
+    try {
+      await updatePublishHistoryStatusByRemotePost({
+        remotePostId: postId,
+        destinationId: destination.id || null,
+        status: null,
+      });
+    } catch (_error) {
+      // Ignore publish history sync failures in remote API mode.
+    }
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -7768,5 +7834,3 @@ ipcMain.handle('get-realtime-analytics', async (event, payload) => {
     return { success: false, error: error.message };
   }
 });
-
-

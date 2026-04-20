@@ -500,7 +500,10 @@ function bgDbAction(array $cfg, string $action, array $args)
                 'level' => 'info',
                 'category' => bgActionToLogCategory($action),
                 'message' => $details !== '' ? $details : ($action !== '' ? $action : 'Activity'),
-                'details' => json_encode(['source' => 'activity', 'action' => $action], JSON_UNESCAPED_SLASHES),
+                'details' => json_encode(
+                    ['source' => 'activity', 'action' => $action],
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                ),
                 'blog_id' => null,
                 'tokens_used' => null,
                 'cost' => null,
@@ -545,7 +548,9 @@ function bgDbAction(array $cfg, string $action, array $args)
                 'level' => (string)($payload['level'] ?? 'info'),
                 'category' => (string)($payload['category'] ?? 'general'),
                 'message' => (string)($payload['message'] ?? ''),
-                'details' => isset($payload['details']) ? json_encode($payload['details'], JSON_UNESCAPED_SLASHES) : null,
+                'details' => isset($payload['details'])
+                    ? json_encode($payload['details'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+                    : null,
                 'blog_id' => $payload['blogId'] ?? null,
                 'tokens_used' => isset($payload['tokensUsed']) ? (int)$payload['tokensUsed'] : null,
                 'cost' => isset($payload['cost']) ? (float)$payload['cost'] : null,

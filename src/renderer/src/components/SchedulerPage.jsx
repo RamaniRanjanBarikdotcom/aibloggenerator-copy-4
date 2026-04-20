@@ -708,7 +708,14 @@ function SchedulerPage({ t }) {
   );
 
   const completedJobs = useMemo(
-    () => filteredJobs.filter((job) => String(job.status || '').toLowerCase() === 'completed'),
+    () =>
+      filteredJobs
+        .filter((job) => String(job.status || '').toLowerCase() === 'completed')
+        .sort((a, b) => {
+          const aTime = Date.parse(a.completedAt || a.updatedAt || a.runAt || '') || 0;
+          const bTime = Date.parse(b.completedAt || b.updatedAt || b.runAt || '') || 0;
+          return bTime - aTime;
+        }),
     [filteredJobs]
   );
 

@@ -66,6 +66,12 @@ function HistoryPage({
   const handleRefresh = async () => {
     if (!onRefreshHistory || isRefreshing) return;
     setIsRefreshing(true);
+    setPublishStatuses({});
+    try {
+      sessionStorage.removeItem(HISTORY_PUBLISH_STATUS_CACHE_KEY);
+    } catch (_error) {
+      // ignore
+    }
     try {
       await onRefreshHistory();
     } finally {
@@ -78,6 +84,7 @@ function HistoryPage({
     if (status === 'pending') return t.statusPending || 'Pending';
     if (status === 'private') return t.statusPrivate || 'Private';
     if (status === 'scheduled') return t.statusScheduled || 'Scheduled';
+    if (status === 'deleted' || status === 'removed') return t.statusDeleted || 'Deleted';
     return status || '-';
   };
   const normalizeImageGallery = (galleryValue, imageUrl) => {
@@ -105,6 +112,7 @@ function HistoryPage({
     const status = String(publishStatuses?.[blogId]?.status || '').toLowerCase();
     if (status === 'publish') return 'published';
     if (status === 'draft') return 'draft';
+    if (status === 'deleted' || status === 'removed') return 'nonPosted';
     return 'nonPosted';
   };
 
@@ -197,12 +205,18 @@ function HistoryPage({
       setPublishStatuses((prev) => {
         const next = { ...prev };
         let changed = false;
+        const nowStamp = Date.now();
         results.forEach((result, index) => {
           if (result.status !== 'fulfilled') return;
           const payload = result.value;
+          const id = idsToLoad[index];
           if (payload?.success && payload.history?.length > 0) {
-            const id = idsToLoad[index];
-            next[id] = { ...payload.history[0], _cachedAt: Date.now() };
+            next[id] = { ...payload.history[0], _cachedAt: nowStamp };
+            changed = true;
+            return;
+          }
+          if (payload?.success) {
+            next[id] = { status: '', _cachedAt: nowStamp };
             changed = true;
           }
         });
@@ -235,6 +249,8 @@ function HistoryPage({
   }, [pageIndex, totalPages]);
 
   const selectedPublishStatus = selectedBlogId ? publishStatuses[selectedBlogId] : null;
+  const selectedPublishState = String(selectedPublishStatus?.status || '').toLowerCase();
+  const showSelectedPublishBadge = selectedPublishState === 'publish' || selectedPublishState === 'draft';
   const selectedGallery = useMemo(
     () => normalizeImageGallery(selectedBlog?.imageGallery || selectedBlog?.image_gallery, selectedBlog?.imageUrl),
     [selectedBlog]
@@ -612,6 +628,8 @@ function HistoryPage({
         <div className="space-y-3">
           {pagedHistory.map((item) => {
             const publishStatus = publishStatuses[item.id];
+            const publishState = String(publishStatus?.status || '').toLowerCase();
+            const showPublishBadge = publishState === 'publish' || publishState === 'draft';
             return (
             <button
               key={item.id}
@@ -627,9 +645,9 @@ function HistoryPage({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="font-semibold text-slate-900 truncate">{item.title || t.untitledLabel || 'Untitled'}</p>
-                  {publishStatus && (
+                  {publishStatus && showPublishBadge && (
                     <div className="flex items-center gap-1 flex-shrink-0">
-                      {publishStatus.status === 'publish' ? (
+                      {publishState === 'publish' ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
                           <CheckCircle className="w-3 h-3" />
                           {getStatusLabel('publish')}
@@ -658,7 +676,7 @@ function HistoryPage({
                 </div>
                 <p className="text-xs text-slate-500">
                   {(item.generatedAt ? new Date(item.generatedAt).toLocaleString() : '-') } • {item.wordCount || 0} {t.historyWords}
-                  {publishStatus && (
+                  {publishStatus && showPublishBadge && (
                     <span className="ml-2 text-slate-400">
                       • {publishStatus.destinationName} ({new Date(publishStatus.publishedAt).toLocaleDateString()})
                     </span>
@@ -729,8 +747,8 @@ function HistoryPage({
                     <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
                       {selectedBlog?.language || '-'}
                     </span>
-                    {selectedPublishStatus ? (
-                      selectedPublishStatus.status === 'publish' ? (
+                    {showSelectedPublishBadge ? (
+                      selectedPublishState === 'publish' ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
                           <CheckCircle className="w-3 h-3" />
                           {getStatusLabel('publish')}
@@ -746,7 +764,7 @@ function HistoryPage({
                         {t.notPublished || 'Not published'}
                       </span>
                     )}
-                    {selectedPublishStatus?.publishedUrl && (
+                    {showSelectedPublishBadge && selectedPublishStatus?.publishedUrl && (
                       <button
                         type="button"
                         onClick={() => window.electronAPI.openExternal({ url: selectedPublishStatus.publishedUrl })}

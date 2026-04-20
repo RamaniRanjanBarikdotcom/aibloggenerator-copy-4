@@ -109,7 +109,8 @@ function PostsPage({ t, canDelete = false }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState('');
-  const [statusFilter, setStatusFilter] = useState('any');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState('any');
+  const [postsStatusFilter, setPostsStatusFilter] = useState('any');
   const [platformFilter, setPlatformFilter] = useState('any');
   const [destinations, setDestinations] = useState([]);
   const [destinationId, setDestinationId] = useState(() => {
@@ -175,7 +176,7 @@ function PostsPage({ t, canDelete = false }) {
   const loadPosts = async () => {
     setLoading(true);
     const result = await window.electronAPI.getRemotePosts({
-      status: statusFilter === 'any' ? null : statusFilter,
+      status: postsStatusFilter === 'any' ? null : postsStatusFilter,
       destinationId: destinationId || null,
     });
     if (result.success) {
@@ -223,7 +224,7 @@ function PostsPage({ t, canDelete = false }) {
     const result = await window.electronAPI.getPublishHistory({
       limit: 50,
       platform: platformFilter === 'any' ? null : platformFilter,
-      status: statusFilter === 'any' ? null : statusFilter,
+      status: historyStatusFilter === 'any' ? null : historyStatusFilter,
       destinationId: destinationId || null,
     });
     if (result.success) {
@@ -575,10 +576,16 @@ function PostsPage({ t, canDelete = false }) {
 
   useEffect(() => {
     loadDestinations();
+  }, []);
+
+  useEffect(() => {
     loadPosts();
     loadAnalytics();
+  }, [postsStatusFilter, destinationId]);
+
+  useEffect(() => {
     loadPublishHistory();
-  }, [statusFilter, platformFilter, destinationId]);
+  }, [historyStatusFilter, platformFilter, destinationId]);
 
   useEffect(() => {
     setAutoSynced(false);
@@ -591,8 +598,11 @@ function PostsPage({ t, canDelete = false }) {
 
   useEffect(() => {
     setPublishHistoryPage(1);
+  }, [historyStatusFilter, platformFilter, destinationId]);
+
+  useEffect(() => {
     setPostsPage(1);
-  }, [statusFilter, platformFilter, destinationId]);
+  }, [postsStatusFilter, destinationId]);
 
   useEffect(() => {
     if (recentPublishesPage > recentPublishesTotalPages) {
@@ -619,10 +629,12 @@ function PostsPage({ t, canDelete = false }) {
         loadAnalytics();
         loadPosts();
       }
-      loadPublishHistory();
+      if (activeTab === 'history' || activeTab === 'overview') {
+        loadPublishHistory();
+      }
     }, 10000);
     return () => clearInterval(id);
-  }, [activeTab, statusFilter, platformFilter, destinationId]);
+  }, [activeTab, historyStatusFilter, postsStatusFilter, platformFilter, destinationId]);
 
   const formatDate = (dateStr) => {
     if (!dateStr) return 'N/A';
@@ -664,6 +676,7 @@ function PostsPage({ t, canDelete = false }) {
     if (status === 'pending') return t.statusPending || 'Pending';
     if (status === 'private') return t.statusPrivate || 'Private';
     if (status === 'scheduled') return t.statusScheduled || 'Scheduled';
+    if (status === 'deleted' || status === 'removed') return t.statusDeleted || 'Deleted';
     return status || '-';
   };
 
@@ -1131,13 +1144,14 @@ function PostsPage({ t, canDelete = false }) {
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-3">
             <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              value={historyStatusFilter}
+              onChange={(e) => setHistoryStatusFilter(e.target.value)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
             >
               <option value="any">{t.allStatusLabel || 'All Status'}</option>
               <option value="publish">{t.statusPublish || 'Published'}</option>
               <option value="draft">{t.statusDraft || 'Draft'}</option>
+              <option value="deleted">{t.statusDeleted || 'Deleted'}</option>
             </select>
             <select
               value={platformFilter}
@@ -1190,6 +1204,8 @@ function PostsPage({ t, canDelete = false }) {
                           className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                             item.status === 'publish'
                               ? 'bg-emerald-50 text-emerald-700'
+                              : item.status === 'deleted' || item.status === 'removed'
+                              ? 'bg-red-50 text-red-700'
                               : 'bg-amber-50 text-amber-700'
                           }`}
                         >
@@ -1235,14 +1251,15 @@ function PostsPage({ t, canDelete = false }) {
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100">
             <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              value={postsStatusFilter}
+              onChange={(e) => setPostsStatusFilter(e.target.value)}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
             >
               <option value="any">{t.statusAny || 'Any Status'}</option>
               <option value="publish">{t.statusPublish || 'Published'}</option>
               <option value="draft">{t.statusDraft || 'Draft'}</option>
               <option value="pending">{t.statusPending || 'Pending'}</option>
+              <option value="deleted">{t.statusDeleted || 'Deleted'}</option>
             </select>
           </div>
 
@@ -1277,6 +1294,8 @@ function PostsPage({ t, canDelete = false }) {
                         ? 'bg-emerald-50 text-emerald-700'
                         : post.status === 'draft'
                         ? 'bg-amber-50 text-amber-700'
+                        : post.status === 'deleted' || post.status === 'removed'
+                        ? 'bg-red-50 text-red-700'
                         : 'bg-slate-100 text-slate-600'
                     }`}
                   >
