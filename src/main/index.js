@@ -5121,6 +5121,11 @@ ipcMain.handle('login', async (event, { username, password }) => {
       if (currentUser?.id) {
         store.set(CURRENT_USER_KEY, currentUser.id);
         try {
+          await touchUserLastOnline({ id: currentUser.id });
+        } catch (_onlineError) {
+          // Keep server mode login resilient even if last-online update fails.
+        }
+        try {
           await logActivity({
             userId: currentUser.id,
             action: 'auth.login',

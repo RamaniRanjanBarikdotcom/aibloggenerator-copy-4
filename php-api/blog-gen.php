@@ -511,6 +511,20 @@ if ($requestPath === '/auth/login' && $method === 'POST') {
         respond(403, ['success' => false, 'error' => 'User is deactive. Contact admin.']);
     }
 
+    // Update activity timestamps on successful login.
+    $now = new UTCDateTime((int)(microtime(true) * 1000));
+    mongoUpdateOne(
+        $cfg,
+        'users',
+        ['_id' => $user['_id']],
+        ['$set' => [
+            'last_online_at' => $now,
+            'last_login_at' => $now,
+            'updated_at' => $now,
+        ]]
+    );
+    $user = mongoFindOne($cfg, 'users', ['_id' => $user['_id']]) ?? $user;
+
     respond(200, [
         'success' => true,
         'user' => sanitizeUser($user),

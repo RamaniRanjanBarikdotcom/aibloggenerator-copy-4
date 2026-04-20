@@ -582,6 +582,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     totalCost: 0,
     imageCount: 0,
   });
+  const [usageMonitoringLoading, setUsageMonitoringLoading] = useState(false);
   const [usageLogs, setUsageLogs] = useState([]);
   const [usagePage, setUsagePage] = useState(1);
   const [usagePerPage, setUsagePerPage] = useState(10);
@@ -1042,6 +1043,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const formatDateLabel = (value) => formatDateInput(value) || '--';
 
   const loadUsageMonitoring = async () => {
+    setUsageMonitoringLoading(true);
     const from = usageDateRangeEnabled ? formatDateInput(usageDateRange.startDate) : null;
     const to = usageDateRangeEnabled ? formatDateInput(usageDateRange.endDate) : null;
     const payload = {
@@ -1049,21 +1051,25 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       dateFrom: from,
       dateTo: to,
     };
-    const logsResult = await window.electronAPI.getLogs({
-      ...payload,
-      limit: 5000,
-      offset: 0,
-    });
-    if (!logsResult?.success) {
-      return;
+    try {
+      const logsResult = await window.electronAPI.getLogs({
+        ...payload,
+        limit: 5000,
+        offset: 0,
+      });
+      if (!logsResult?.success) {
+        return;
+      }
+      const { rows, stats, usageTrend: usageSeries, imageTrend: imageSeries } = buildUsageMetrics(
+        logsResult.logs || []
+      );
+      setUsageLogs(rows);
+      setUsageLogStats(stats);
+      setUsageTrend(usageSeries);
+      setImageTrend(imageSeries);
+    } finally {
+      setUsageMonitoringLoading(false);
     }
-    const { rows, stats, usageTrend: usageSeries, imageTrend: imageSeries } = buildUsageMetrics(
-      logsResult.logs || []
-    );
-    setUsageLogs(rows);
-    setUsageLogStats(stats);
-    setUsageTrend(usageSeries);
-    setImageTrend(imageSeries);
   };
 
   const loadUsers = async () => {
@@ -1703,7 +1709,9 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                 onClick={() => refreshProviderModels(aiProvider)}
                 className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700"
               >
-                <RefreshCw className="h-3 w-3" />
+                <RefreshCw
+                  className={`h-3 w-3 ${providerCatalogStatus[aiProvider] === 'loading' ? 'animate-spin' : ''}`}
+                />
                 <span>
                   {providerCatalogStatus[aiProvider] === 'loading'
                     ? (t.testingLabel || 'Loading...')
@@ -2464,8 +2472,10 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                           <button
                             type="button"
                             onClick={() => fetchShopifyBlogs()}
-                            className="text-xs text-blue-600 hover:text-blue-700"
+                            disabled={shopifyBlogsLoading}
+                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 disabled:opacity-70"
                           >
+                            <RefreshCw className={`h-3 w-3 ${shopifyBlogsLoading ? 'animate-spin' : ''}`} />
                             {t.shopifyBlogRefreshLabel || 'Refresh blogs'}
                           </button>
                         </div>
@@ -2928,8 +2938,10 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                 <button
                   type="button"
                   onClick={loadUsageMonitoring}
-                  className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+                  disabled={usageMonitoringLoading}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-800 disabled:opacity-70 dark:bg-blue-600 dark:hover:bg-blue-500"
                 >
+                  <RefreshCw className={`w-4 h-4 ${usageMonitoringLoading ? 'animate-spin' : ''}`} />
                   {t.logsRefresh}
                 </button>
               </div>

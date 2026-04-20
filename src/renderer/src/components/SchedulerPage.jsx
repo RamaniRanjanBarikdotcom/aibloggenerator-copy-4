@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { languageNames } from '../i18n';
 import ModalCloseButton from './ModalCloseButton';
 import TablePagination from './TablePagination';
@@ -191,8 +192,10 @@ function HistoryBlogDropdown({
             <button
               type="button"
               onClick={onRefresh}
-              className="rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+              disabled={loading}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-70 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
             >
+              <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
               {refreshLabel}
             </button>
           </div>
@@ -1525,9 +1528,13 @@ function SchedulerPage({ t }) {
             <button
               type="button"
               onClick={loadAll}
-              className="whitespace-nowrap rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+              disabled={loading}
+              className="whitespace-nowrap rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-70 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              {tr('schedulerRefresh', 'Refresh')}
+              <span className="inline-flex items-center gap-1">
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+                {tr('schedulerRefresh', 'Refresh')}
+              </span>
             </button>
             <button
               type="button"

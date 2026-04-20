@@ -83,11 +83,19 @@ function bgBuildDateFilter(?string $from, ?string $to): ?array
     return $out;
 }
 
+function bgToLower(string $value): string
+{
+    if (function_exists('mb_strtolower')) {
+        return mb_strtolower($value, 'UTF-8');
+    }
+    return strtolower($value);
+}
+
 function bgMatchText(string $search, array $fields, array $doc): bool
 {
-    $needle = mb_strtolower($search);
+    $needle = bgToLower($search);
     foreach ($fields as $f) {
-        $value = mb_strtolower((string)($doc[$f] ?? ''));
+        $value = bgToLower((string)($doc[$f] ?? ''));
         if ($needle !== '' && str_contains($value, $needle)) {
             return true;
         }
@@ -904,7 +912,7 @@ function bgDbAction(array $cfg, string $action, array $args)
             foreach ($remotePosts as $post) {
                 $topics = bgNormalizeTopics($post['topics'] ?? []);
                 foreach ($topics as $topic) {
-                    $key = mb_strtolower($topic);
+                    $key = bgToLower($topic);
                     $topicViews[$key] = (int)($topicViews[$key] ?? 0) + (int)($post['views'] ?? 0);
                     $topicCounts[$key] = (int)($topicCounts[$key] ?? 0) + 1;
                 }

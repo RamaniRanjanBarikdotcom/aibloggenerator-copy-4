@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import ModalCloseButton from './ModalCloseButton';
 import TablePagination from './TablePagination';
 
@@ -49,10 +50,13 @@ function LogsPage({ t, canDelete = false }) {
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(20);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(false);
   const categoryOptions = [
     { value: '', label: t.logsAllCategories || 'All categories' },
     { value: 'generation', label: t.logsCategoryGeneration || 'Generation' },
@@ -69,33 +73,51 @@ function LogsPage({ t, canDelete = false }) {
 
   const loadLogs = async () => {
     setLoadError('');
-    const result = await window.electronAPI.getLogs({
-      level: level || null,
-      category: category || null,
-    });
-    if (result.success) {
-      setLogs(result.logs || []);
-      return;
+    setLoading(true);
+    try {
+      const result = await window.electronAPI.getLogs({
+        level: level || null,
+        category: category || null,
+        search: debouncedSearch || null,
+      });
+      if (result.success) {
+        setLogs(result.logs || []);
+        return;
+      }
+      setLogs([]);
+      setLoadError(result.error || 'Failed to load logs');
+    } catch (error) {
+      setLogs([]);
+      setLoadError(error?.message || 'Failed to load logs');
+    } finally {
+      setLoading(false);
     }
-    setLogs([]);
-    setLoadError(result.error || 'Failed to load logs');
   };
 
   const loadStats = async () => {
-    const result = await window.electronAPI.getLogsStats();
+    const result = await window.electronAPI.getLogsStats({
+      search: debouncedSearch || null,
+    });
     if (result.success) {
       setStats(result.stats || stats);
     }
   };
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(String(search || '').trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
     loadLogs();
     loadStats();
-  }, [level, category]);
+  }, [level, category, debouncedSearch]);
 
   useEffect(() => {
     setPage(1);
-  }, [level, category, perPage]);
+  }, [level, category, debouncedSearch, perPage]);
 
   useEffect(() => {
     const maxPage = Math.max(1, Math.ceil((logs?.length || 0) / Math.max(1, Number(perPage) || 20)));
@@ -151,6 +173,13 @@ function LogsPage({ t, canDelete = false }) {
           </div>
         ) : null}
         <div className="flex flex-wrap items-center gap-4">
+          <input
+            type="text"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="min-w-[220px] px-3 py-2 border border-slate-200 rounded-lg text-sm"
+            placeholder={t.logsSearchPlaceholder || 'Search logs...'}
+          />
           <select
             value={level}
             onChange={(event) => setLevel(event.target.value)}
@@ -176,8 +205,10 @@ function LogsPage({ t, canDelete = false }) {
               loadLogs();
               loadStats();
             }}
-            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm"
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm disabled:opacity-70"
           >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             {t.logsRefresh}
           </button>
           {canDelete && (
