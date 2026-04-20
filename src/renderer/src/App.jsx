@@ -302,7 +302,7 @@ function App() {
         // Ignore malformed cache and continue with remote fetch.
       }
 
-      const result = await window.electronAPI.getHistory();
+      const result = await window.electronAPI.getHistory({ limit: 5000 });
       if (result.success) {
         setHistory(result.history);
         if (result.summary) {
@@ -384,7 +384,7 @@ function App() {
   }, [currentView, generatedBlog, lastViewedBlog, activeBlogId, blogLoading]);
 
   const refreshHistory = async () => {
-    const refreshed = await window.electronAPI.getHistory();
+    const refreshed = await window.electronAPI.getHistory({ limit: 5000 });
     if (refreshed.success) {
       setHistory(refreshed.history);
       if (refreshed.summary) {
@@ -543,6 +543,9 @@ function App() {
   };
 
   const handleLogout = async () => {
+    if (typeof document !== 'undefined' && document.activeElement?.blur) {
+      document.activeElement.blur();
+    }
     await window.electronAPI.logout();
     handleClientSessionExpired();
   };

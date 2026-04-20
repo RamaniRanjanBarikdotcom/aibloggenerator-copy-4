@@ -2789,7 +2789,7 @@ ipcMain.handle('save-user-settings', async (event, { userId, settings }) => {
   }
 });
 
-ipcMain.handle('get-history', async (event, { userId } = {}) => {
+ipcMain.handle('get-history', async (event, { userId, limit } = {}) => {
   try {
     const startedAt = Date.now();
     requirePermission('history');
@@ -2798,7 +2798,11 @@ ipcMain.handle('get-history', async (event, { userId } = {}) => {
     }
     const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     const targetUserId = isAdmin() ? (userId || null) : workspaceOwnerId;
-    const cacheKey = `${isAdmin() ? 'admin' : 'user'}:${targetUserId || 'all'}`;
+    const requestedLimitRaw = Number(limit);
+    const requestedLimit = Number.isFinite(requestedLimitRaw)
+      ? Math.max(1, Math.min(10000, Math.round(requestedLimitRaw)))
+      : 5000;
+    const cacheKey = `${isAdmin() ? 'admin' : 'user'}:${targetUserId || 'all'}:limit:${requestedLimit}`;
     const now = Date.now();
     const cachedResponse = historyResponseCache.get(cacheKey);
     if (cachedResponse && now - cachedResponse.ts <= HISTORY_RESPONSE_CACHE_TTL_MS) {
@@ -2823,14 +2827,50 @@ ipcMain.handle('get-history', async (event, { userId } = {}) => {
           ? cachedSummaryEntry.summary
           : null;
 
-      const historyPromise = listBlogs({
-        limit: 50,
-        userId: targetUserId,
-        isAdmin: isAdmin(),
-      });
+      const historyPromise = (async () => {
+        if (!isAdmin() && isServerApiEnabled()) {
+          // In server API multi-user workspace mode, user-role accounts should
+          // see complete workspace history (including legacy records without user_id).
+          return listBlogs({
+            limit: requestedLimit,
+            userId: null,
+            isAdmin: false,
+          });
+        }
+        if (!isAdmin() && targetUserId && String(currentUser?.id || '') !== String(targetUserId)) {
+          const [ownerRows, selfRows] = await Promise.all([
+            listBlogs({
+              limit: requestedLimit,
+              userId: targetUserId,
+              isAdmin: false,
+            }),
+            listBlogs({
+              limit: requestedLimit,
+              userId: currentUser?.id || null,
+              isAdmin: false,
+            }),
+          ]);
+          const mergedMap = new Map();
+          [...(Array.isArray(ownerRows) ? ownerRows : []), ...(Array.isArray(selfRows) ? selfRows : [])].forEach(
+            (row) => {
+              const id = String(row?.id || row?._id || '');
+              if (id) mergedMap.set(id, row);
+            }
+          );
+          return Array.from(mergedMap.values())
+            .sort((a, b) => new Date(b?.generatedAt || 0).getTime() - new Date(a?.generatedAt || 0).getTime())
+            .slice(0, requestedLimit);
+        }
+        return listBlogs({
+          limit: requestedLimit,
+          userId: targetUserId,
+          isAdmin: isAdmin(),
+        });
+      })();
 
+      const summaryUserId = !isAdmin() && isServerApiEnabled() ? null : targetUserId;
       const summaryPromise = getHistorySummary({
-        userId: targetUserId,
+        userId: summaryUserId,
         isAdmin: isAdmin(),
       })
         .then((summary) => {
@@ -2872,7 +2912,14 @@ ipcMain.handle('get-history', async (event, { userId } = {}) => {
         wpCounts = null; // silent; UI can ignore if null
       }
 
-      const result = { success: true, history, summary, wpCounts };
+      const adjustedSummary =
+        summary && typeof summary === 'object'
+          ? {
+              ...summary,
+              totalCount: Math.max(Number(summary.totalCount || 0), Array.isArray(history) ? history.length : 0),
+            }
+          : summary;
+      const result = { success: true, history, summary: adjustedSummary, wpCounts };
       historyResponseCache.set(cacheKey, { ts: Date.now(), result });
       return result;
     })();
@@ -5862,8 +5909,8 @@ ipcMain.handle('scheduler-list-history-blogs', async (event, payload = {}) => {
     } catch (_ownerError) {
       workspaceOwnerId = currentUser?.id || null;
     }
-    const limitRaw = Number(payload?.limit || 120);
-    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(300, Math.round(limitRaw))) : 120;
+    const limitRaw = Number(payload?.limit || 1000);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.round(limitRaw))) : 1000;
     const search = String(payload?.search || '').trim();
     const query = {
       limit,
@@ -5872,23 +5919,68 @@ ipcMain.handle('scheduler-list-history-blogs', async (event, payload = {}) => {
       search,
     };
     let items = [];
+    const shouldMergeWorkspaceUsers =
+      !isAdmin() && workspaceOwnerId && String(workspaceOwnerId) !== String(currentUser?.id || '');
+
     if (isServerApiEnabled()) {
       const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
       if (!accessToken) {
         throw new Error('Not authenticated');
       }
       try {
-        const remote = await serverDbCall({
-          accessToken,
-          action: 'listBlogSummaries',
-          args: [query],
-        });
-        items = Array.isArray(remote) ? remote : [];
+        if (shouldMergeWorkspaceUsers) {
+          const [ownerRemote, selfRemote] = await Promise.all([
+            serverDbCall({
+              accessToken,
+              action: 'listBlogSummaries',
+              args: [query],
+            }),
+            serverDbCall({
+              accessToken,
+              action: 'listBlogSummaries',
+              args: [{ ...query, userId: currentUser?.id || null, isAdmin: false }],
+            }),
+          ]);
+          const mergedMap = new Map();
+          [...(Array.isArray(ownerRemote) ? ownerRemote : []), ...(Array.isArray(selfRemote) ? selfRemote : [])].forEach(
+            (row) => {
+              const id = String(row?.id || row?._id || row?.blog_id || '');
+              if (id) mergedMap.set(id, row);
+            }
+          );
+          items = Array.from(mergedMap.values())
+            .sort((a, b) => new Date(b?.generatedAt || b?.created_at || b?.createdAt || 0).getTime() - new Date(a?.generatedAt || a?.created_at || a?.createdAt || 0).getTime())
+            .slice(0, limit);
+        } else {
+          const remote = await serverDbCall({
+            accessToken,
+            action: 'listBlogSummaries',
+            args: [query],
+          });
+          items = Array.isArray(remote) ? remote : [];
+        }
       } catch (error) {
         const message = String(error?.message || '');
         if (/unsupported db action|listblogsummaries/i.test(message)) {
           try {
-            items = await listBlogs(query);
+            if (shouldMergeWorkspaceUsers) {
+              const [ownerRows, selfRows] = await Promise.all([
+                listBlogs(query),
+                listBlogs({ ...query, userId: currentUser?.id || null, isAdmin: false }),
+              ]);
+              const mergedMap = new Map();
+              [...(Array.isArray(ownerRows) ? ownerRows : []), ...(Array.isArray(selfRows) ? selfRows : [])].forEach(
+                (row) => {
+                  const id = String(row?.id || row?._id || row?.blog_id || '');
+                  if (id) mergedMap.set(id, row);
+                }
+              );
+              items = Array.from(mergedMap.values())
+                .sort((a, b) => new Date(b?.generatedAt || b?.created_at || b?.createdAt || 0).getTime() - new Date(a?.generatedAt || a?.created_at || a?.createdAt || 0).getTime())
+                .slice(0, limit);
+            } else {
+              items = await listBlogs(query);
+            }
           } catch (legacyError) {
             const legacyMessage = String(legacyError?.message || '');
             if (/unsupported db action|listblogs/i.test(legacyMessage)) {
@@ -5903,7 +5995,24 @@ ipcMain.handle('scheduler-list-history-blogs', async (event, payload = {}) => {
       }
     } else {
       try {
-        items = await listBlogs(query);
+        if (shouldMergeWorkspaceUsers) {
+          const [ownerRows, selfRows] = await Promise.all([
+            listBlogs(query),
+            listBlogs({ ...query, userId: currentUser?.id || null, isAdmin: false }),
+          ]);
+          const mergedMap = new Map();
+          [...(Array.isArray(ownerRows) ? ownerRows : []), ...(Array.isArray(selfRows) ? selfRows : [])].forEach(
+            (row) => {
+              const id = String(row?.id || row?._id || row?.blog_id || '');
+              if (id) mergedMap.set(id, row);
+            }
+          );
+          items = Array.from(mergedMap.values())
+            .sort((a, b) => new Date(b?.generatedAt || b?.created_at || b?.createdAt || 0).getTime() - new Date(a?.generatedAt || a?.created_at || a?.createdAt || 0).getTime())
+            .slice(0, limit);
+        } else {
+          items = await listBlogs(query);
+        }
       } catch (error) {
         const message = String(error?.message || '');
         if (/unsupported db action|listblogs/i.test(message)) {

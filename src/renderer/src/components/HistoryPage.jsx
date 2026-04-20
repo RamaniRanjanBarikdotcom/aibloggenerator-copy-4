@@ -466,70 +466,66 @@ function HistoryPage({
             </button>
           </div>
           <div className="grid grid-cols-1 items-center gap-3 lg:grid-cols-[1fr_auto]">
-            {canBulkExport && (
+            {(canBulkExport || canExport) && (
               <div className="flex flex-wrap items-center gap-2">
               {selectedIds.length > 0 ? (
                 <>
                   <span className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
                     {selectedIds.length} {t.selectedLabel || 'selected'}
                   </span>
-                  <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
-                    {t.exportFormat}
-                  </label>
-                  <select
-                    value={bulkFormat}
-                    onChange={(event) => setBulkFormat(event.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
-                    <option value="html">{t.exportHtml || 'HTML'}</option>
-                    <option value="pdf">{t.exportPdf || 'PDF'}</option>
-                    <option value="docx">{t.exportDocx || 'DOCX'}</option>
-                    <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const result =
-                        bulkFormat === 'imagesZip'
-                          ? await window.electronAPI.exportHistoryImages({ blogIds: selectedIds })
-                          : await window.electronAPI.exportBulk({
-                              blogIds: selectedIds,
-                              format: bulkFormat,
-                            });
-                      if (!result.success && result.error !== 'Export cancelled') {
-                        alert(`Export failed: ${result.error}`);
-                      }
-                    }}
-                    className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-                  >
-                    {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const rows = filteredHistory.filter((item) => selectedIds.includes(item.id));
-                      const result = await window.electronAPI.exportHistoryCsv({
-                        rows,
-                      });
-                      if (!result.success && result.error !== 'Export cancelled') {
-                        alert(`Export failed: ${result.error}`);
-                      }
-                    }}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    {t.exportHistoryCsv}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRefresh}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                    title={t.historyRefresh || 'Refresh'}
-                    aria-label={t.historyRefresh || 'Refresh'}
-                    disabled={isRefreshing}
-                  >
-                    <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
-                  </button>
+                  {canBulkExport && (
+                    <>
+                      <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
+                        {t.exportFormat}
+                      </label>
+                      <select
+                        value={bulkFormat}
+                        onChange={(event) => setBulkFormat(event.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
+                        <option value="html">{t.exportHtml || 'HTML'}</option>
+                        <option value="pdf">{t.exportPdf || 'PDF'}</option>
+                        <option value="docx">{t.exportDocx || 'DOCX'}</option>
+                        <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const result =
+                            bulkFormat === 'imagesZip'
+                              ? await window.electronAPI.exportHistoryImages({ blogIds: selectedIds })
+                              : await window.electronAPI.exportBulk({
+                                  blogIds: selectedIds,
+                                  format: bulkFormat,
+                                });
+                          if (!result.success && result.error !== 'Export cancelled') {
+                            alert(`Export failed: ${result.error}`);
+                          }
+                        }}
+                        className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                      >
+                        {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
+                      </button>
+                    </>
+                  )}
+                  {(canExport || canBulkExport) && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const rows = filteredHistory.filter((item) => selectedIds.includes(item.id));
+                        const result = await window.electronAPI.exportHistoryCsv({
+                          rows,
+                        });
+                        if (!result.success && result.error !== 'Export cancelled') {
+                          alert(`Export failed: ${result.error}`);
+                        }
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      {t.exportHistoryCsv}
+                    </button>
+                  )}
                   {canDelete && (
                     <button
                       type="button"
@@ -542,79 +538,87 @@ function HistoryPage({
                 </>
               ) : (
                 <>
-                  <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
-                    {t.exportFormat}
-                  </label>
-                  <select
-                    value={bulkFormat}
-                    onChange={(event) => setBulkFormat(event.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
-                    <option value="html">{t.exportHtml || 'HTML'}</option>
-                    <option value="pdf">{t.exportPdf || 'PDF'}</option>
-                    <option value="docx">{t.exportDocx || 'DOCX'}</option>
-                    <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const ids = filteredHistory.map((item) => item.id);
-                      const result =
-                        bulkFormat === 'imagesZip'
-                          ? await window.electronAPI.exportHistoryImages({ blogIds: ids })
-                          : await window.electronAPI.exportBulk({
-                              blogIds: ids,
-                              format: bulkFormat,
-                            });
-                      if (!result.success && result.error !== 'Export cancelled') {
-                        alert(`Export failed: ${result.error}`);
-                      }
-                    }}
-                    className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-                  >
-                    {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const result = await window.electronAPI.exportHistoryCsv({
-                        rows: filteredHistory,
-                      });
-                      if (!result.success && result.error !== 'Export cancelled') {
-                        alert(`Export failed: ${result.error}`);
-                      }
-                    }}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    {t.exportHistoryCsv}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRefresh}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                    title={t.historyRefresh || 'Refresh'}
-                    aria-label={t.historyRefresh || 'Refresh'}
-                    disabled={isRefreshing}
-                  >
-                    <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
-                  </button>
+                  {canBulkExport && (
+                    <>
+                      <label className="text-xs font-semibold uppercase text-slate-500 tracking-wide">
+                        {t.exportFormat}
+                      </label>
+                      <select
+                        value={bulkFormat}
+                        onChange={(event) => setBulkFormat(event.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="markdown">{t.exportMarkdown || 'Markdown'}</option>
+                        <option value="html">{t.exportHtml || 'HTML'}</option>
+                        <option value="pdf">{t.exportPdf || 'PDF'}</option>
+                        <option value="docx">{t.exportDocx || 'DOCX'}</option>
+                        <option value="imagesZip">{t.exportImagesZip || 'Images ZIP (folders)'}</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const ids = filteredHistory.map((item) => item.id);
+                          const result =
+                            bulkFormat === 'imagesZip'
+                              ? await window.electronAPI.exportHistoryImages({ blogIds: ids })
+                              : await window.electronAPI.exportBulk({
+                                  blogIds: ids,
+                                  format: bulkFormat,
+                                });
+                          if (!result.success && result.error !== 'Export cancelled') {
+                            alert(`Export failed: ${result.error}`);
+                          }
+                        }}
+                        className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                      >
+                        {bulkFormat === 'imagesZip' ? (t.exportImagesZip || 'Export Images ZIP') : t.exportBulk}
+                      </button>
+                    </>
+                  )}
+                  {(canExport || canBulkExport) && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const result = await window.electronAPI.exportHistoryCsv({
+                          rows: filteredHistory,
+                        });
+                        if (!result.success && result.error !== 'Export cancelled') {
+                          alert(`Export failed: ${result.error}`);
+                        }
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      {t.exportHistoryCsv}
+                    </button>
+                  )}
                 </>
               )}
               </div>
             )}
-            <div className="justify-self-end rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
-              {t.historyPerPage || 'Per page'}:{' '}
-              <select
-                value={pageSize}
-                onChange={(event) => setPageSize(Number(event.target.value))}
-                className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+            <div className="justify-self-end flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRefresh}
+                className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                title={t.historyRefresh || 'Refresh'}
+                aria-label={t.historyRefresh || 'Refresh'}
+                disabled={isRefreshing}
               >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-              </select>
+                <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
+              </button>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
+                {t.historyPerPage || 'Per page'}:{' '}
+                <select
+                  value={pageSize}
+                  onChange={(event) => setPageSize(Number(event.target.value))}
+                  className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+                >
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>

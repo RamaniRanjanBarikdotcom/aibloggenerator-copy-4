@@ -252,8 +252,8 @@ function bgDbAction(array $cfg, string $action, array $args)
                 $filter['created_at'] = $dateRange;
             }
 
-            $limit = max(1, min(300, (int)($opt['limit'] ?? 120)));
-            $scanLimit = max($limit, min(2000, $limit * 5));
+            $limit = max(1, min(5000, (int)($opt['limit'] ?? 1000)));
+            $scanLimit = max($limit, min(25000, $limit * 5));
             $docs = mongoFindMany($cfg, 'blogs', $filter, [
                 'sort' => ['created_at' => -1],
                 'skip' => (int)($opt['offset'] ?? 0),

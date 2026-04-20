@@ -395,3 +395,19 @@ body {
 .dark .tox .tox-tbtn--enabled:hover {
   background: #2563eb !important;
 }
+
+/* Keep login fields visually identical in dark/light.
+   Prevent global dark input override from creating inner square border on logout. */
+.dark .login-page input:not([type="checkbox"]):not([type="radio"]) {
+  background-color: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.dark .login-page input:not([type="checkbox"]):not([type="radio"]):focus,
+.dark .login-page input:not([type="checkbox"]):not([type="radio"]):focus-visible {
+  background-color: transparent !important;
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}

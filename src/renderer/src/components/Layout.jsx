@@ -57,6 +57,7 @@ function Layout({
   });
   const languageMenuRef = useRef(null);
   const accountMenuRef = useRef(null);
+  const notificationsMenuRef = useRef(null);
   const contentRef = useRef(null);
   const languageOptions = useMemo(
     () => [
@@ -76,10 +77,19 @@ function Layout({
       if (accountMenuRef.current && !accountMenuRef.current.contains(event.target)) {
         setAccountMenuOpen(false);
       }
+      if (
+        notificationsOpen &&
+        notificationsMenuRef.current &&
+        !notificationsMenuRef.current.contains(event.target)
+      ) {
+        if (typeof onToggleNotifications === 'function') {
+          onToggleNotifications();
+        }
+      }
     };
     document.addEventListener('mousedown', onPointerDown);
     return () => document.removeEventListener('mousedown', onPointerDown);
-  }, []);
+  }, [notificationsOpen, onToggleNotifications]);
 
   useEffect(() => {
     const target = contentRef.current;
@@ -267,7 +277,7 @@ function Layout({
 
             <div className="flex items-center gap-3">
               {canNotifications && (
-                <div className="relative">
+                <div className="relative" ref={notificationsMenuRef}>
                   <button
                     type="button"
                     onClick={onToggleNotifications}

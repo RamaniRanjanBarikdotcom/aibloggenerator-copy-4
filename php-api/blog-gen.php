@@ -347,6 +347,30 @@ function sanitizeUser(array $user): array
     ];
 }
 
+function resolveWorkspaceOwnerUserId(array $cfg, string $userId): string
+{
+    $uid = trim($userId);
+    if ($uid === '') {
+        return $uid;
+    }
+
+    $ownerKey = 'workspace_owner_' . $uid;
+    $setting = mongoFindOne($cfg, 'settings', [
+        'user_id' => $uid,
+        'key' => $ownerKey,
+    ]);
+
+    $rawValue = $setting['value'] ?? null;
+    if (is_scalar($rawValue)) {
+        $ownerId = trim((string)$rawValue);
+        if ($ownerId !== '') {
+            return $ownerId;
+        }
+    }
+
+    return $uid;
+}
+
 function parseCsvToRows(string $csv): array
 {
     $lines = preg_split('/\r\n|\r|\n/', trim($csv));
@@ -583,13 +607,14 @@ if ($requestPath === '/db/call' && $method === 'POST') {
 // Scheduler routes require user token.
 if (str_starts_with($requestPath, '/scheduler/')) {
     $jwtUser = requireJwtUser($cfg);
-    $userId = (string)$jwtUser['uid'];
+    $actorUserId = (string)$jwtUser['uid'];
+    $scopeUserId = resolveWorkspaceOwnerUserId($cfg, $actorUserId);
 
     if ($requestPath === '/scheduler/jobs' && $method === 'GET') {
         $status = trim((string)($_GET['status'] ?? ''));
         $shopId = trim((string)($_GET['shopId'] ?? ''));
 
-        $filter = ['user_id' => $userId];
+        $filter = ['user_id' => $scopeUserId];
         if ($status !== '') {
             $filter['status'] = $status;
         }
@@ -628,7 +653,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
         $payload['source_blog_id'] = $sourceBlogId;
         $now = new UTCDateTime((int)(microtime(true) * 1000));
         $id = mongoInsertOne($cfg, 'scheduler_jobs', [
-            'user_id' => $userId,
+            'user_id' => $scopeUserId,
             'shop_id' => $shopId,
             'topic' => $topic,
             'keywords' => trim((string)($body['keywords'] ?? '')),
@@ -683,7 +708,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
                 $set['schedule_mode'] === 'existing' &&
                 (!array_key_exists('source_blog_id', $set) || trim((string)$set['source_blog_id']) === '')
             ) {
-                $current = mongoFindOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $userId]);
+            $current = mongoFindOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $scopeUserId]);
                 $currentSource = trim((string)($current['source_blog_id'] ?? ''));
                 if ($currentSource === '') {
                     respond(400, ['success' => false, 'error' => 'source_blog_id is required for existing schedule mode']);
@@ -700,16 +725,16 @@ if (str_starts_with($requestPath, '/scheduler/')) {
             mongoUpdateOne(
                 $cfg,
                 'scheduler_jobs',
-                ['_id' => parseObjectId($jobId), 'user_id' => $userId],
+                ['_id' => parseObjectId($jobId), 'user_id' => $scopeUserId],
                 ['$set' => $set]
             );
 
-            $job = mongoFindOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $userId]);
+            $job = mongoFindOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $scopeUserId]);
             respond(200, ['success' => true, 'job' => $job]);
         }
 
         if ($method === 'DELETE') {
-            $deleted = mongoDeleteOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $userId]);
+            $deleted = mongoDeleteOne($cfg, 'scheduler_jobs', ['_id' => parseObjectId($jobId), 'user_id' => $scopeUserId]);
             respond(200, ['success' => true, 'deleted' => $deleted > 0]);
         }
     }
@@ -750,7 +775,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
 
             try {
                 mongoInsertOne($cfg, 'scheduler_jobs', [
-                    'user_id' => $userId,
+                    'user_id' => $scopeUserId,
                     'shop_id' => $shopId,
                     'topic' => $topic,
                     'keywords' => $keywords,
@@ -773,7 +798,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
     }
 
     if ($requestPath === '/scheduler/logs' && $method === 'GET') {
-        $filter = ['user_id' => $userId];
+        $filter = ['user_id' => $scopeUserId];
         $jobId = trim((string)($_GET['jobId'] ?? ''));
         $status = trim((string)($_GET['status'] ?? ''));
 
@@ -795,7 +820,7 @@ if (str_starts_with($requestPath, '/scheduler/')) {
     if ($requestPath === '/scheduler/logs' && $method === 'POST') {
         $body = readJsonBody();
         $logId = mongoInsertOne($cfg, 'scheduler_logs', [
-            'user_id' => $userId,
+            'user_id' => $scopeUserId,
             'job_id' => trim((string)($body['jobId'] ?? '')),
             'shop_id' => trim((string)($body['shopId'] ?? '')),
             'status' => trim((string)($body['status'] ?? 'info')),

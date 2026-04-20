@@ -36,7 +36,6 @@ function LoginPage({ t, onLogin }) {
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [focusedField, setFocusedField] = useState(null);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -53,7 +52,7 @@ function LoginPage({ t, onLogin }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="login-page min-h-screen bg-slate-950 text-slate-100">
       <div className="flex min-h-screen items-center justify-center px-4 py-8 sm:px-6">
         <div className="w-full max-w-[520px]">
           <div className="rounded-2xl border border-white/[0.08] bg-slate-900/70 p-8 shadow-xl">
@@ -66,10 +65,7 @@ function LoginPage({ t, onLogin }) {
                   {/* Username */}
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-300">{t.usernameLabel}</label>
-                    <div className={`relative rounded-xl border transition-all duration-200 ${focusedField === 'username'
-                        ? 'border-cyan-400/50 ring-2 ring-cyan-500/20 bg-white/[0.06]'
-                        : 'border-white/[0.08] bg-white/[0.03] hover:border-white/[0.15]'
-                      }`}>
+                    <div className="relative rounded-xl border border-white/[0.08] bg-white/[0.03] transition-all duration-200 hover:border-white/[0.15] focus-within:border-cyan-400/50 focus-within:ring-2 focus-within:ring-cyan-500/20 focus-within:bg-white/[0.06]">
                       <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500">
                         <User className="h-[18px] w-[18px]" />
                       </span>
@@ -77,9 +73,7 @@ function LoginPage({ t, onLogin }) {
                         type="text"
                         value={username}
                         onChange={(event) => setUsername(event.target.value)}
-                        onFocus={() => setFocusedField('username')}
-                        onBlur={() => setFocusedField(null)}
-                        className="w-full bg-transparent px-11 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none"
+                        className="w-full bg-transparent px-11 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
                         placeholder="Enter your username"
                         required
                       />
@@ -89,10 +83,7 @@ function LoginPage({ t, onLogin }) {
                   {/* Password */}
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-300">{t.passwordLabel}</label>
-                    <div className={`relative rounded-xl border transition-all duration-200 ${focusedField === 'password'
-                        ? 'border-cyan-400/50 ring-2 ring-cyan-500/20 bg-white/[0.06]'
-                        : 'border-white/[0.08] bg-white/[0.03] hover:border-white/[0.15]'
-                      }`}>
+                    <div className="relative rounded-xl border border-white/[0.08] bg-white/[0.03] transition-all duration-200 hover:border-white/[0.15] focus-within:border-cyan-400/50 focus-within:ring-2 focus-within:ring-cyan-500/20 focus-within:bg-white/[0.06]">
                       <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500">
                         <Lock className="h-[18px] w-[18px]" />
                       </span>
@@ -100,16 +91,14 @@ function LoginPage({ t, onLogin }) {
                         type={showPassword ? 'text' : 'password'}
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
-                        onFocus={() => setFocusedField('password')}
-                        onBlur={() => setFocusedField(null)}
-                        className="w-full bg-transparent px-11 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none"
+                        className="w-full bg-transparent px-11 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
                         placeholder="Enter your password"
                         required
                       />
                       <button
                         type="button"
                         onClick={() => setShowPassword((prev) => !prev)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-300"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-300 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
                       >
                         {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
@@ -128,7 +117,7 @@ function LoginPage({ t, onLogin }) {
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="group relative w-full overflow-hidden rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-3.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition-all duration-300 hover:shadow-xl hover:shadow-cyan-500/30 hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-60 active:scale-[0.98]"
+                    className="group relative w-full overflow-hidden rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-3.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition-all duration-300 hover:shadow-xl hover:shadow-cyan-500/30 hover:brightness-110 focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-60 active:scale-[0.98]"
                   >
                     <span className="relative flex items-center justify-center gap-2">
                       {isSubmitting ? (

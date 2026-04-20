@@ -798,7 +798,7 @@ function SchedulerPage({ t }) {
       .filter((item) => item.id && item.title);
   }, []);
 
-  const loadHistoryBlogOptions = useCallback(async ({ search = '', force = false, limit = 120 } = {}) => {
+  const loadHistoryBlogOptions = useCallback(async ({ search = '', force = false, limit = 1000 } = {}) => {
     if (historyBlogLoadingRef.current && !force) return;
     const normalizedSearch = String(search || '').trim();
     const cacheKey = normalizedSearch.toLowerCase();
@@ -809,23 +809,8 @@ function SchedulerPage({ t }) {
     historyBlogLoadingRef.current = true;
     setHistoryBlogLoading(true);
     try {
-      // Fast path for opening dropdown: use history endpoint (benefits from main-process cache)
-      // and then do local search filtering in the UI.
-      if (!normalizedSearch) {
-        const fallback = await window.electronAPI.getHistory({
-          limit: Math.max(120, Math.min(500, Number(limit) || 300)),
-        });
-        if (!fallback?.success) {
-          throw new Error(fallback?.error || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
-        }
-        const mappedItems = mapHistoryRowsToOptions(fallback?.history || []);
-        historyBlogCacheRef.current.set(cacheKey, mappedItems);
-        setHistoryBlogOptions(mappedItems);
-        return;
-      }
-
       const response = await window.electronAPI.schedulerListHistoryBlogs({
-        limit: Math.max(20, Math.min(300, Number(limit) || 120)),
+        limit: Math.max(20, Math.min(5000, Number(limit) || 1000)),
         search: normalizedSearch,
       });
       if (!response?.success) {
@@ -837,7 +822,7 @@ function SchedulerPage({ t }) {
       setHistoryBlogOptions(items);
     } catch (e) {
       try {
-        const fallback = await window.electronAPI.getHistory({ limit: 120 });
+        const fallback = await window.electronAPI.getHistory({ limit: 1000 });
         if (!fallback?.success) {
           throw new Error(fallback?.error || tr('schedulerErrorLoadHistory', 'Failed to load history blogs'));
         }
@@ -883,9 +868,9 @@ function SchedulerPage({ t }) {
     const q = String(createHistoryBlogQuery || '').trim();
     const timer = setTimeout(() => {
       if (q.length >= 2 && historyBlogOptions.length === 0) {
-        loadHistoryBlogOptions({ search: q, force: false, limit: 140 });
+        loadHistoryBlogOptions({ search: q, force: false, limit: 1000 });
       } else if (q.length === 0) {
-        loadHistoryBlogOptions({ search: '', force: false, limit: 120 });
+        loadHistoryBlogOptions({ search: '', force: false, limit: 1000 });
       }
     }, 250);
     return () => clearTimeout(timer);
@@ -896,9 +881,9 @@ function SchedulerPage({ t }) {
     const q = String(editHistoryBlogQuery || '').trim();
     const timer = setTimeout(() => {
       if (q.length >= 2 && historyBlogOptions.length === 0) {
-        loadHistoryBlogOptions({ search: q, force: false, limit: 140 });
+        loadHistoryBlogOptions({ search: q, force: false, limit: 1000 });
       } else if (q.length === 0) {
-        loadHistoryBlogOptions({ search: '', force: false, limit: 120 });
+        loadHistoryBlogOptions({ search: '', force: false, limit: 1000 });
       }
     }, 250);
     return () => clearTimeout(timer);
@@ -1743,7 +1728,19 @@ function SchedulerPage({ t }) {
                       </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
                         <div className="md:col-span-2">
-                          <label className={labelClass}>{tr('schedulerHistoryBlog', 'History blog')}</label>
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <label className={`${labelClass} mb-0`}>{tr('schedulerHistoryBlog', 'History blog')}</label>
+                            <button
+                              type="button"
+                              onClick={() => loadHistoryBlogOptions({ search: '', force: true, limit: 1000 })}
+                              disabled={historyBlogLoading}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-70 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+                              title={tr('schedulerHistoryRefresh', 'Refresh')}
+                            >
+                              <RefreshCw className={`h-3.5 w-3.5 ${historyBlogLoading ? 'animate-spin' : ''}`} />
+                              {tr('schedulerHistoryRefresh', 'Refresh')}
+                            </button>
+                          </div>
                           <HistoryBlogDropdown
                             value={form.sourceBlogId}
                             options={createFilteredHistoryBlogOptions}
@@ -1751,9 +1748,7 @@ function SchedulerPage({ t }) {
                             query={createHistoryBlogQuery}
                             onQueryChange={setCreateHistoryBlogQuery}
                             onSelect={onCreateSourceBlogChange}
-                            onRefresh={() =>
-                              loadHistoryBlogOptions({ search: '', force: true })
-                            }
+                            onRefresh={() => loadHistoryBlogOptions({ search: '', force: true, limit: 1000 })}
                             placeholder={tr('schedulerHistoryBlogPlaceholder', 'Select a generated blog')}
                             searchPlaceholder={tr('schedulerHistorySearchPlaceholder', 'Search by title or keyword')}
                             refreshLabel={tr('schedulerHistoryRefresh', 'Refresh')}
@@ -1933,7 +1928,19 @@ function SchedulerPage({ t }) {
                       </p>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
                         <div className="md:col-span-2">
-                          <label className={labelClass}>{tr('schedulerHistoryBlog', 'History blog')}</label>
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <label className={`${labelClass} mb-0`}>{tr('schedulerHistoryBlog', 'History blog')}</label>
+                            <button
+                              type="button"
+                              onClick={() => loadHistoryBlogOptions({ search: '', force: true, limit: 1000 })}
+                              disabled={historyBlogLoading}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-70 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+                              title={tr('schedulerHistoryRefresh', 'Refresh')}
+                            >
+                              <RefreshCw className={`h-3.5 w-3.5 ${historyBlogLoading ? 'animate-spin' : ''}`} />
+                              {tr('schedulerHistoryRefresh', 'Refresh')}
+                            </button>
+                          </div>
                           <HistoryBlogDropdown
                             value={editForm.sourceBlogId}
                             options={editFilteredHistoryBlogOptions}
@@ -1941,9 +1948,7 @@ function SchedulerPage({ t }) {
                             query={editHistoryBlogQuery}
                             onQueryChange={setEditHistoryBlogQuery}
                             onSelect={onEditSourceBlogChange}
-                            onRefresh={() =>
-                              loadHistoryBlogOptions({ search: '', force: true })
-                            }
+                            onRefresh={() => loadHistoryBlogOptions({ search: '', force: true, limit: 1000 })}
                             placeholder={tr('schedulerHistoryBlogPlaceholder', 'Select a generated blog')}
                             searchPlaceholder={tr('schedulerHistorySearchPlaceholder', 'Search by title or keyword')}
                             refreshLabel={tr('schedulerHistoryRefresh', 'Refresh')}
