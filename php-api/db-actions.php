@@ -73,12 +73,21 @@ function bgBuildDateFilter(?string $from, ?string $to): ?array
     if (($from ?? '') === '' && ($to ?? '') === '') {
         return null;
     }
+    $fromValue = trim((string)($from ?? ''));
+    $toValue = trim((string)($to ?? ''));
     $out = [];
-    if (($from ?? '') !== '') {
-        $out['$gte'] = bgToUtc($from);
+    if ($fromValue !== '') {
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromValue) === 1) {
+            $fromValue .= 'T00:00:00.000Z';
+        }
+        $out['$gte'] = bgToUtc($fromValue);
     }
-    if (($to ?? '') !== '') {
-        $out['$lte'] = bgToUtc($to);
+    if ($toValue !== '') {
+        // For date-only filters, include the full day.
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $toValue) === 1) {
+            $toValue .= 'T23:59:59.999Z';
+        }
+        $out['$lte'] = bgToUtc($toValue);
     }
     return $out;
 }
@@ -175,6 +184,37 @@ function bgActionToLogCategory(string $action): string
         'notifications' => 'notifications',
     ];
     return $map[$prefix] ?? $prefix;
+}
+
+function bgBuildLogFilter(array $payload): array
+{
+    $filter = [];
+    if (!(bool)($payload['isAdmin'] ?? false) && isset($payload['userId'])) {
+        $filter['user_id'] = $payload['userId'];
+    }
+    if (!empty($payload['level'])) {
+        $filter['level'] = (string)$payload['level'];
+    }
+    if (!empty($payload['category'])) {
+        $filter['category'] = (string)$payload['category'];
+    }
+
+    $dateRange = bgBuildDateFilter($payload['dateFrom'] ?? null, $payload['dateTo'] ?? null);
+    if (is_array($dateRange)) {
+        $filter['timestamp'] = $dateRange;
+    }
+
+    $search = trim((string)($payload['search'] ?? ''));
+    if ($search !== '') {
+        $quoted = preg_quote($search, '/');
+        $filter['$or'] = [
+            ['message' => ['$regex' => $quoted, '$options' => 'i']],
+            ['details' => ['$regex' => $quoted, '$options' => 'i']],
+            ['blog_id' => ['$regex' => $quoted, '$options' => 'i']],
+        ];
+    }
+
+    return $filter;
 }
 
 function bgDbAction(array $cfg, string $action, array $args)
@@ -388,8 +428,21 @@ function bgDbAction(array $cfg, string $action, array $args)
 
         case 'createUser': {
             $payload = is_array($args[0] ?? null) ? $args[0] : [];
+            $username = trim((string)($payload['username'] ?? ''));
+            if ($username === '') {
+                throw new RuntimeException('Username is required');
+            }
+            $existing = mongoFindOne($cfg, 'users', [
+                'username' => [
+                    '$regex' => '^' . preg_quote($username, '/') . '$',
+                    '$options' => 'i',
+                ],
+            ]);
+            if ($existing) {
+                throw new RuntimeException('Username already exists');
+            }
             return mongoInsertOne($cfg, 'users', [
-                'username' => (string)($payload['username'] ?? ''),
+                'username' => $username,
                 'email' => (string)($payload['email'] ?? ''),
                 'password_hash' => (string)($payload['passwordHash'] ?? ''),
                 'password_salt' => (string)($payload['passwordSalt'] ?? ''),
@@ -569,20 +622,18 @@ function bgDbAction(array $cfg, string $action, array $args)
 
         case 'listLogs': {
             $payload = is_array($args[0] ?? null) ? $args[0] : [];
-            $filter = [];
-            if (!(bool)($payload['isAdmin'] ?? false) && isset($payload['userId'])) {
-                $filter['user_id'] = $payload['userId'];
+            $filter = bgBuildLogFilter($payload);
+            $limit = (int)($payload['limit'] ?? 100);
+            if ($limit < 1) {
+                $limit = 100;
             }
-            if (!empty($payload['level'])) $filter['level'] = $payload['level'];
-            if (!empty($payload['category'])) $filter['category'] = $payload['category'];
-            $dateRange = bgBuildDateFilter($payload['dateFrom'] ?? null, $payload['dateTo'] ?? null);
-            if (is_array($dateRange)) {
-                $filter['timestamp'] = $dateRange;
+            if ($limit > 20000) {
+                $limit = 20000;
             }
             $docs = mongoFindMany($cfg, 'logs', $filter, [
                 'sort' => ['timestamp' => -1],
                 'skip' => (int)($payload['offset'] ?? 0),
-                'limit' => (int)($payload['limit'] ?? 100),
+                'limit' => $limit,
             ]);
             $rows = array_map(static function ($doc) {
                 $details = $doc['details'] ?? null;
@@ -600,23 +651,79 @@ function bgDbAction(array $cfg, string $action, array $args)
                     'userId' => $doc['user_id'] ?? null,
                 ];
             }, $docs);
-            $search = trim((string)($payload['search'] ?? ''));
-            if ($search !== '') {
-                $rows = array_values(array_filter($rows, static fn($r) => bgMatchText($search, ['message', 'blogId'], $r)));
-            }
             return $rows;
         }
 
         case 'getLogStats': {
-            $rows = bgDbAction($cfg, 'listLogs', [$args[0] ?? []]);
-            $out = ['total' => count($rows), 'errors' => 0, 'totalTokens' => 0, 'totalCost' => 0.0, 'imageCount' => 0];
-            foreach ($rows as $r) {
-                if (($r['level'] ?? '') === 'error') $out['errors']++;
-                if (($r['category'] ?? '') === 'image') $out['imageCount']++;
-                $out['totalTokens'] += (int)($r['tokensUsed'] ?? 0);
-                $out['totalCost'] += (float)($r['cost'] ?? 0);
+            $payload = is_array($args[0] ?? null) ? $args[0] : [];
+            $filter = bgBuildLogFilter($payload);
+
+            $total = mongoCount($cfg, 'logs', $filter);
+
+            $errors = 0;
+            $levelFilter = trim((string)($payload['level'] ?? ''));
+            if ($levelFilter === '' || strtolower($levelFilter) === 'error') {
+                $errorFilter = $filter;
+                if ($levelFilter === '') {
+                    $errorFilter['level'] = 'error';
+                }
+                $errors = mongoCount($cfg, 'logs', $errorFilter);
             }
-            return $out;
+
+            $totalTokens = 0;
+            $totalCost = 0.0;
+            $imageCount = 0;
+
+            try {
+                $command = new Command([
+                    'aggregate' => 'logs',
+                    'pipeline' => [
+                        ['$match' => empty($filter) ? (object)[] : $filter],
+                        [
+                            '$group' => [
+                                '_id' => null,
+                                'totalTokens' => ['$sum' => ['$ifNull' => ['$tokens_used', 0]]],
+                                'totalCost' => ['$sum' => ['$ifNull' => ['$cost', 0]]],
+                                'imageCount' => [
+                                    '$sum' => [
+                                        '$cond' => [
+                                            ['$eq' => ['$category', 'image']],
+                                            1,
+                                            0,
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'cursor' => (object)[],
+                ]);
+                $cursor = mongoManager($cfg)->executeCommand($cfg['mongo_db'], $command);
+                $result = $cursor->toArray();
+                if (isset($result[0])) {
+                    $row = normalizeBson($result[0]);
+                    $totalTokens = (int)($row['totalTokens'] ?? 0);
+                    $totalCost = (float)($row['totalCost'] ?? 0);
+                    $imageCount = (int)($row['imageCount'] ?? 0);
+                }
+            } catch (Throwable $e) {
+                $fallbackRows = mongoFindMany($cfg, 'logs', $filter, ['limit' => 50000]);
+                foreach ($fallbackRows as $r) {
+                    $totalTokens += (int)($r['tokens_used'] ?? 0);
+                    $totalCost += (float)($r['cost'] ?? 0);
+                    if (($r['category'] ?? '') === 'image') {
+                        $imageCount++;
+                    }
+                }
+            }
+
+            return [
+                'total' => $total,
+                'errors' => $errors,
+                'totalTokens' => $totalTokens,
+                'totalCost' => $totalCost,
+                'imageCount' => $imageCount,
+            ];
         }
 
         case 'getLogTrend': {

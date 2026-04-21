@@ -1,7 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { DateRange } from 'react-date-range';
+import { format as formatDate } from 'date-fns';
 import ModalCloseButton from './ModalCloseButton';
 import TablePagination from './TablePagination';
+import 'react-date-range/dist/styles.css';
+import 'react-date-range/dist/theme/default.css';
 
 const decodeUnicodeEscapes = (value) =>
   String(value || '').replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
@@ -46,12 +50,22 @@ const formatLogDetails = (details) => {
 };
 
 function LogsPage({ t, canDelete = false }) {
+  const LOG_FETCH_LIMIT = 20000;
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ total: 0, errors: 0, totalTokens: 0, totalCost: 0 });
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [dateRange, setDateRange] = useState({
+    startDate: new Date(),
+    endDate: new Date(),
+    key: 'selection',
+  });
+  const [dateRangeEnabled, setDateRangeEnabled] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const datePickerRef = useRef(null);
+  const dateButtonRef = useRef(null);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(20);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -71,6 +85,18 @@ function LogsPage({ t, canDelete = false }) {
     { value: 'notifications', label: t.logsCategoryNotifications || 'Notifications' },
   ];
 
+  const formatDateInput = (value) => {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return formatDate(date, 'yyyy-MM-dd');
+  };
+
+  const formatDateLabel = (value) => formatDateInput(value) || '--';
+
+  const from = dateRangeEnabled ? formatDateInput(dateRange.startDate) : null;
+  const to = dateRangeEnabled ? formatDateInput(dateRange.endDate) : null;
+
   const loadLogs = async () => {
     setLoadError('');
     setLoading(true);
@@ -79,6 +105,11 @@ function LogsPage({ t, canDelete = false }) {
         level: level || null,
         category: category || null,
         search: debouncedSearch || null,
+        dateFrom: from,
+        dateTo: to,
+        limit: LOG_FETCH_LIMIT,
+        offset: 0,
+        includeActivities: true,
       });
       if (result.success) {
         setLogs(result.logs || []);
@@ -97,6 +128,10 @@ function LogsPage({ t, canDelete = false }) {
   const loadStats = async () => {
     const result = await window.electronAPI.getLogsStats({
       search: debouncedSearch || null,
+      level: level || null,
+      category: category || null,
+      dateFrom: from,
+      dateTo: to,
     });
     if (result.success) {
       setStats(result.stats || stats);
@@ -113,11 +148,22 @@ function LogsPage({ t, canDelete = false }) {
   useEffect(() => {
     loadLogs();
     loadStats();
-  }, [level, category, debouncedSearch]);
+  }, [level, category, debouncedSearch, from, to]);
 
   useEffect(() => {
     setPage(1);
-  }, [level, category, debouncedSearch, perPage]);
+  }, [level, category, debouncedSearch, from, to, perPage]);
+
+  useEffect(() => {
+    if (!datePickerOpen) return;
+    const onPointerDown = (event) => {
+      if (datePickerRef.current?.contains(event.target)) return;
+      if (dateButtonRef.current?.contains(event.target)) return;
+      setDatePickerOpen(false);
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [datePickerOpen]);
 
   useEffect(() => {
     const maxPage = Math.max(1, Math.ceil((logs?.length || 0) / Math.max(1, Number(perPage) || 20)));
@@ -147,7 +193,7 @@ function LogsPage({ t, canDelete = false }) {
         <p className="text-slate-600">{t.logsSubtitle}</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="rounded-lg bg-white p-4 border border-slate-200">
           <p className="text-xs text-slate-500">{t.logsTotal}</p>
           <p className="text-lg font-semibold text-slate-800">{stats.total}</p>
@@ -155,14 +201,6 @@ function LogsPage({ t, canDelete = false }) {
         <div className="rounded-lg bg-white p-4 border border-slate-200">
           <p className="text-xs text-slate-500">{t.logsErrors}</p>
           <p className="text-lg font-semibold text-slate-800">{stats.errors}</p>
-        </div>
-        <div className="rounded-lg bg-white p-4 border border-slate-200">
-          <p className="text-xs text-slate-500">{t.logsTokens}</p>
-          <p className="text-lg font-semibold text-slate-800">{stats.totalTokens}</p>
-        </div>
-        <div className="rounded-lg bg-white p-4 border border-slate-200">
-          <p className="text-xs text-slate-500">{t.logsCost}</p>
-          <p className="text-lg font-semibold text-slate-800">${(stats.totalCost || 0).toFixed(2)}</p>
         </div>
       </div>
 
@@ -200,6 +238,56 @@ function LogsPage({ t, canDelete = false }) {
               </option>
             ))}
           </select>
+          <div className="relative">
+            <button
+              ref={dateButtonRef}
+              type="button"
+              onClick={() => setDatePickerOpen((prev) => !prev)}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-700 bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            >
+              {dateRangeEnabled
+                ? `${formatDateLabel(dateRange.startDate)} - ${formatDateLabel(dateRange.endDate)}`
+                : t.logsAllDatesLabel || 'All dates'}
+            </button>
+            {datePickerOpen && (
+              <div
+                ref={datePickerRef}
+                className="absolute z-30 mt-2 rounded-lg border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+              >
+                <DateRange
+                  editableDateInputs
+                  onChange={(item) => {
+                    setDateRange(item.selection);
+                    setDateRangeEnabled(true);
+                  }}
+                  moveRangeOnFirstSelection={false}
+                  ranges={[dateRange]}
+                  months={1}
+                  direction="horizontal"
+                  showDateDisplay={false}
+                />
+                <div className="flex items-center justify-between px-2 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDateRangeEnabled(false);
+                      setDatePickerOpen(false);
+                    }}
+                    className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                  >
+                    {t.logsAllDatesLabel || 'All dates'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDatePickerOpen(false)}
+                    className="px-3 py-1 rounded-md bg-slate-900 text-white text-xs dark:bg-blue-600"
+                  >
+                    {t.doneLabel || 'Done'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <button
             onClick={() => {
               loadLogs();

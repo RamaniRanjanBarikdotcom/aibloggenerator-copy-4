@@ -5368,6 +5368,14 @@ ipcMain.handle('create-user', async (event, { username, password, role, status, 
     if (!nextPassword) {
       throw new Error('Password is required');
     }
+    const nextUsernameLower = nextUsername.toLowerCase();
+    const existingUsers = await listUsers();
+    const duplicateUser = (Array.isArray(existingUsers) ? existingUsers : []).find(
+      (user) => String(user?.username || '').trim().toLowerCase() === nextUsernameLower
+    );
+    if (duplicateUser) {
+      throw new Error('Username already exists');
+    }
 
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = hashPassword(nextPassword, salt);
@@ -5558,8 +5566,18 @@ ipcMain.handle(
     }
     const workspaceOwnerId = await getWorkspaceOwnerId(currentUser);
     const scopedUserId = isAdmin() ? currentUser.id : workspaceOwnerId;
-    const mergedFetchLimit = includeActivities ? Math.min(Math.max(limit * 5, 200), 1000) : limit;
-    const mergedFetchOffset = includeActivities ? 0 : offset;
+    const safeLimitRaw = Number(limit);
+    const safeOffsetRaw = Number(offset);
+    const safeLimit = Number.isFinite(safeLimitRaw)
+      ? Math.max(1, Math.min(Math.round(safeLimitRaw), 20000))
+      : 100;
+    const safeOffset = Number.isFinite(safeOffsetRaw)
+      ? Math.max(0, Math.round(safeOffsetRaw))
+      : 0;
+    const mergedFetchLimit = includeActivities
+      ? Math.min(Math.max(safeLimit * 2, 200), 20000)
+      : Math.min(20000, safeLimit + safeOffset);
+    const mergedFetchOffset = 0;
     const logs = await listLogs({
       userId: scopedUserId,
       isAdmin: isAdmin(),
@@ -5585,15 +5603,11 @@ ipcMain.handle(
         return prefix;
       };
 
-      const dateFromMs = dateFrom ? new Date(dateFrom).getTime() : null;
-      const dateToMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
-      const searchText = String(search || '').trim().toLowerCase();
-
       try {
         const activities = await listActivities({
           userId: scopedUserId,
           isAdmin: isAdmin(),
-          limit: Math.min(Math.max(limit * 5, 200), 1000),
+          limit: mergedFetchLimit,
           offset: 0,
         });
 
@@ -5622,14 +5636,6 @@ ipcMain.handle(
           .filter((entry) => {
             if (level && String(level).trim() && entry.level !== level) return false;
             if (category && String(category).trim() && entry.category !== category) return false;
-            if (searchText) {
-              const haystack = `${entry.message || ''} ${entry.category || ''}`.toLowerCase();
-              if (!haystack.includes(searchText)) return false;
-            }
-            const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : NaN;
-            if (Number.isNaN(ts)) return true;
-            if (dateFromMs !== null && ts < dateFromMs) return false;
-            if (dateToMs !== null && ts > dateToMs) return false;
             return true;
           });
 
@@ -5663,8 +5669,59 @@ ipcMain.handle(
         const bTime = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
         return bTime - aTime;
       });
-      merged = merged.slice(offset, offset + limit);
     }
+
+    // Defensive filtering so UI filters still work even if a storage provider
+    // ignores one of the filter parameters.
+    const dateFromMs = dateFrom ? new Date(dateFrom).getTime() : null;
+    const dateToMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+    const searchText = String(search || '').trim().toLowerCase();
+    const levelFilter = String(level || '').trim().toLowerCase();
+    const categoryFilter = String(category || '').trim().toLowerCase();
+
+    merged = merged.filter((entry) => {
+      const entryLevel = String(entry?.level || '').toLowerCase();
+      const entryCategory = String(entry?.category || '').toLowerCase();
+
+      if (levelFilter && entryLevel !== levelFilter) {
+        return false;
+      }
+      if (categoryFilter && entryCategory !== categoryFilter) {
+        return false;
+      }
+
+      if (searchText) {
+        const haystack = [
+          entry?.message || '',
+          entry?.details || '',
+          entry?.category || '',
+          entry?.blogId || '',
+          entry?.username || '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(searchText)) {
+          return false;
+        }
+      }
+
+      if (dateFromMs !== null || dateToMs !== null) {
+        const ts = entry?.timestamp ? new Date(entry.timestamp).getTime() : NaN;
+        if (Number.isNaN(ts)) {
+          return false;
+        }
+        if (dateFromMs !== null && ts < dateFromMs) {
+          return false;
+        }
+        if (dateToMs !== null && ts > dateToMs) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    merged = merged.slice(safeOffset, safeOffset + safeLimit);
 
     return { success: true, logs: merged };
   } catch (error) {
@@ -5672,7 +5729,9 @@ ipcMain.handle(
   }
 });
 
-ipcMain.handle('get-logs-stats', async (event, { dateFrom = null, dateTo = null, search = null } = {}) => {
+ipcMain.handle(
+  'get-logs-stats',
+  async (event, { dateFrom = null, dateTo = null, search = null, level = null, category = null } = {}) => {
   try {
     requireAnyPermission(['logs', 'notifications']);
     if (!currentUser) {
@@ -5686,6 +5745,8 @@ ipcMain.handle('get-logs-stats', async (event, { dateFrom = null, dateTo = null,
       dateFrom,
       dateTo,
       search,
+      level,
+      category,
     });
     return { success: true, stats };
   } catch (error) {

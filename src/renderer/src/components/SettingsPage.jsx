@@ -1046,6 +1046,40 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     setUsageMonitoringLoading(true);
     const from = usageDateRangeEnabled ? formatDateInput(usageDateRange.startDate) : null;
     const to = usageDateRangeEnabled ? formatDateInput(usageDateRange.endDate) : null;
+    const startDateRaw = usageDateRangeEnabled
+      ? usageDateRange?.startDate instanceof Date
+        ? usageDateRange.startDate
+        : new Date(usageDateRange?.startDate)
+      : null;
+    const endDateRaw = usageDateRangeEnabled
+      ? usageDateRange?.endDate instanceof Date
+        ? usageDateRange.endDate
+        : new Date(usageDateRange?.endDate)
+      : null;
+    const rangeStartMs =
+      usageDateRangeEnabled && startDateRaw && !Number.isNaN(startDateRaw.getTime())
+        ? new Date(
+            startDateRaw.getFullYear(),
+            startDateRaw.getMonth(),
+            startDateRaw.getDate(),
+            0,
+            0,
+            0,
+            0
+          ).getTime()
+        : null;
+    const rangeEndMs =
+      usageDateRangeEnabled && endDateRaw && !Number.isNaN(endDateRaw.getTime())
+        ? new Date(
+            endDateRaw.getFullYear(),
+            endDateRaw.getMonth(),
+            endDateRaw.getDate(),
+            23,
+            59,
+            59,
+            999
+          ).getTime()
+        : null;
     const payload = {
       search: usageSearch || null,
       dateFrom: from,
@@ -1056,13 +1090,32 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         ...payload,
         limit: 5000,
         offset: 0,
+        includeActivities: false,
       });
       if (!logsResult?.success) {
+        setUsageLogs([]);
+        setUsageLogStats({
+          total: 0,
+          errors: 0,
+          totalTokens: 0,
+          totalCost: 0,
+          imageCount: 0,
+        });
+        setUsageTrend([]);
+        setImageTrend([]);
         return;
       }
-      const { rows, stats, usageTrend: usageSeries, imageTrend: imageSeries } = buildUsageMetrics(
-        logsResult.logs || []
-      );
+      const sourceLogs = Array.isArray(logsResult.logs) ? logsResult.logs : [];
+      const dateFilteredLogs =
+        usageDateRangeEnabled && rangeStartMs !== null && rangeEndMs !== null
+          ? sourceLogs.filter((log) => {
+              const ts = log?.timestamp ? new Date(log.timestamp).getTime() : NaN;
+              if (Number.isNaN(ts)) return false;
+              return ts >= rangeStartMs && ts <= rangeEndMs;
+            })
+          : sourceLogs;
+      const { rows, stats, usageTrend: usageSeries, imageTrend: imageSeries } =
+        buildUsageMetrics(dateFilteredLogs);
       setUsageLogs(rows);
       setUsageLogStats(stats);
       setUsageTrend(usageSeries);

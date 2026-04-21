@@ -55,6 +55,8 @@ function AdminPanelPage({ t, currentUser }) {
   const [passwordTargetUser, setPasswordTargetUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [createUserErrorModalOpen, setCreateUserErrorModalOpen] = useState(false);
+  const [createUserErrorMessage, setCreateUserErrorMessage] = useState('');
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteTargetUser, setDeleteTargetUser] = useState(null);
   const [usersPage, setUsersPage] = useState(1);
@@ -146,6 +148,8 @@ function AdminPanelPage({ t, currentUser }) {
     setIsCreateMode(true);
     setEditor(EMPTY_EDITOR);
     setPassword('');
+    setCreateUserErrorModalOpen(false);
+    setCreateUserErrorMessage('');
     setError('');
     setSuccess('');
     setModalOpen(true);
@@ -169,6 +173,8 @@ function AdminPanelPage({ t, currentUser }) {
 
   const closeModal = () => {
     if (busy) return;
+    setCreateUserErrorModalOpen(false);
+    setCreateUserErrorMessage('');
     setModalOpen(false);
   };
 
@@ -240,6 +246,8 @@ function AdminPanelPage({ t, currentUser }) {
     event.preventDefault();
     setError('');
     setSuccess('');
+    setCreateUserErrorModalOpen(false);
+    setCreateUserErrorMessage('');
     setBusy(true);
 
     const result = await window.electronAPI.createUser({
@@ -252,7 +260,12 @@ function AdminPanelPage({ t, currentUser }) {
 
     setBusy(false);
     if (!result.success) {
-      setError(result.error || 'Failed to create user');
+      const rawError = String(result.error || 'Failed to create user');
+      const cleanMessage = /username already exists/i.test(rawError)
+        ? (t.usernameExistsError || 'This username is already taken. Please choose a different username.')
+        : rawError;
+      setCreateUserErrorMessage(cleanMessage);
+      setCreateUserErrorModalOpen(true);
       return;
     }
 
@@ -689,6 +702,31 @@ function AdminPanelPage({ t, currentUser }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {modalOpen && createUserErrorModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-rose-200 bg-white p-6 shadow-xl dark:border-rose-500/40 dark:bg-slate-900">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+              {t.createUserTitle || 'Create User'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              {createUserErrorMessage}
+            </p>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateUserErrorModalOpen(false);
+                  setCreateUserErrorMessage('');
+                }}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+              >
+                {t.ok || 'OK'}
+              </button>
+            </div>
           </div>
         </div>
       )}

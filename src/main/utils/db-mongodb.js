@@ -1564,12 +1564,18 @@ async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, categ
 /**
  * Get log statistics
  */
-async function getLogStats({ userId, isAdmin, dateFrom, dateTo, search }) {
+async function getLogStats({ userId, isAdmin, dateFrom, dateTo, search, level, category }) {
   await initDb();
 
   const matchFilter = {};
   if (!isAdmin && userId) {
     matchFilter.user_id = userId;
+  }
+  if (level) {
+    matchFilter.level = level;
+  }
+  if (category) {
+    matchFilter.category = category;
   }
   if (search) {
     const searchValue = String(search);

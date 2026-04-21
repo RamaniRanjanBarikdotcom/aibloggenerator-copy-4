@@ -802,7 +802,17 @@ async function addLog({ level = 'info', category = 'general', message, details, 
   persistDb();
 }
 
-async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, category }) {
+async function listLogs({
+  userId,
+  isAdmin,
+  limit = 100,
+  offset = 0,
+  level,
+  category,
+  dateFrom,
+  dateTo,
+  search,
+}) {
   await initDb();
   let query = 'SELECT * FROM logs';
   const conditions = [];
@@ -815,6 +825,21 @@ async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, categ
   if (category) {
     conditions.push('category = ?');
     params.push(category);
+  }
+  if (dateFrom) {
+    conditions.push('timestamp >= ?');
+    params.push(String(dateFrom));
+  }
+  if (dateTo) {
+    conditions.push('timestamp <= ?');
+    params.push(`${String(dateTo)}T23:59:59.999`);
+  }
+  if (search) {
+    const likeValue = `%${String(search).trim().toLowerCase()}%`;
+    if (likeValue !== '%%') {
+      conditions.push('(LOWER(message) LIKE ? OR LOWER(COALESCE(details, \'\')) LIKE ? OR LOWER(COALESCE(blog_id, \'\')) LIKE ?)');
+      params.push(likeValue, likeValue, likeValue);
+    }
   }
   if (!isAdmin) {
     conditions.push('user_id = ?');
@@ -848,25 +873,40 @@ async function listLogs({ userId, isAdmin, limit = 100, offset = 0, level, categ
   }));
 }
 
-async function getLogStats({ userId, isAdmin }) {
-  await initDb();
-  const whereClause = isAdmin ? '' : ' WHERE user_id = ?';
-  const params = isAdmin ? [] : [userId];
-  const total = db.prepare(`SELECT COUNT(*) as count FROM logs${whereClause}`).get(...params);
-  const errors = db.prepare(
-    `SELECT COUNT(*) as count FROM logs${whereClause}${whereClause ? ' AND' : ' WHERE'} level = 'error'`
-  ).get(...params);
-  const tokens = db.prepare(
-    `SELECT SUM(tokens_used) as total FROM logs${whereClause}${whereClause ? ' AND' : ' WHERE'} tokens_used IS NOT NULL`
-  ).get(...params);
-  const cost = db.prepare(
-    `SELECT SUM(cost) as total FROM logs${whereClause}${whereClause ? ' AND' : ' WHERE'} cost IS NOT NULL`
-  ).get(...params);
+async function getLogStats({ userId, isAdmin, level, category, dateFrom, dateTo, search }) {
+  const rows = await listLogs({
+    userId,
+    isAdmin,
+    limit: 100000,
+    offset: 0,
+    level,
+    category,
+    dateFrom,
+    dateTo,
+    search,
+  });
+
+  let errorsCount = 0;
+  let totalTokens = 0;
+  let totalCost = 0;
+
+  rows.forEach((row) => {
+    if (row.level === 'error') {
+      errorsCount += 1;
+    }
+    if (typeof row.tokensUsed === 'number') {
+      totalTokens += row.tokensUsed;
+    }
+    if (typeof row.cost === 'number') {
+      totalCost += row.cost;
+    }
+  });
+
   return {
-    total: total?.count || 0,
-    errors: errors?.count || 0,
-    totalTokens: tokens?.total || 0,
-    totalCost: cost?.total || 0,
+    total: rows.length,
+    errors: errorsCount,
+    totalTokens,
+    totalCost,
   };
 }
 
