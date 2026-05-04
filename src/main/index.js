@@ -1185,6 +1185,14 @@ function normalizeSchedulerJob(rawJob = {}) {
     language: String(payload.language || 'English').trim(),
     useProductContext: schedulerParseBool(payload.use_product_context, false),
     websiteUrl: String(payload.website_url || '').trim(),
+    scraperPlatform: String(
+      payload.scraper_platform ||
+        rawJob.scraper_platform ||
+        rawJob.scraperPlatform ||
+        'generic'
+    )
+      .trim()
+      .toLowerCase() || 'generic',
     categories,
     scheduleMode,
     sourceBlogId,
@@ -1354,6 +1362,51 @@ async function processSchedulerJob(job) {
       }
       blog = existingBlog;
     } else {
+      if (job.useProductContext && job.websiteUrl) {
+        try {
+          const platform = String(job.scraperPlatform || 'generic').toLowerCase();
+          const scraped = await ProductScraper.productScrapper(job.websiteUrl, {
+            platform,
+            mode: 'static',
+          });
+          let productsToSave = Array.isArray(scraped) ? scraped : [];
+          if (productsToSave.length === 0) {
+            const dynamic = await ProductScraper.productScrapper(job.websiteUrl, {
+              platform,
+              mode: 'dynamic',
+            }).catch(() => []);
+            productsToSave = Array.isArray(dynamic) ? dynamic : [];
+          }
+          if (productsToSave.length > 0) {
+            const outputDir = path.join(app.getPath('userData'), 'data');
+            ProductScraper.saveToDatabase(productsToSave, outputDir);
+            await appendSchedulerExecutionLog({
+              accessToken,
+              jobId: job.id,
+              shopId: job.destinationId || '',
+              status: 'info',
+              message: `Scraped ${productsToSave.length} products from ${job.websiteUrl} for product context`,
+            });
+          } else {
+            await appendSchedulerExecutionLog({
+              accessToken,
+              jobId: job.id,
+              shopId: job.destinationId || '',
+              status: 'warning',
+              message: `Product context enabled but scraper returned 0 products from ${job.websiteUrl} (platform=${platform})`,
+            });
+          }
+        } catch (scrapeErr) {
+          await appendSchedulerExecutionLog({
+            accessToken,
+            jobId: job.id,
+            shopId: job.destinationId || '',
+            status: 'warning',
+            message: `Product scrape failed for ${job.websiteUrl}: ${scrapeErr?.message || scrapeErr}`,
+          });
+        }
+      }
+
       const generationResult = await invokeRendererElectronApiWithTimeout(
         'generateBlog',
         {

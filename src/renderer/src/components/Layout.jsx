@@ -241,7 +241,7 @@ function Layout({
 
         <div className={`border-t border-purple-100 dark:border-slate-800 ${isSidebarCollapsed ? 'p-2' : 'p-4'}`}>
           <p className="text-xs text-slate-500 text-center dark:text-slate-500">
-            {isSidebarCollapsed ? 'v1.0.1' : 'Version 1.0.1'}
+            {isSidebarCollapsed ? 'v1.0.2' : 'Version 1.0.2'}
           </p>
         </div>
       </div>
