@@ -1946,38 +1946,103 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const LINK_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'or', 'the', 'of', 'for', 'to', 'in', 'on', 'with', 'by',
+  'at', 'from', 'as', 'is', 'are', 'be', 'this', 'that', 'these', 'those',
+  'der', 'die', 'das', 'und', 'oder', 'mit', 'fur', 'für', 'von', 'im', 'am',
+]);
+const MAX_LINKS_PER_PRODUCT = 2;
+
+function slugWordsFromUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length === 0) return '';
+    const last = segments[segments.length - 1];
+    return decodeURIComponent(last).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  } catch {
+    return '';
+  }
+}
+
+function buildLinkPhrases(product) {
+  const phrases = new Set();
+  const add = (val) => {
+    const cleaned = String(val || '').trim();
+    if (cleaned.length >= 4) phrases.add(cleaned);
+  };
+  add(product.title);
+  if (Array.isArray(product.keywords)) {
+    product.keywords.forEach(add);
+  }
+  const slug = slugWordsFromUrl(product.url);
+  if (slug) {
+    add(slug);
+    const slugWords = slug.split(/\s+/).filter((w) => w && !LINK_STOP_WORDS.has(w.toLowerCase()));
+    if (slugWords.length >= 2) {
+      add(slugWords.slice(0, 3).join(' '));
+      add(slugWords.slice(0, 2).join(' '));
+    }
+  }
+  if (product.title) {
+    const titleWords = product.title.split(/\s+/).filter((w) => w && !LINK_STOP_WORDS.has(w.toLowerCase()));
+    if (titleWords.length >= 2) {
+      add(titleWords.slice(0, 3).join(' '));
+      add(titleWords.slice(0, 2).join(' '));
+    }
+  }
+  return Array.from(phrases).sort((a, b) => b.length - a.length);
+}
+
 function linkProducts(content, products) {
   if (!content || !Array.isArray(products) || products.length === 0) {
     return content;
   }
-  const sorted = products
-    .filter((item) => item?.title && item?.url)
-    .sort((a, b) => b.title.length - a.title.length);
-  if (sorted.length === 0) {
-    return content;
-  }
+  const candidates = products
+    .filter((item) => item?.url && (item?.title || item?.url))
+    .map((product) => ({
+      product,
+      phrases: buildLinkPhrases(product),
+      remaining: MAX_LINKS_PER_PRODUCT,
+    }))
+    .filter((c) => c.phrases.length > 0);
+  if (candidates.length === 0) return content;
 
   const segments = content.split(/(<[^>]+>)/g);
   let inAnchor = false;
+  const skipStack = [];
+  const isSkippedTag = (tag) => /^<\s*(a|h1|h2|h3)\b/i.test(tag);
+  const isClosingSkippedTag = (tag) => /^<\s*\/\s*(a|h1|h2|h3)\s*>/i.test(tag);
+
   const linked = segments.map((segment) => {
-    if (segment.startsWith('<a')) {
-      inAnchor = true;
+    if (!segment) return segment;
+    if (segment.startsWith('<')) {
+      if (isSkippedTag(segment)) {
+        skipStack.push(segment);
+        if (/^<\s*a\b/i.test(segment)) inAnchor = true;
+      } else if (isClosingSkippedTag(segment)) {
+        skipStack.pop();
+        if (/^<\s*\/\s*a\s*>/i.test(segment)) inAnchor = false;
+      }
       return segment;
     }
-    if (segment.startsWith('</a')) {
-      inAnchor = false;
-      return segment;
-    }
-    if (segment.startsWith('<') || inAnchor) {
+    if (skipStack.length > 0 || inAnchor) {
       return segment;
     }
     let updated = segment;
-    sorted.forEach((product) => {
-      const regex = new RegExp(`\\b${escapeRegExp(product.title)}\\b`, 'gi');
-      updated = updated.replace(
-        regex,
-        `<a href="${product.url}" target="_blank" rel="noreferrer">${product.title}</a>`
-      );
+    candidates.forEach((cand) => {
+      if (cand.remaining <= 0) return;
+      for (const phrase of cand.phrases) {
+        if (cand.remaining <= 0) break;
+        const regex = new RegExp(`(?<![\\w-])${escapeRegExp(phrase)}(?![\\w-])`, 'i');
+        const match = updated.match(regex);
+        if (!match) continue;
+        const matched = match[0];
+        const before = updated.slice(0, match.index);
+        const after = updated.slice(match.index + matched.length);
+        updated = `${before}<a href="${cand.product.url}" target="_blank" rel="noreferrer">${matched}</a>${after}`;
+        cand.remaining -= 1;
+      }
     });
     return updated;
   });
@@ -1988,7 +2053,9 @@ function linkProducts(content, products) {
 function normalizeUrlForMatch(value) {
   try {
     const parsed = new URL(String(value || '').trim());
-    return parsed.toString().replace(/\/+$/, '').toLowerCase();
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return `${host}${path}`;
   } catch {
     return '';
   }
@@ -4697,7 +4764,7 @@ ipcMain.handle(
     const productContext = mergedSettings.useProductContext ? loadProducts() : [];
     const productContextText =
       productContext.length > 0
-        ? `\n\nProduct context (use only if relevant, link names to URLs):\n${productContext
+        ? `\n\nProduct context — weave 2-4 of these into the blog naturally where they add value, and wrap each mention in <a href="URL">name</a>. Do not invent or rename products; use the exact URLs below. Do not add external links to other sites.\n${productContext
             .slice(0, 20)
             .map((item) => {
               const image = item.image ? ` | Image: ${item.image}` : '';

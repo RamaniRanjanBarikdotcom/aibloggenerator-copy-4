@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import { languageNames } from '../i18n';
 import ModalCloseButton from './ModalCloseButton';
 import TablePagination from './TablePagination';
+import KeywordsInput from './KeywordsInput';
 
 const STYLES = ['professional', 'conversational', 'educational', 'persuasive', 'storytelling'];
 const TONES = ['friendly', 'formal', 'persuasive', 'casual'];
@@ -1777,7 +1778,7 @@ function SchedulerPage({ t }) {
                         </div>
                         <div>
                           <label className={labelClass}>{tr('schedulerKeywords', 'Keywords')}</label>
-                          <input className={inputClass} value={form.keywords} onChange={(e) => setForm((p) => ({ ...p, keywords: e.target.value }))} />
+                          <KeywordsInput value={form.keywords} onChange={(val) => setForm((p) => ({ ...p, keywords: val }))} />
                         </div>
                         <div>
                           <label className={labelClass}>{tr('schedulerFocusKeyword', 'Focus keyword')}</label>
@@ -1977,7 +1978,7 @@ function SchedulerPage({ t }) {
                         </div>
                         <div>
                           <label className={labelClass}>{tr('schedulerKeywords', 'Keywords')}</label>
-                          <input className={inputClass} value={editForm.keywords} onChange={(e) => setEditForm((p) => ({ ...p, keywords: e.target.value }))} />
+                          <KeywordsInput value={editForm.keywords} onChange={(val) => setEditForm((p) => ({ ...p, keywords: val }))} />
                         </div>
                         <div>
                           <label className={labelClass}>{tr('schedulerFocusKeyword', 'Focus keyword')}</label>

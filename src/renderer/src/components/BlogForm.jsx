@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Sparkles, Globe, RefreshCw, Settings2, X, Save, RotateCcw, Trash2, History, Eye, HelpCircle } from 'lucide-react';
 import { languageNames } from '../i18n';
+import KeywordsInput from './KeywordsInput';
 
 const DEFAULT_PROMPTS = {
   styleGuardrails:
@@ -454,12 +455,10 @@ function BlogForm({ onGenerate, isGenerating, language, t, canGenerate, currentU
           <label className="block text-sm font-medium text-slate-700 mb-2 dark:text-slate-200">
             {t.keywords}
           </label>
-          <input
-            type="text"
+          <KeywordsInput
             value={keywords}
-            onChange={(e) => setKeywords(e.target.value)}
+            onChange={setKeywords}
             placeholder={t.keywordsPlaceholder}
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
           />
         </div>
 
