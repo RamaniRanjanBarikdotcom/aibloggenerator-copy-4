@@ -338,6 +338,62 @@ function parseCsvLine(line) {
   return values.map((v) => v.trim());
 }
 
+// Quote-aware CSV parser that handles multi-line fields. Returns an array of
+// rows, where each row is an array of cell strings. Required because cells
+// (e.g. comma-separated keywords or multi-line lists) often contain commas
+// and embedded newlines, which a naive line-split would shred.
+function parseCsvText(text) {
+  const src = String(text || '');
+  if (!src) return [];
+  // Strip BOM if present.
+  const input = src.charCodeAt(0) === 0xfeff ? src.slice(1) : src;
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        field += '"';
+        i += 1;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\r' && next === '\n') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+      i += 1;
+    } else if (ch === '\n' || ch === '\r') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += ch;
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows
+    .map((r) => r.map((v) => String(v || '').trim()))
+    .filter((r) => r.some((v) => v.length > 0));
+}
+
 function stableNormalize(value) {
   if (Array.isArray(value)) {
     return value.map((item) => stableNormalize(item));
@@ -892,16 +948,13 @@ function SchedulerPage({ t }) {
 
   useEffect(() => {
     if (!showImportModal) return;
-    const lines = String(csvContent || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length === 0) {
+    const parsedRows = parseCsvText(csvContent);
+    if (parsedRows.length === 0) {
       setCsvHeaders([]);
       setCsvColumnMappings({});
       return;
     }
-    const headers = parseCsvLine(lines[0]).map((h) => String(h || '').trim()).filter(Boolean);
+    const headers = parsedRows[0].map((h) => String(h || '').trim()).filter(Boolean);
     setCsvHeaders(headers);
     setCsvColumnMappings((prev) => {
       const next = {};
@@ -1169,17 +1222,13 @@ function SchedulerPage({ t }) {
       return;
     }
 
-    const lines = String(csvContent || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length < 2) {
+    const parsedRows = parseCsvText(csvContent);
+    if (parsedRows.length < 2) {
       setError(tr('schedulerErrorCsvNoRows', 'CSV has no usable rows.'));
       return;
     }
 
-    const headers = parseCsvLine(lines[0]).map((h) => String(h || '').trim());
+    const headers = parsedRows[0].map((h) => String(h || '').trim());
     const mappedFields = headers
       .map((h) => csvColumnMappings[h] || detectImportField(h))
       .filter(Boolean);
@@ -1194,8 +1243,7 @@ function SchedulerPage({ t }) {
       );
       return;
     }
-    const rows = lines.slice(1).map((line) => {
-      const values = parseCsvLine(line);
+    const rows = parsedRows.slice(1).map((values) => {
       const row = {};
       headers.forEach((h, idx) => {
         const mappedField = csvColumnMappings[h] || detectImportField(h);
@@ -1230,7 +1278,14 @@ function SchedulerPage({ t }) {
       const sourceBlogId = String(row.source_blog_id || row.sourceblogid || '').trim();
       const fallbackSourceBlog = sourceBlogId ? historyBlogMap.get(sourceBlogId) : null;
       const topic = String(row.topic || fallbackSourceBlog?.title || '').trim();
-      const keywords = String(row.keywords || '').trim();
+      // Cells from spreadsheets often hold one keyword per line. Normalize any
+      // newlines or semicolons to commas so downstream code (which expects
+      // comma-separated keywords) can split them into chips correctly.
+      const keywords = String(row.keywords || '')
+        .split(/[\r\n;]+/)
+        .map((k) => k.trim())
+        .filter(Boolean)
+        .join(', ');
       const focusKeyword = String(row.focus_keyword || row.focuskeyword || '').trim();
       const platform = String(selectedDestination?.platform || row.platform || '').trim();
       const generateImage = parseBool(row.generate_image || row.generateimage, true);
