@@ -214,6 +214,56 @@ async function addSchedulerLog({ accessToken, log }) {
   });
 }
 
+async function shopifyListOauthClients({ accessToken } = {}) {
+  return request('/shopify/oauth/clients', { method: 'GET', accessToken });
+}
+
+async function shopifySaveOauthClient({ accessToken, client } = {}) {
+  return request('/shopify/oauth/clients', { method: 'POST', data: client, accessToken });
+}
+
+async function shopifyDeleteOauthClient({ accessToken, id } = {}) {
+  return request(`/shopify/oauth/clients/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    accessToken,
+  });
+}
+
+async function shopifyStartOauth({ accessToken, ...payload } = {}) {
+  return request('/shopify/oauth/start', { method: 'POST', data: payload, accessToken });
+}
+
+async function shopifyOauthStatus({ accessToken, state } = {}) {
+  return request(`/shopify/oauth/status?state=${encodeURIComponent(state)}`, {
+    method: 'GET',
+    accessToken,
+  });
+}
+
+async function shopifyPublish({ accessToken, ...payload } = {}) {
+  return request('/shopify/publish', { method: 'POST', data: payload, accessToken });
+}
+
+async function shopifyListBlogs({ accessToken, shop, destinationId = '', apiVersion = '2024-01' } = {}) {
+  const qs = new URLSearchParams({ shop, apiVersion });
+  if (destinationId) qs.set('destinationId', destinationId);
+  return request(`/shopify/blogs?${qs.toString()}`, { method: 'GET', accessToken });
+}
+
+async function shopifyCreateBlog({ accessToken, shop, destinationId = '', apiVersion = '2024-01', title } = {}) {
+  return request('/shopify/blogs', {
+    method: 'POST',
+    data: { shop, destinationId, apiVersion, title },
+    accessToken,
+  });
+}
+
+async function shopifyTestConnection({ accessToken, shop, destinationId = '', apiVersion = '2024-01' } = {}) {
+  const qs = new URLSearchParams({ shop, apiVersion });
+  if (destinationId) qs.set('destinationId', destinationId);
+  return request(`/shopify/shop?${qs.toString()}`, { method: 'GET', accessToken });
+}
+
 async function checkLatestUpdate({ currentVersion = '', channel = 'stable' } = {}) {
   const qs = new URLSearchParams();
   if (currentVersion) qs.set('currentVersion', currentVersion);
@@ -234,5 +284,14 @@ module.exports = {
   importSchedulerCsv,
   listSchedulerLogs,
   addSchedulerLog,
+  shopifyListOauthClients,
+  shopifySaveOauthClient,
+  shopifyDeleteOauthClient,
+  shopifyStartOauth,
+  shopifyOauthStatus,
+  shopifyPublish,
+  shopifyListBlogs,
+  shopifyCreateBlog,
+  shopifyTestConnection,
   checkLatestUpdate,
 };

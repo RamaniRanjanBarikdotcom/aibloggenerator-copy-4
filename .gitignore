@@ -11,3 +11,4 @@ build/
 .claude
 SOP.md
 php-api/config.php
+.docs/

@@ -103,6 +103,15 @@ const {
   importSchedulerCsv: serverImportSchedulerCsv,
   listSchedulerLogs: serverListSchedulerLogs,
   addSchedulerLog: serverAddSchedulerLog,
+  shopifyListOauthClients: serverShopifyListOauthClients,
+  shopifySaveOauthClient: serverShopifySaveOauthClient,
+  shopifyDeleteOauthClient: serverShopifyDeleteOauthClient,
+  shopifyStartOauth: serverShopifyStartOauth,
+  shopifyOauthStatus: serverShopifyOauthStatus,
+  shopifyPublish: serverShopifyPublish,
+  shopifyListBlogs: serverShopifyListBlogs,
+  shopifyCreateBlog: serverShopifyCreateBlog,
+  shopifyTestConnection: serverShopifyTestConnection,
   checkLatestUpdate: serverCheckLatestUpdate,
 } = require('./services/serverApi');
 const axios = require('axios');
@@ -224,6 +233,16 @@ setUnauthorizedHandler(() => {
 
 function isServerApiEnabled() {
   return Boolean(getServerApiConfig().enabled);
+}
+
+// Server-side Shopify OAuth (Phase 1): the server holds the client secret + token.
+// Requires the flag AND a configured server API.
+function isShopifyServerOauthEnabled() {
+  return process.env.SHOPIFY_SERVER_OAUTH === 'true' && isServerApiEnabled();
+}
+
+function getServerAccessToken() {
+  return String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
 }
 
 function getUserApiKeyKey(userId) {
@@ -367,12 +386,23 @@ function getShopifyOauthRedirectUrl() {
   return `http://localhost:${port}/shopify/callback`;
 }
 
+// Default seed used when no APP_ENCRYPTION_KEY is configured. This MUST be a
+// build-stable constant (NOT app.getPath('userData')): Shopify OAuth client
+// secrets are encrypted on the desktop client and then stored server-side via
+// the shared API, so the decrypting install is frequently a different machine
+// or build than the one that encrypted them. A machine-specific seed makes the
+// ciphertext non-portable and produces "Unsupported state or unable to
+// authenticate data" (GCM auth-tag mismatch) on every other install.
+// Override with APP_ENCRYPTION_KEY (same value across all clients sharing the
+// same server data) for a deployment-specific key.
+const DEFAULT_ENCRYPTION_SEED = 'aiblog-generator::shopify-oauth::shared-key::v1';
+
 function getEncryptionKey() {
   const seed =
     process.env.APP_ENCRYPTION_KEY ||
     process.env.SHOPIFY_OAUTH_STORE_KEY ||
     process.env.ELECTRON_STORE_KEY ||
-    app.getPath('userData');
+    DEFAULT_ENCRYPTION_SEED;
   return crypto.createHash('sha256').update(String(seed)).digest();
 }
 
@@ -511,6 +541,67 @@ async function fetchShopifyBlogHandle({ shopDomain, accessToken, apiVersion = '2
     console.warn('[Shopify] Failed to fetch blog handle:', error?.response?.status || '', error?.message || '');
     return '';
   }
+}
+
+// Phase 2 publish proxy: the desktop prepares the article payload (no secret) and,
+// when the image isn't a public URL, the raw image bytes. The server (which holds
+// the access token) uploads the image + creates the article.
+async function publishToShopifyViaServer({
+  destination,
+  title,
+  content,
+  metaDescription,
+  keywords,
+  categories,
+  imageUrl,
+  localImagePath,
+  imageStorageUsed,
+  publishStatus,
+}) {
+  const shop = normalizeShopDomain(ensureValue('Shopify shop domain', destination.shopDomain));
+  const blogId = ensureValue('Shopify blog ID', destination.blogId);
+  const apiVersion = (destination.apiVersion || '2024-01').trim();
+
+  const contentWithImage = stripLeadingTitleFromContent(stripLeadingH1(content), title);
+  const article = {
+    title,
+    body_html: contentWithImage,
+    tags: normalizeShopifyTags([...keywords, ...categories]).join(', '),
+    published: publishStatus === 'publish',
+  };
+  if (metaDescription) {
+    article.summary_html = metaDescription;
+  }
+
+  // Prefer a public image URL; otherwise hand the binary to the server to upload.
+  let imageAttachment = null;
+  if (isPublicHttpUrl(imageUrl)) {
+    article.image = { src: imageUrl, alt: title || '' };
+  } else if (!imageStorageUsed && (imageUrl || localImagePath)) {
+    try {
+      const img = await loadImageBuffer({ imageUrl, localImagePath });
+      imageAttachment = {
+        attachment: img.buffer.toString('base64'),
+        filename: img.filename || 'blog-image.jpg',
+        mime_type: img.mimeType || 'image/jpeg',
+      };
+    } catch (err) {
+      console.warn('[Publish] Shopify image load failed (server publish):', err.message);
+    }
+  }
+
+  const resp = await serverShopifyPublish({
+    accessToken: getServerAccessToken(),
+    shop,
+    destinationId: destination.id || '',
+    apiVersion,
+    blogId,
+    blogHandle: destination.blogHandle || '',
+    article,
+    imageAttachment,
+  });
+  const articleData = resp?.article || {};
+  return { id: articleData.id, url: articleData.url };
 }
 
 async function loadImageBuffer({ imageUrl, localImagePath }) {
@@ -2603,6 +2694,10 @@ ipcMain.handle('get-settings', async () => {
     const oauthClients = Array.isArray(parsed.shopifyOauthClients) ? parsed.shopifyOauthClients : [];
     parsed.shopifyOauthClients = sanitizeShopifyOauthClientsForUi(oauthClients);
     parsed.shopifyOauthRedirectUrl = getShopifyOauthRedirectUrl();
+    // When server-side OAuth is on, the UI manages OAuth apps via the dedicated
+    // shopify-oauth-* IPC (server-stored, with server record ids) instead of the
+    // settings blob.
+    parsed.shopifyServerOauthEnabled = isShopifyServerOauthEnabled();
     console.log('[IPC] get-settings loaded, publishDestinations count:', parsed?.publishDestinations?.length);
     return { success: true, settings: parsed };
   } catch (error) {
@@ -3487,6 +3582,20 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
       );
       result = response.data || null;
     } else if (platform === 'shopify') {
+      if (isShopifyServerOauthEnabled()) {
+        result = await publishToShopifyViaServer({
+          destination,
+          title,
+          content,
+          metaDescription,
+          keywords,
+          categories,
+          imageUrl,
+          localImagePath,
+          imageStorageUsed,
+          publishStatus,
+        });
+      } else {
       const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
       const accessToken = ensureValue('Shopify access token', destination.accessToken);
       const blogId = ensureValue('Shopify blog ID', destination.blogId);
@@ -3561,6 +3670,7 @@ ipcMain.handle('publish-blog', async (event, { destination, blog, status = 'draf
           response.data?.article?.url ||
           buildShopifyArticleUrl({ shopDomain, blogHandle, articleHandle });
         result = { id: response.data?.article?.id, url: articleUrl };
+      }
       } else if (platform === 'custom' || platform === 'jtl') {
       const endpointUrl = requireHttps(ensureValue('Endpoint URL', destination.endpointUrl));
       const reqHeaders = { ...PUBLISH_AXIOS_DEFAULTS.headers, 'Content-Type': 'application/json' };
@@ -3687,14 +3797,24 @@ ipcMain.handle('test-publish-destination', async (event, { destination }) => {
       });
       result = response.data || { success: true };
     } else if (platform === 'shopify') {
-      const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
-      const accessToken = ensureValue('Shopify access token', destination.accessToken);
-      const apiVersion = (destination.apiVersion || '2024-01').trim();
-      const response = await axios.get(`https://${shopDomain}/admin/api/${apiVersion}/shop.json`, {
-        timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
-        headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
-      });
-      result = { name: response.data?.shop?.name };
+      if (isShopifyServerOauthEnabled()) {
+        const resp = await serverShopifyTestConnection({
+          accessToken: getServerAccessToken(),
+          shop: normalizeShopDomain(ensureValue('Shopify shop domain', destination.shopDomain)),
+          destinationId: destination.id || '',
+          apiVersion: (destination.apiVersion || '2024-01').trim(),
+        });
+        result = { name: resp?.shop?.name };
+      } else {
+        const shopDomain = ensureValue('Shopify shop domain', destination.shopDomain);
+        const accessToken = ensureValue('Shopify access token', destination.accessToken);
+        const apiVersion = (destination.apiVersion || '2024-01').trim();
+        const response = await axios.get(`https://${shopDomain}/admin/api/${apiVersion}/shop.json`, {
+          timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+          headers: { ...PUBLISH_AXIOS_DEFAULTS.headers, 'X-Shopify-Access-Token': accessToken },
+        });
+        result = { name: response.data?.shop?.name };
+      }
     } else if (platform === 'custom' || platform === 'jtl') {
       const endpointUrl = ensureValue('Endpoint URL', destination.endpointUrl);
       const reqHeaders = { ...PUBLISH_AXIOS_DEFAULTS.headers };
@@ -3720,16 +3840,35 @@ ipcMain.handle('test-publish-destination', async (event, { destination }) => {
   }
 });
 
-ipcMain.handle('list-shopify-blogs', async (event, { shopDomain, accessToken, apiVersion } = {}) => {
+ipcMain.handle('list-shopify-blogs', async (event, { shopDomain, accessToken, apiVersion, destinationId } = {}) => {
   try {
     requirePermission('settings');
     if (!currentUser) {
       throw new Error('Not authenticated');
     }
     const domain = ensureValue('Shopify shop domain', shopDomain);
-    const token = ensureValue('Shopify access token', accessToken);
     const version = (apiVersion || '2024-01').trim();
 
+    if (isShopifyServerOauthEnabled()) {
+      const shopNorm = normalizeShopDomain(domain);
+      console.log('[Shopify] list-blogs via server proxy, shop:', shopNorm, 'destId:', destinationId || '(none)');
+      try {
+        const resp = await serverShopifyListBlogs({
+          accessToken: getServerAccessToken(),
+          shop: shopNorm,
+          destinationId: destinationId || '',
+          apiVersion: version,
+        });
+        const blogs = Array.isArray(resp?.blogs) ? resp.blogs : [];
+        console.log('[Shopify] list-blogs proxy returned', blogs.length, 'blogs');
+        return { success: true, blogs };
+      } catch (proxyError) {
+        console.error('[Shopify] list-blogs proxy error:', proxyError.message);
+        return { success: false, error: proxyError.message };
+      }
+    }
+
+    const token = ensureValue('Shopify access token', accessToken);
     const response = await axios.get(
       `https://${domain}/admin/api/${version}/blogs.json`,
       {
@@ -3741,6 +3880,47 @@ ipcMain.handle('list-shopify-blogs', async (event, { shopDomain, accessToken, ap
     return { success: true, blogs };
   } catch (error) {
     console.error('[Shopify] list-blogs error:', error?.response?.status, error?.response?.data || error.message);
+    return { success: false, error: extractPublishError(error) };
+  }
+});
+
+ipcMain.handle('create-shopify-blog', async (event, { shopDomain, accessToken, apiVersion, title, destinationId } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    const domain = ensureValue('Shopify shop domain', shopDomain);
+    const blogTitle = ensureValue('Blog title', title);
+    const version = (apiVersion || '2024-01').trim();
+
+    if (isShopifyServerOauthEnabled()) {
+      const resp = await serverShopifyCreateBlog({
+        accessToken: getServerAccessToken(),
+        shop: normalizeShopDomain(domain),
+        destinationId: destinationId || '',
+        apiVersion: version,
+        title: blogTitle,
+      });
+      return { success: true, blog: resp?.blog || null };
+    }
+
+    const token = ensureValue('Shopify access token', accessToken);
+    const response = await axios.post(
+      `https://${domain}/admin/api/${version}/blogs.json`,
+      { blog: { title: blogTitle } },
+      {
+        timeout: PUBLISH_AXIOS_DEFAULTS.timeout,
+        headers: {
+          ...PUBLISH_AXIOS_DEFAULTS.headers,
+          'X-Shopify-Access-Token': token,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    return { success: true, blog: response.data?.blog || null };
+  } catch (error) {
+    console.error('[Shopify] create-blog error:', error?.response?.status, error?.response?.data || error.message);
     return { success: false, error: extractPublishError(error) };
   }
 });
@@ -3787,7 +3967,195 @@ ipcMain.handle('export-bulk', async (event, { blogIds, format }) => {
   }
 });
 
+// --- Server-side Shopify OAuth app management (Phase 1b) --------------------
+// When SHOPIFY_SERVER_OAUTH is on, OAuth apps (incl. the secret) live in the
+// server's shopify_oauth_clients collection, addressed by server record id.
+
+ipcMain.handle('shopify-oauth-list-clients', async () => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!isShopifyServerOauthEnabled()) {
+      // Fall back to the local settings blob (masked) so the UI works either way.
+      const settings = await getUserSettings(currentUser.id);
+      const clients = Array.isArray(settings.shopifyOauthClients)
+        ? sanitizeShopifyOauthClientsForUi(settings.shopifyOauthClients)
+        : [];
+      return { success: true, clients, serverManaged: false };
+    }
+    const resp = await serverShopifyListOauthClients({ accessToken: getServerAccessToken() });
+    return { success: true, clients: Array.isArray(resp?.clients) ? resp.clients : [], serverManaged: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('shopify-oauth-save-client', async (event, { id, name, clientId, clientSecret } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!isShopifyServerOauthEnabled()) {
+      throw new Error('Server-side Shopify OAuth is not enabled.');
+    }
+    const resp = await serverShopifySaveOauthClient({
+      accessToken: getServerAccessToken(),
+      client: {
+        id: id || undefined,
+        name: name || '',
+        clientId: String(clientId || '').trim(),
+        clientSecret: String(clientSecret || ''),
+      },
+    });
+    return { success: true, client: resp?.client || null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('shopify-oauth-delete-client', async (event, { id } = {}) => {
+  try {
+    requirePermission('settings');
+    if (!currentUser) {
+      throw new Error('Not authenticated');
+    }
+    if (!isShopifyServerOauthEnabled()) {
+      throw new Error('Server-side Shopify OAuth is not enabled.');
+    }
+    const resp = await serverShopifyDeleteOauthClient({ accessToken: getServerAccessToken(), id });
+    return { success: true, deleted: Boolean(resp?.deleted) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 let activeShopifyOAuth = null;
+
+function getShopifyLocalRedirect() {
+  const raw =
+    String(process.env.SHOPIFY_OAUTH_LOCAL_REDIRECT_URL || '').trim() ||
+    'http://localhost:3000/api/auth/shopify/callback';
+  const parsed = new URL(raw);
+  return {
+    url: raw,
+    port: Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)),
+    pathname: parsed.pathname || '/',
+  };
+}
+
+// Server-side OAuth driver (hybrid, no HTTPS required):
+//  1) server builds the authorize URL with redirect_uri = our registered localhost URL
+//  2) Shopify redirects the browser to that localhost address on this machine
+//  3) our tiny local listener 302-redirects the browser to the server's own callback
+//     (forwarding Shopify's query params unchanged so the HMAC stays valid)
+//  4) the server verifies the HMAC with the server-held secret and does the token
+//     exchange — the secret and access token never reach the client.
+// We poll the server for completion. Returns a shape compatible with the legacy flow
+// minus the access token (which now stays server-side).
+async function startShopifyOAuthServerSide({ shopDomain, apiVersion, oauthClientId } = {}) {
+  const accessToken = String(store.get(SERVER_API_ACCESS_TOKEN_KEY) || '').trim();
+  if (!accessToken) {
+    throw new Error('Not authenticated (missing server access token).');
+  }
+  const shop = normalizeShopDomain(ensureValue('Shopify shop domain', shopDomain));
+  const clientRecordId = ensureValue('Shopify OAuth app', oauthClientId);
+  const version = (apiVersion || '2024-01').trim();
+  const local = getShopifyLocalRedirect();
+
+  const startResp = await serverShopifyStartOauth({
+    accessToken,
+    oauthClientId: clientRecordId,
+    shop,
+    apiVersion: version,
+    redirectUri: local.url,
+  });
+  const state = String(startResp?.state || '').trim();
+  const authorizeUrl = String(startResp?.authorizeUrl || '').trim();
+  const serverCallbackUrl = String(startResp?.serverCallbackUrl || '').trim();
+  if (!state || !authorizeUrl) {
+    throw new Error('Server did not return an authorization URL.');
+  }
+  if (!serverCallbackUrl) {
+    throw new Error('Server did not return its callback URL.');
+  }
+
+  activeShopifyOAuth = new Promise((resolve, reject) => {
+    let settled = false;
+    const server = http.createServer((req, res) => {
+      try {
+        const requestUrl = new URL(req.url, local.url);
+        if (requestUrl.pathname !== local.pathname) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not found');
+          return;
+        }
+        // Forward Shopify's params unchanged to the server callback so HMAC stays valid.
+        const search = requestUrl.search || '';
+        const target = `${serverCallbackUrl}${search}`;
+        res.writeHead(302, { Location: target });
+        res.end();
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('OAuth callback error.');
+      }
+    });
+
+    const cleanup = () => {
+      try {
+        server.close();
+      } catch (_closeError) {
+        // ignore
+      }
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+
+    server.on('error', (err) => finish(reject, err));
+    server.listen(local.port, '127.0.0.1', async () => {
+      try {
+        await shell.openExternal(authorizeUrl);
+      } catch (openError) {
+        finish(reject, openError);
+        return;
+      }
+
+      const deadline = Date.now() + 5 * 60 * 1000; // server state TTL is 10 min.
+      while (!settled && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let statusResp;
+        try {
+          statusResp = await serverShopifyOauthStatus({ accessToken, state });
+        } catch (pollError) {
+          continue; // transient — keep polling.
+        }
+        const status = String(statusResp?.status || 'pending');
+        if (status === 'complete') {
+          finish(resolve, {
+            success: true,
+            shopDomain: String(statusResp?.shop || shop),
+            apiVersion: version,
+            serverManaged: true,
+          });
+          return;
+        }
+        if (status === 'failed') {
+          finish(reject, new Error(statusResp?.error || 'Shopify authorization failed.'));
+          return;
+        }
+      }
+      finish(reject, new Error('Timed out waiting for Shopify authorization.'));
+    });
+  });
+
+  return activeShopifyOAuth;
+}
 
 ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion, oauthClientId } = {}) => {
   try {
@@ -3798,6 +4166,16 @@ ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion, oa
 
     if (activeShopifyOAuth) {
       throw new Error('Shopify OAuth is already in progress');
+    }
+
+    // Server-side OAuth (Phase 1): the server holds the client secret and performs
+    // the token exchange. Off by default; requires the companion server endpoints
+    // (php-api/blog-gen.php /shopify/oauth/*) deployed and the OAuth app saved
+    // server-side so `oauthClientId` is the server's record id.
+    // See docs/shopify-oauth-server-side.md.
+    if (isShopifyServerOauthEnabled()) {
+      const result = await startShopifyOAuthServerSide({ shopDomain, apiVersion, oauthClientId });
+      return result;
     }
 
     const settings = await getUserSettings(currentUser.id);
@@ -3816,10 +4194,22 @@ ipcMain.handle('start-shopify-oauth', async (event, { shopDomain, apiVersion, oa
       'Shopify client ID',
       selectedClient?.clientId || process.env.SHOPIFY_CLIENT_ID
     );
+    let decryptedSecret = '';
+    if (selectedClient?.clientSecretEnc) {
+      decryptedSecret = decryptSecret(selectedClient.clientSecretEnc);
+      if (!decryptedSecret) {
+        // The secret is present in storage but could not be decrypted with the
+        // current key (e.g. it was saved by an install using a different
+        // APP_ENCRYPTION_KEY). Re-saving it will re-encrypt with the current key.
+        throw new Error(
+          'Saved Shopify client secret could not be decrypted on this install. ' +
+            'Please open Settings and re-enter the client secret for this OAuth app, then try again.'
+        );
+      }
+    }
     const clientSecret = ensureValue(
       'Shopify client secret',
-      (selectedClient?.clientSecretEnc ? decryptSecret(selectedClient.clientSecretEnc) : '') ||
-        process.env.SHOPIFY_CLIENT_SECRET
+      decryptedSecret || process.env.SHOPIFY_CLIENT_SECRET
     );
     const shop = normalizeShopDomain(ensureValue('Shopify shop domain', shopDomain));
     const version = (apiVersion || '2024-01').trim();

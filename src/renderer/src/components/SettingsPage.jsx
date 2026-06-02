@@ -600,6 +600,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [providerCatalogError, setProviderCatalogError] = useState({});
   const [publishDestinations, setPublishDestinations] = useState([]);
   const [shopifyOauthClients, setShopifyOauthClients] = useState([]);
+  const [shopifyServerOauthEnabled, setShopifyServerOauthEnabled] = useState(false);
   const [shopifyOauthRedirectUrl, setShopifyOauthRedirectUrl] = useState('');
   const [shopifyOauthModalOpen, setShopifyOauthModalOpen] = useState(false);
   const [shopifyOauthName, setShopifyOauthName] = useState('');
@@ -608,6 +609,9 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
   const [shopifyBlogs, setShopifyBlogs] = useState([]);
   const [shopifyBlogsLoading, setShopifyBlogsLoading] = useState(false);
   const [shopifyBlogsError, setShopifyBlogsError] = useState('');
+  const [creatingBlog, setCreatingBlog] = useState(false);
+  const [blogModalOpen, setBlogModalOpen] = useState(false);
+  const [blogModalTitle, setBlogModalTitle] = useState('');
   const [shopifyOAuthLoading, setShopifyOAuthLoading] = useState(false);
   const [shopifyOAuthError, setShopifyOAuthError] = useState('');
   const [imageStorageEnabled, setImageStorageEnabled] = useState(false);
@@ -649,22 +653,34 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     const shopDomain = String(overrides.shopDomain ?? newDestination.shopDomain).trim();
     const accessToken = String(overrides.accessToken ?? newDestination.accessToken).trim();
     const apiVersion = String(overrides.apiVersion ?? newDestination.apiVersion).trim() || '2024-01';
-    if (!shopDomain || !accessToken) {
-      setShopifyBlogsError('Shop domain and access token are required.');
+    // In server-side mode the token lives server-side; the main process proxies the
+    // request using the stored connection, so no client-side access token is needed.
+    if (!shopDomain || (!shopifyServerOauthEnabled && !accessToken)) {
+      setShopifyBlogsError(
+        shopifyServerOauthEnabled ? 'Shop domain is required.' : 'Shop domain and access token are required.'
+      );
       return;
     }
     setShopifyBlogsLoading(true);
+    setShopifyBlogsError('');
     try {
       const result = await window.electronAPI.listShopifyBlogs({
         shopDomain,
         accessToken,
         apiVersion,
+        destinationId: newDestination.id || undefined,
       });
+      console.log('[Shopify] list-blogs result:', result);
       if (!result?.success) {
         throw new Error(result?.error || 'Failed to fetch Shopify blogs.');
       }
       const blogs = Array.isArray(result.blogs) ? result.blogs : [];
       setShopifyBlogs(blogs);
+      if (blogs.length === 0) {
+        setShopifyBlogsError(
+          'Connected, but the server returned 0 blogs. If you just enabled the read_content scope, click “Connect Shopify” again to re-authorize.'
+        );
+      }
       if (!newDestination.blogId && blogs.length === 1) {
         setNewDestination((prev) => ({
           ...prev,
@@ -677,6 +693,59 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       setShopifyBlogsError(error?.message || 'Failed to fetch Shopify blogs.');
     } finally {
       setShopifyBlogsLoading(false);
+    }
+  };
+
+  const openCreateBlogModal = () => {
+    const shopDomain = newDestination.shopDomain.trim();
+    if (!shopDomain) {
+      setShopifyBlogsError('Connect Shopify / enter the shop domain before creating a blog.');
+      return;
+    }
+    if (!shopifyServerOauthEnabled && !newDestination.accessToken.trim()) {
+      setShopifyBlogsError('Connect Shopify (or enter an access token) before creating a blog.');
+      return;
+    }
+    setShopifyBlogsError('');
+    setBlogModalTitle('');
+    setBlogModalOpen(true);
+  };
+
+  const submitCreateShopifyBlog = async () => {
+    const title = blogModalTitle.trim();
+    if (!title) {
+      return;
+    }
+    const shopDomain = newDestination.shopDomain.trim();
+    const apiVersion = newDestination.apiVersion.trim() || '2024-01';
+    const accessToken = newDestination.accessToken.trim();
+    setCreatingBlog(true);
+    setShopifyBlogsError('');
+    try {
+      const result = await window.electronAPI.createShopifyBlog({
+        shopDomain,
+        accessToken,
+        apiVersion,
+        title,
+        destinationId: newDestination.id || undefined,
+      });
+      if (!result?.success || !result.blog?.id) {
+        throw new Error(result?.error || 'Failed to create blog.');
+      }
+      const created = result.blog;
+      setBlogModalOpen(false);
+      setBlogModalTitle('');
+      // Refresh the list, then select the newly created blog.
+      await fetchShopifyBlogs({ shopDomain, accessToken, apiVersion });
+      setNewDestination((prev) => ({
+        ...prev,
+        blogId: String(created.id),
+        blogHandle: created.handle || prev.blogHandle,
+      }));
+    } catch (error) {
+      setShopifyBlogsError(error?.message || 'Failed to create blog.');
+    } finally {
+      setCreatingBlog(false);
     }
   };
 
@@ -730,10 +799,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         accessToken: result.accessToken || prev.accessToken,
         apiVersion: result.apiVersion || prev.apiVersion,
       }));
-      if (result.accessToken) {
+      // Server-managed connections return no client token; fetch blogs via the proxy.
+      if (result.accessToken || result.serverManaged) {
         await fetchShopifyBlogs({
           shopDomain: result.shopDomain || shopDomain,
-          accessToken: result.accessToken,
+          accessToken: result.accessToken || '',
           apiVersion: result.apiVersion || apiVersion,
         });
       }
@@ -755,12 +825,38 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     setShopifyOauthModalOpen(false);
   };
 
-  const handleAddShopifyOauthClient = () => {
+  const handleAddShopifyOauthClient = async () => {
     if (!shopifyOauthClientId.trim() || !shopifyOauthClientSecret.trim()) {
       alert('Client ID and client secret are required.');
       return;
     }
     const name = shopifyOauthName.trim() || `Shopify App ${shopifyOauthClients.length + 1}`;
+
+    if (shopifyServerOauthEnabled) {
+      // Save server-side; the server returns the record id (used as oauthClientId).
+      try {
+        const result = await window.electronAPI.shopifyOauthSaveClient({
+          name,
+          clientId: shopifyOauthClientId.trim(),
+          clientSecret: shopifyOauthClientSecret.trim(),
+        });
+        if (!result?.success || !result.client?.id) {
+          alert(result?.error || 'Failed to save Shopify OAuth app.');
+          return;
+        }
+        const saved = result.client;
+        setShopifyOauthClients((prev) => [...prev, saved]);
+        setNewDestination((prev) => ({
+          ...prev,
+          oauthClientId: prev.oauthClientId || saved.id,
+        }));
+        closeShopifyOauthModal();
+      } catch (error) {
+        alert(error?.message || 'Failed to save Shopify OAuth app.');
+      }
+      return;
+    }
+
     const entry = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       name,
@@ -775,7 +871,19 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     closeShopifyOauthModal();
   };
 
-  const handleRemoveShopifyOauthClient = (clientId) => {
+  const handleRemoveShopifyOauthClient = async (clientId) => {
+    if (shopifyServerOauthEnabled) {
+      try {
+        const result = await window.electronAPI.shopifyOauthDeleteClient({ id: clientId });
+        if (!result?.success) {
+          alert(result?.error || 'Failed to delete Shopify OAuth app.');
+          return;
+        }
+      } catch (error) {
+        alert(error?.message || 'Failed to delete Shopify OAuth app.');
+        return;
+      }
+    }
     setShopifyOauthClients((prev) => prev.filter((client) => client.id !== clientId));
     setNewDestination((prev) => ({
       ...prev,
@@ -815,7 +923,11 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
     };
     upsertKey('tavily', tavilyKey, 'Tavily Key');
     upsertKey('perplexity', perplexityKey, 'Perplexity Key');
-    const oauthClientsPayload = buildShopifyOauthPayload(shopifyOauthClients);
+    // When OAuth apps are server-managed, never persist them (or their secrets)
+    // into the settings blob — they live server-side.
+    const oauthClientsPayload = shopifyServerOauthEnabled
+      ? undefined
+      : buildShopifyOauthPayload(shopifyOauthClients);
     const payload = {
       aiProvider,
       imageProvider,
@@ -978,9 +1090,23 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         setPublishDestinations(
           Array.isArray(settings.publishDestinations) ? settings.publishDestinations : []
         );
-        const oauthClients = Array.isArray(settings.shopifyOauthClients)
+        const serverOauthEnabled = settings.shopifyServerOauthEnabled === true;
+        setShopifyServerOauthEnabled(serverOauthEnabled);
+        let oauthClients = Array.isArray(settings.shopifyOauthClients)
           ? settings.shopifyOauthClients
           : [];
+        if (serverOauthEnabled) {
+          // OAuth apps are server-managed (with server record ids) — load them
+          // from the dedicated endpoint instead of the settings blob.
+          try {
+            const clientsResult = await window.electronAPI.shopifyOauthListClients();
+            if (clientsResult?.success && Array.isArray(clientsResult.clients)) {
+              oauthClients = clientsResult.clients;
+            }
+          } catch (_clientsError) {
+            // Keep whatever the blob had as a fallback.
+          }
+        }
         setShopifyOauthClients(oauthClients);
         setShopifyOauthRedirectUrl(settings.shopifyOauthRedirectUrl || '');
         setNewDestination((prev) => ({
@@ -1011,7 +1137,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         apiKeys: Array.isArray(settings.apiKeys) ? settings.apiKeys : [],
           promptTemplates: { ...DEFAULT_PROMPTS, ...(settings.promptTemplates || {}) },
           publishDestinations: Array.isArray(settings.publishDestinations) ? settings.publishDestinations : [],
-          shopifyOauthClients: buildShopifyOauthPayload(oauthClients),
+          shopifyOauthClients: serverOauthEnabled ? undefined : buildShopifyOauthPayload(oauthClients),
           imageStorage: {
             enabled: storage.enabled === true,
             endpointUrl: storage.endpointUrl || '',
@@ -1400,11 +1526,13 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
       }
     }
     if (newDestination.platform === 'shopify') {
-      if (
-        !newDestination.shopDomain.trim() ||
-        !newDestination.accessToken.trim() ||
-        !newDestination.blogId.trim()
-      ) {
+      // In server-side mode the access token lives on the server, so it's not
+      // required here — the OAuth app linkage identifies the stored connection.
+      const missingCore = !newDestination.shopDomain.trim() || !newDestination.blogId.trim();
+      const missingAuth = shopifyServerOauthEnabled
+        ? !newDestination.oauthClientId
+        : !newDestination.accessToken.trim();
+      if (missingCore || missingAuth) {
         alert(t.publishDestinationRequired || 'Destination details are required');
         return;
       }
@@ -1434,6 +1562,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
           blogHandle: newDestination.blogHandle?.trim() || '',
           apiVersion: newDestination.apiVersion.trim() || '2024-01',
           oauthClientId: newDestination.oauthClientId || '',
+          serverManaged: shopifyServerOauthEnabled && newDestination.platform === 'shopify',
           endpointUrl: newDestination.endpointUrl.trim(),
           authHeaderName: newDestination.authHeaderName.trim(),
           authHeaderValue: newDestination.authHeaderValue.trim(),
@@ -1498,7 +1627,7 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
         ...payload,
         shopifyOauthClients: Array.isArray(payload.shopifyOauthClients)
           ? payload.shopifyOauthClients.map((client) => ({ ...client, clientSecret: '' }))
-          : [],
+          : payload.shopifyOauthClients,
       };
       setSavedFingerprint(JSON.stringify(scrubbedPayload));
       setSaved(true);
@@ -2489,20 +2618,22 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                           <span className="text-xs text-red-600">{shopifyOAuthError}</span>
                         )}
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                          {t.shopifyTokenLabel || 'Admin API access token'}
-                        </label>
-                        <input
-                          type="password"
-                          value={newDestination.accessToken}
-                          onChange={(event) =>
-                            setNewDestination((prev) => ({ ...prev, accessToken: event.target.value }))
-                          }
-                          placeholder={t.shopifyTokenPlaceholder}
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                        />
-                      </div>
+                      {!shopifyServerOauthEnabled && (
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-2">
+                            {t.shopifyTokenLabel || 'Admin API access token'}
+                          </label>
+                          <input
+                            type="password"
+                            value={newDestination.accessToken}
+                            onChange={(event) =>
+                              setNewDestination((prev) => ({ ...prev, accessToken: event.target.value }))
+                            }
+                            placeholder={t.shopifyTokenPlaceholder}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                          />
+                        </div>
+                      )}
                       <div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">
                           {t.shopifyApiVersionLabel || 'Shopify API version'}
@@ -2536,6 +2667,10 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                           value={newDestination.blogId}
                           onChange={(event) => {
                             const selectedId = event.target.value;
+                            if (selectedId === '__create__') {
+                              openCreateBlogModal();
+                              return;
+                            }
                             const selected = shopifyBlogs.find((blog) => String(blog.id) === selectedId);
                             setNewDestination((prev) => ({
                               ...prev,
@@ -2551,9 +2686,14 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                               {blog.title} (ID: {blog.id})
                             </option>
                           ))}
+                          <option value="__create__">
+                            {t.shopifyCreateBlogOption || '➕ Create new blog…'}
+                          </option>
                         </select>
-                        {shopifyBlogsLoading && (
-                          <p className="text-xs text-slate-500 mt-1">{t.loadingLabel}</p>
+                        {(shopifyBlogsLoading || creatingBlog) && (
+                          <p className="text-xs text-slate-500 mt-1">
+                            {creatingBlog ? t.shopifyCreatingBlogLabel || 'Creating blog…' : t.loadingLabel}
+                          </p>
                         )}
                         {shopifyBlogsError && (
                           <p className="text-xs text-red-600 mt-1">{shopifyBlogsError}</p>
@@ -3374,6 +3514,57 @@ function SettingsPage({ t, currentUser, onUnsavedChange, registerLeaveActions })
                 className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
               >
                 {t.shopifyOauthAddLabel || 'Add OAuth app'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {blogModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <h4 className="text-lg font-semibold text-slate-900">
+                {t.shopifyCreateBlogTitle || 'Create a new blog'}
+              </h4>
+              <ModalCloseButton onClick={() => setBlogModalOpen(false)} label={t.close || 'Close'} />
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                {t.shopifyNewBlogLabel || 'Blog name'}
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={blogModalTitle}
+                onChange={(event) => setBlogModalTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && blogModalTitle.trim() && !creatingBlog) {
+                    submitCreateShopifyBlog();
+                  }
+                }}
+                placeholder={t.shopifyNewBlogPlaceholder || 'e.g. News'}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              />
+              {shopifyBlogsError && (
+                <p className="text-xs text-red-600 mt-2">{shopifyBlogsError}</p>
+              )}
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setBlogModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:border-slate-300"
+              >
+                {t.cancel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={submitCreateShopifyBlog}
+                disabled={creatingBlog || !blogModalTitle.trim()}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {creatingBlog ? t.shopifyCreatingBlogLabel || 'Creating…' : t.shopifyCreateBlogLabel || 'Create blog'}
               </button>
             </div>
           </div>

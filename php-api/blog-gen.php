@@ -397,6 +397,253 @@ function parseCsvToRows(string $csv): array
     return $rows;
 }
 
+// --- Shopify OAuth helpers (server-side credential custody) -----------------
+
+function shopifyEncryptionKey(array $cfg): string
+{
+    $seed = trim((string)($cfg['encryption_key'] ?? ''));
+    if ($seed === '') {
+        $seed = trim((string)($cfg['jwt_secret'] ?? ''));
+    }
+    if ($seed === '') {
+        respond(500, ['success' => false, 'error' => 'encryption_key/jwt_secret missing in config.php']);
+    }
+    return hash('sha256', $seed, true); // 32 raw bytes for aes-256-gcm
+}
+
+function shopifyEncryptSecret(array $cfg, string $plain): string
+{
+    if ($plain === '') {
+        return '';
+    }
+    $key = shopifyEncryptionKey($cfg);
+    $iv = random_bytes(12);
+    $tag = '';
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    if ($cipher === false) {
+        throw new RuntimeException('Failed to encrypt secret');
+    }
+    return 'enc:' . bin2hex($iv) . ':' . bin2hex($tag) . ':' . bin2hex($cipher);
+}
+
+function shopifyDecryptSecret(array $cfg, string $payload): string
+{
+    if ($payload === '' || strncmp($payload, 'enc:', 4) !== 0) {
+        return $payload;
+    }
+    $parts = explode(':', $payload);
+    if (count($parts) !== 4) {
+        return '';
+    }
+    $iv = @hex2bin($parts[1]);
+    $tag = @hex2bin($parts[2]);
+    $data = @hex2bin($parts[3]);
+    if ($iv === false || $tag === false || $data === false) {
+        return '';
+    }
+    $key = shopifyEncryptionKey($cfg);
+    $plain = openssl_decrypt($data, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    return $plain === false ? '' : $plain;
+}
+
+function shopifyNormalizeShop(string $value): string
+{
+    $v = strtolower(trim($value));
+    $v = preg_replace('#^https?://#', '', $v);
+    $v = preg_replace('#/.*$#', '', $v);
+    return (string)$v;
+}
+
+function shopifyVerifyHmac(array $params, string $secret): bool
+{
+    $hmac = (string)($params['hmac'] ?? '');
+    if ($hmac === '' || $secret === '') {
+        return false;
+    }
+    $pairs = [];
+    foreach ($params as $k => $v) {
+        if ($k === 'hmac' || $k === 'signature') {
+            continue;
+        }
+        $pairs[$k] = is_string($v) ? $v : '';
+    }
+    ksort($pairs);
+    $message = [];
+    foreach ($pairs as $k => $v) {
+        $message[] = $k . '=' . $v;
+    }
+    $digest = hash_hmac('sha256', implode('&', $message), $secret);
+    return hash_equals($digest, $hmac);
+}
+
+// Apply TLS options from config. By default cURL verifies the peer against the
+// system CA bundle; set shopify_curl_ca_bundle to point at a cacert.pem, or
+// shopify_curl_insecure=true to skip verification (TESTING ONLY).
+function shopifyApplyCurlSsl($ch, array $cfg): void
+{
+    $caBundle = trim((string)($cfg['shopify_curl_ca_bundle'] ?? ''));
+    if ($caBundle !== '' && is_file($caBundle)) {
+        curl_setopt($ch, CURLOPT_CAINFO, $caBundle);
+    }
+    if (!empty($cfg['shopify_curl_insecure'])) {
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    }
+}
+
+// Transport-agnostic HTTP: uses cURL when available, otherwise falls back to
+// file_get_contents (requires allow_url_fopen). Returns ['status' => int, 'raw' => string].
+function shopifyHttpSend(array $cfg, string $method, string $url, array $headers, ?string $body): array
+{
+    $method = strtoupper($method);
+
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        $opts = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_HTTPHEADER => $headers,
+        ];
+        if ($body !== null) {
+            $opts[CURLOPT_POSTFIELDS] = $body;
+        }
+        curl_setopt_array($ch, $opts);
+        shopifyApplyCurlSsl($ch, $cfg);
+        $resp = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $errno = curl_errno($ch);
+        $err = curl_error($ch);
+        curl_close($ch);
+        if ($resp === false) {
+            throw new RuntimeException('cURL error ' . $errno . ': ' . $err);
+        }
+        return ['status' => $status, 'raw' => (string)$resp];
+    }
+
+    if (filter_var(ini_get('allow_url_fopen'), FILTER_VALIDATE_BOOLEAN)) {
+        $sslOpts = [];
+        $caBundle = trim((string)($cfg['shopify_curl_ca_bundle'] ?? ''));
+        if (!empty($cfg['shopify_curl_insecure'])) {
+            $sslOpts['verify_peer'] = false;
+            $sslOpts['verify_peer_name'] = false;
+        } elseif ($caBundle !== '' && is_file($caBundle)) {
+            $sslOpts['cafile'] = $caBundle;
+        }
+        $httpOpts = [
+            'method' => $method,
+            'header' => implode("\r\n", $headers),
+            'timeout' => 60,
+            'ignore_errors' => true, // return the body even on 4xx/5xx
+        ];
+        if ($body !== null) {
+            $httpOpts['content'] = $body;
+        }
+        $context = stream_context_create(['http' => $httpOpts, 'ssl' => $sslOpts]);
+        $resp = @file_get_contents($url, false, $context);
+        if ($resp === false) {
+            $lastError = error_get_last();
+            throw new RuntimeException('HTTP request failed: ' . ($lastError['message'] ?? 'unknown error'));
+        }
+        $status = 0;
+        // $http_response_header is auto-populated in this scope by file_get_contents.
+        if (isset($http_response_header[0]) && preg_match('#HTTP/\S+\s+(\d+)#', (string)$http_response_header[0], $m)) {
+            $status = (int)$m[1];
+        }
+        return ['status' => $status, 'raw' => (string)$resp];
+    }
+
+    throw new RuntimeException('No HTTP transport available: enable the php-curl extension or set allow_url_fopen=On.');
+}
+
+function shopifyHttpPostJson(array $cfg, string $url, array $data): array
+{
+    $headers = ['Content-Type: application/json', 'Accept: application/json'];
+    $res = shopifyHttpSend($cfg, 'POST', $url, $headers, json_encode($data, JSON_UNESCAPED_SLASHES));
+    $decoded = json_decode($res['raw'], true);
+    return ['status' => $res['status'], 'body' => is_array($decoded) ? $decoded : []];
+}
+
+// The server's OWN callback URL (where the desktop's localhost listener 302-redirects
+// to so the token exchange happens server-side). Configurable; otherwise derived from
+// the current request. The callback is a sibling of blog-gen.php, so we use the script
+// DIRECTORY (not the script name) + /shopify/oauth/callback.
+function shopifyRedirectUrl(array $cfg): string
+{
+    $configured = trim((string)($cfg['shopify_oauth_redirect_url'] ?? ''));
+    if ($configured !== '') {
+        return $configured;
+    }
+    $scheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $scriptDir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? ''))), '/');
+    return $scheme . '://' . $host . $scriptDir . '/shopify/oauth/callback';
+}
+
+// Find the stored connection (encrypted access token) for a shop, preferring an
+// exact destination match but falling back to the most recent connection for the shop.
+function shopifyFindConnection(array $cfg, string $userId, string $shop, string $destinationId = ''): ?array
+{
+    $shop = shopifyNormalizeShop($shop);
+    if ($shop === '') {
+        return null;
+    }
+    if ($destinationId !== '') {
+        $doc = mongoFindOne($cfg, 'shopify_connections', [
+            'user_id' => $userId,
+            'shop' => $shop,
+            'destination_id' => $destinationId,
+        ]);
+        if (is_array($doc)) {
+            return $doc;
+        }
+    }
+    return mongoFindOne($cfg, 'shopify_connections', [
+        'user_id' => $userId,
+        'shop' => $shop,
+    ], ['sort' => ['updated_at' => -1]]);
+}
+
+// Authenticated Shopify Admin API request using a stored access token.
+function shopifyApiRequest(array $cfg, string $method, string $url, string $accessToken, ?array $body = null): array
+{
+    $headers = ['Accept: application/json', 'X-Shopify-Access-Token: ' . $accessToken];
+    $payload = null;
+    if ($body !== null) {
+        $headers[] = 'Content-Type: application/json';
+        $payload = json_encode($body, JSON_UNESCAPED_SLASHES);
+    }
+    $res = shopifyHttpSend($cfg, $method, $url, $headers, $payload);
+    $decoded = json_decode($res['raw'], true);
+    return ['status' => $res['status'], 'body' => is_array($decoded) ? $decoded : []];
+}
+
+// Resolve + decrypt the access token for a shop, or respond 4xx and exit.
+function shopifyRequireAccessToken(array $cfg, string $userId, string $shop, string $destinationId = ''): string
+{
+    $conn = shopifyFindConnection($cfg, $userId, $shop, $destinationId);
+    if (!is_array($conn)) {
+        respond(404, ['success' => false, 'error' => 'No Shopify connection for this shop. Reconnect in Settings.']);
+    }
+    $accessToken = shopifyDecryptSecret($cfg, (string)($conn['access_token_enc'] ?? ''));
+    if ($accessToken === '') {
+        respond(400, ['success' => false, 'error' => 'Stored Shopify access token unavailable. Reconnect in Settings.']);
+    }
+    return $accessToken;
+}
+
+function shopifyMapClient(array $doc): array
+{
+    return [
+        'id' => (string)($doc['_id'] ?? ''),
+        'name' => (string)($doc['name'] ?? ''),
+        'clientId' => (string)($doc['client_id'] ?? ''),
+        'hasSecret' => trim((string)($doc['client_secret_enc'] ?? '')) !== '',
+        'createdAt' => $doc['created_at'] ?? null,
+        'updatedAt' => $doc['updated_at'] ?? null,
+    ];
+}
+
 require_once __DIR__ . '/db-actions.php';
 
 $configPath = __DIR__ . '/config.php';
@@ -859,6 +1106,405 @@ if ($requestPath === '/updates/latest' && $method === 'GET') {
         'currentVersion' => $currentVersion,
         'channel' => $channel,
     ]);
+}
+
+// Shopify: server holds the client secret + access token and performs all
+// credentialed calls (OAuth token exchange + publishing/reads).
+if (str_starts_with($requestPath, '/shopify/')) {
+    // 1) Public callback — Shopify redirects the browser here (no app JWT available).
+    if ($requestPath === '/shopify/oauth/callback' && $method === 'GET') {
+        $renderPage = static function (string $title, string $message, bool $autoClose = false): void {
+            http_response_code(200);
+            header('Content-Type: text/html; charset=utf-8');
+            header('Cache-Control: no-store');
+            // Best-effort auto-close: works when the browser allows scripts to close
+            // the tab; otherwise the message tells the user they can close it.
+            $closeScript = $autoClose
+                ? '<script>setTimeout(function(){try{window.open("","_self");window.close();}catch(e){}},700);</script>'
+                : '';
+            echo '<!doctype html><html><head><meta charset="utf-8"><title>'
+                . htmlspecialchars($title, ENT_QUOTES) . '</title></head>'
+                . '<body style="font-family:system-ui,sans-serif;padding:48px;text-align:center">'
+                . '<h2>' . htmlspecialchars($title, ENT_QUOTES) . '</h2>'
+                . '<p>' . htmlspecialchars($message, ENT_QUOTES) . '</p>'
+                . '<p style="color:#888">You can close this window.</p>'
+                . $closeScript . '</body></html>';
+            exit;
+        };
+        $failState = static function (?array $stateDoc, array $cfg, string $reason) use ($renderPage): void {
+            if (is_array($stateDoc)) {
+                mongoUpdateOne($cfg, 'shopify_oauth_states', ['state' => (string)($stateDoc['state'] ?? '')], [
+                    '$set' => ['status' => 'failed', 'error' => $reason, 'updated_at' => bgUtcNow()],
+                ]);
+            }
+            $renderPage('Shopify connection failed', $reason);
+        };
+
+        $params = [];
+        foreach ($_GET as $k => $v) {
+            $params[(string)$k] = is_string($v) ? $v : '';
+        }
+        $state = trim((string)($params['state'] ?? ''));
+        $code = trim((string)($params['code'] ?? ''));
+        $shop = shopifyNormalizeShop((string)($params['shop'] ?? ''));
+
+        $stateDoc = $state !== '' ? mongoFindOne($cfg, 'shopify_oauth_states', ['state' => $state]) : null;
+        if (!is_array($stateDoc)) {
+            $renderPage('Shopify connection failed', 'Invalid or expired authorization state.');
+        }
+        if ((string)($stateDoc['status'] ?? '') === 'complete') {
+            $renderPage('Shopify connected', 'This store is already connected.', true);
+        }
+        $expiresAt = (string)($stateDoc['expires_at'] ?? '');
+        if ($expiresAt !== '') {
+            try {
+                if (new DateTimeImmutable($expiresAt) < new DateTimeImmutable('now')) {
+                    $failState($stateDoc, $cfg, 'Authorization expired. Please try again.');
+                }
+            } catch (Throwable $e) {
+                // Ignore unexpected date formats; continue.
+            }
+        }
+        if ($code === '' || $shop === '') {
+            $failState($stateDoc, $cfg, 'Missing shop or code.');
+        }
+        if ($shop !== shopifyNormalizeShop((string)($stateDoc['shop'] ?? ''))) {
+            $failState($stateDoc, $cfg, 'Shop mismatch.');
+        }
+
+        $clientDoc = mongoFindOne($cfg, 'shopify_oauth_clients', [
+            '_id' => parseObjectId((string)($stateDoc['oauth_client_id'] ?? '')),
+            'user_id' => (string)($stateDoc['user_id'] ?? ''),
+        ]);
+        if (!is_array($clientDoc)) {
+            $failState($stateDoc, $cfg, 'OAuth app not found.');
+        }
+        $clientId = (string)($clientDoc['client_id'] ?? '');
+        $clientSecret = shopifyDecryptSecret($cfg, (string)($clientDoc['client_secret_enc'] ?? ''));
+        if ($clientSecret === '') {
+            $failState($stateDoc, $cfg, 'Stored client secret unavailable.');
+        }
+        if (!shopifyVerifyHmac($params, $clientSecret)) {
+            $failState($stateDoc, $cfg, 'HMAC verification failed.');
+        }
+
+        try {
+            $resp = shopifyHttpPostJson($cfg, 'https://' . $shop . '/admin/oauth/access_token', [
+                'client_id' => $clientId,
+                'client_secret' => $clientSecret,
+                'code' => $code,
+            ]);
+        } catch (Throwable $e) {
+            $failState($stateDoc, $cfg, 'Token exchange request failed: ' . $e->getMessage());
+        }
+        if (($resp['status'] ?? 0) < 200 || ($resp['status'] ?? 0) >= 300) {
+            $shopifyErr = $resp['body']['error_description'] ?? ($resp['body']['error'] ?? ('HTTP ' . ($resp['status'] ?? 0)));
+            $failState($stateDoc, $cfg, 'Token exchange rejected: ' . (is_string($shopifyErr) ? $shopifyErr : json_encode($shopifyErr)));
+        }
+        $accessToken = (string)($resp['body']['access_token'] ?? '');
+        if ($accessToken === '') {
+            $failState($stateDoc, $cfg, 'No access token returned from Shopify.');
+        }
+
+        $userId = (string)($stateDoc['user_id'] ?? '');
+        $destinationId = (string)($stateDoc['destination_id'] ?? '');
+        mongoUpdateOne($cfg, 'shopify_connections', [
+            'user_id' => $userId,
+            'shop' => $shop,
+            'destination_id' => $destinationId,
+        ], ['$set' => [
+            'user_id' => $userId,
+            'shop' => $shop,
+            'destination_id' => $destinationId,
+            'oauth_client_id' => (string)($stateDoc['oauth_client_id'] ?? ''),
+            'access_token_enc' => shopifyEncryptSecret($cfg, $accessToken),
+            'scope' => (string)($resp['body']['scope'] ?? ''),
+            'api_version' => (string)($stateDoc['api_version'] ?? '2024-01'),
+            'connected_at' => bgUtcNow(),
+            'updated_at' => bgUtcNow(),
+        ]], true);
+
+        mongoUpdateOne($cfg, 'shopify_oauth_states', ['state' => $state], ['$set' => [
+            'status' => 'complete',
+            'shop' => $shop,
+            'error' => '',
+            'updated_at' => bgUtcNow(),
+        ]]);
+
+        $renderPage('Shopify connected', 'Your Shopify store is now connected.', true);
+    }
+
+    // All other Shopify routes require an authenticated app user.
+    $jwtUser = requireJwtUser($cfg);
+    $userId = (string)$jwtUser['uid'];
+
+    if ($requestPath === '/shopify/oauth/clients' && $method === 'GET') {
+        $docs = mongoFindMany($cfg, 'shopify_oauth_clients', ['user_id' => $userId], [
+            'sort' => ['created_at' => -1],
+            'limit' => 200,
+        ]);
+        respond(200, ['success' => true, 'clients' => array_map('shopifyMapClient', $docs)]);
+    }
+
+    if ($requestPath === '/shopify/oauth/clients' && $method === 'POST') {
+        $body = readJsonBody();
+        $id = trim((string)($body['id'] ?? ''));
+        $name = trim((string)($body['name'] ?? ''));
+        $clientId = trim((string)($body['clientId'] ?? ''));
+        $clientSecret = (string)($body['clientSecret'] ?? '');
+        if ($clientId === '') {
+            respond(400, ['success' => false, 'error' => 'clientId is required']);
+        }
+        $now = bgUtcNow();
+        $hasNewSecret = $clientSecret !== '' && $clientSecret !== '********';
+        if ($id !== '') {
+            $filter = ['_id' => parseObjectId($id), 'user_id' => $userId];
+            $set = ['name' => $name, 'client_id' => $clientId, 'updated_at' => $now];
+            if ($hasNewSecret) {
+                $set['client_secret_enc'] = shopifyEncryptSecret($cfg, $clientSecret);
+            }
+            mongoUpdateOne($cfg, 'shopify_oauth_clients', $filter, ['$set' => $set]);
+            $doc = mongoFindOne($cfg, 'shopify_oauth_clients', $filter);
+        } else {
+            $newId = mongoInsertOne($cfg, 'shopify_oauth_clients', [
+                'user_id' => $userId,
+                'name' => $name,
+                'client_id' => $clientId,
+                'client_secret_enc' => $hasNewSecret ? shopifyEncryptSecret($cfg, $clientSecret) : '',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $doc = mongoFindOne($cfg, 'shopify_oauth_clients', ['_id' => parseObjectId($newId)]);
+        }
+        if (!is_array($doc)) {
+            respond(500, ['success' => false, 'error' => 'Failed to save OAuth app']);
+        }
+        respond(200, ['success' => true, 'client' => shopifyMapClient($doc)]);
+    }
+
+    if (preg_match('#^/shopify/oauth/clients/([a-fA-F0-9]{24})$#', $requestPath, $m) === 1 && $method === 'DELETE') {
+        $deleted = mongoDeleteOne($cfg, 'shopify_oauth_clients', ['_id' => parseObjectId($m[1]), 'user_id' => $userId]);
+        respond(200, ['success' => true, 'deleted' => $deleted > 0]);
+    }
+
+    if ($requestPath === '/shopify/oauth/start' && $method === 'POST') {
+        $body = readJsonBody();
+        $oauthClientId = trim((string)($body['oauthClientId'] ?? ''));
+        $shop = shopifyNormalizeShop((string)($body['shop'] ?? ''));
+        $destinationId = trim((string)($body['destinationId'] ?? ''));
+        $apiVersion = trim((string)($body['apiVersion'] ?? '2024-01')) ?: '2024-01';
+        $scope = trim((string)($body['scope'] ?? '')) ?: 'read_content,write_content,write_files';
+        if ($oauthClientId === '' || $shop === '') {
+            respond(400, ['success' => false, 'error' => 'oauthClientId and shop are required']);
+        }
+        $clientDoc = mongoFindOne($cfg, 'shopify_oauth_clients', [
+            '_id' => parseObjectId($oauthClientId),
+            'user_id' => $userId,
+        ]);
+        if (!is_array($clientDoc)) {
+            respond(404, ['success' => false, 'error' => 'OAuth app not found']);
+        }
+        $clientId = (string)($clientDoc['client_id'] ?? '');
+        if (shopifyDecryptSecret($cfg, (string)($clientDoc['client_secret_enc'] ?? '')) === '') {
+            respond(400, ['success' => false, 'error' => 'Client secret is missing for this OAuth app. Re-enter it in Settings.']);
+        }
+        $state = bin2hex(random_bytes(16));
+        $now = bgUtcNow();
+        $expiresAtIso = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->modify('+10 minutes')->format(DateTimeInterface::ATOM);
+        mongoInsertOne($cfg, 'shopify_oauth_states', [
+            'state' => $state,
+            'user_id' => $userId,
+            'oauth_client_id' => $oauthClientId,
+            'shop' => $shop,
+            'destination_id' => $destinationId,
+            'api_version' => $apiVersion,
+            'status' => 'pending',
+            'error' => '',
+            'created_at' => $now,
+            'updated_at' => $now,
+            'expires_at' => toUtcDateTime($expiresAtIso),
+        ]);
+        // redirect_uri sent to Shopify = the caller's registered URL (e.g. the desktop's
+        // http://localhost:3000/api/auth/shopify/callback). Falls back to config/server URL
+        // for a future direct-HTTPS setup.
+        $bodyRedirect = trim((string)($body['redirectUri'] ?? ''));
+        $authorizeRedirectUri = $bodyRedirect !== '' ? $bodyRedirect : shopifyRedirectUrl($cfg);
+        // The server's own callback, where the localhost listener 302-redirects so the
+        // token exchange runs server-side.
+        $serverCallbackUrl = shopifyRedirectUrl($cfg);
+        $authorizeUrl = 'https://' . $shop . '/admin/oauth/authorize'
+            . '?client_id=' . rawurlencode($clientId)
+            . '&scope=' . rawurlencode($scope)
+            . '&redirect_uri=' . rawurlencode($authorizeRedirectUri)
+            . '&state=' . rawurlencode($state);
+        respond(200, [
+            'success' => true,
+            'authorizeUrl' => $authorizeUrl,
+            'state' => $state,
+            'redirectUri' => $authorizeRedirectUri,
+            'serverCallbackUrl' => $serverCallbackUrl,
+        ]);
+    }
+
+    if ($requestPath === '/shopify/oauth/status' && $method === 'GET') {
+        $state = trim((string)($_GET['state'] ?? ''));
+        if ($state === '') {
+            respond(400, ['success' => false, 'error' => 'state is required']);
+        }
+        $doc = mongoFindOne($cfg, 'shopify_oauth_states', ['state' => $state, 'user_id' => $userId]);
+        if (!is_array($doc)) {
+            respond(404, ['success' => false, 'error' => 'Unknown state']);
+        }
+        respond(200, [
+            'success' => true,
+            'status' => (string)($doc['status'] ?? 'pending'),
+            'shop' => (string)($doc['shop'] ?? ''),
+            'destinationId' => (string)($doc['destination_id'] ?? ''),
+            'error' => (string)($doc['error'] ?? ''),
+        ]);
+    }
+
+    // Publish proxy (Phase 2): create an article using the stored access token.
+    // The desktop prepares the article payload (no secret) and optionally an image
+    // attachment; the server uploads the image + creates the article.
+    if ($requestPath === '/shopify/publish' && $method === 'POST') {
+        $body = readJsonBody();
+        $shop = shopifyNormalizeShop((string)($body['shop'] ?? ''));
+        $destinationId = trim((string)($body['destinationId'] ?? ''));
+        $apiVersion = trim((string)($body['apiVersion'] ?? '2024-01')) ?: '2024-01';
+        $blogId = trim((string)($body['blogId'] ?? ''));
+        $blogHandle = trim((string)($body['blogHandle'] ?? ''));
+        $article = is_array($body['article'] ?? null) ? $body['article'] : [];
+        $imageAttachment = is_array($body['imageAttachment'] ?? null) ? $body['imageAttachment'] : null;
+        if ($shop === '' || $blogId === '' || empty($article)) {
+            respond(400, ['success' => false, 'error' => 'shop, blogId and article are required']);
+        }
+        $accessToken = shopifyRequireAccessToken($cfg, $userId, $shop, $destinationId);
+
+        // Optional: upload image binary to the Files API, then attach to the article.
+        if (is_array($imageAttachment) && trim((string)($imageAttachment['attachment'] ?? '')) !== '') {
+            try {
+                $fileResp = shopifyApiRequest(
+                    $cfg,
+                    'POST',
+                    'https://' . $shop . '/admin/api/' . $apiVersion . '/files.json',
+                    $accessToken,
+                    ['file' => [
+                        'attachment' => (string)$imageAttachment['attachment'],
+                        'filename' => (string)($imageAttachment['filename'] ?? 'blog-image.jpg'),
+                        'mime_type' => (string)($imageAttachment['mime_type'] ?? 'image/jpeg'),
+                    ]]
+                );
+                $fileUrl = (string)($fileResp['body']['file']['url'] ?? '');
+                if ($fileUrl !== '' && empty($article['image'])) {
+                    $article['image'] = ['src' => $fileUrl, 'alt' => (string)($article['title'] ?? '')];
+                }
+            } catch (Throwable $e) {
+                // Non-fatal: publish without the uploaded image.
+            }
+        }
+
+        $resp = shopifyApiRequest(
+            $cfg,
+            'POST',
+            'https://' . $shop . '/admin/api/' . $apiVersion . '/blogs/' . rawurlencode($blogId) . '/articles.json',
+            $accessToken,
+            ['article' => $article]
+        );
+        if ($resp['status'] < 200 || $resp['status'] >= 300) {
+            $errors = $resp['body']['errors'] ?? 'Shopify article create failed';
+            $errMsg = is_array($errors) ? json_encode($errors, JSON_UNESCAPED_SLASHES) : (string)$errors;
+            respond(400, ['success' => false, 'error' => 'Shopify error: ' . $errMsg]);
+        }
+        $articleData = is_array($resp['body']['article'] ?? null) ? $resp['body']['article'] : [];
+        $articleHandle = (string)($articleData['handle'] ?? '');
+        $articleUrl = (string)($articleData['url'] ?? '');
+        if ($articleUrl === '' && $articleHandle !== '') {
+            if ($blogHandle === '') {
+                try {
+                    $blogResp = shopifyApiRequest(
+                        $cfg,
+                        'GET',
+                        'https://' . $shop . '/admin/api/' . $apiVersion . '/blogs/' . rawurlencode($blogId) . '.json',
+                        $accessToken
+                    );
+                    $blogHandle = (string)($blogResp['body']['blog']['handle'] ?? '');
+                } catch (Throwable $e) {
+                    // Ignore; URL stays empty.
+                }
+            }
+            if ($blogHandle !== '') {
+                $articleUrl = 'https://' . $shop . '/blogs/' . $blogHandle . '/' . $articleHandle;
+            }
+        }
+        respond(200, ['success' => true, 'article' => [
+            'id' => $articleData['id'] ?? null,
+            'handle' => $articleHandle,
+            'url' => $articleUrl,
+        ]]);
+    }
+
+    // List blogs for the connected shop (used when configuring a destination).
+    if ($requestPath === '/shopify/blogs' && $method === 'GET') {
+        $shop = shopifyNormalizeShop((string)($_GET['shop'] ?? ''));
+        $destinationId = trim((string)($_GET['destinationId'] ?? ''));
+        $apiVersion = trim((string)($_GET['apiVersion'] ?? '2024-01')) ?: '2024-01';
+        if ($shop === '') {
+            respond(400, ['success' => false, 'error' => 'shop is required']);
+        }
+        $accessToken = shopifyRequireAccessToken($cfg, $userId, $shop, $destinationId);
+        $resp = shopifyApiRequest($cfg, 'GET', 'https://' . $shop . '/admin/api/' . $apiVersion . '/blogs.json', $accessToken);
+        if ($resp['status'] < 200 || $resp['status'] >= 300) {
+            $err = $resp['body']['errors'] ?? ('HTTP ' . $resp['status']);
+            respond(400, ['success' => false, 'error' => 'Shopify blogs request failed: ' . (is_string($err) ? $err : json_encode($err))]);
+        }
+        respond(200, ['success' => true, 'blogs' => is_array($resp['body']['blogs'] ?? null) ? $resp['body']['blogs'] : []]);
+    }
+
+    // Create a new blog on the connected shop.
+    if ($requestPath === '/shopify/blogs' && $method === 'POST') {
+        $body = readJsonBody();
+        $shop = shopifyNormalizeShop((string)($body['shop'] ?? ''));
+        $destinationId = trim((string)($body['destinationId'] ?? ''));
+        $apiVersion = trim((string)($body['apiVersion'] ?? '2024-01')) ?: '2024-01';
+        $title = trim((string)($body['title'] ?? ''));
+        if ($shop === '' || $title === '') {
+            respond(400, ['success' => false, 'error' => 'shop and title are required']);
+        }
+        $accessToken = shopifyRequireAccessToken($cfg, $userId, $shop, $destinationId);
+        $resp = shopifyApiRequest(
+            $cfg,
+            'POST',
+            'https://' . $shop . '/admin/api/' . $apiVersion . '/blogs.json',
+            $accessToken,
+            ['blog' => ['title' => $title]]
+        );
+        if ($resp['status'] < 200 || $resp['status'] >= 300) {
+            $err = $resp['body']['errors'] ?? ('HTTP ' . $resp['status']);
+            respond(400, ['success' => false, 'error' => 'Shopify create-blog failed: ' . (is_string($err) ? $err : json_encode($err))]);
+        }
+        respond(200, ['success' => true, 'blog' => is_array($resp['body']['blog'] ?? null) ? $resp['body']['blog'] : null]);
+    }
+
+    // Verify the connection (used by "Test destination").
+    if ($requestPath === '/shopify/shop' && $method === 'GET') {
+        $shop = shopifyNormalizeShop((string)($_GET['shop'] ?? ''));
+        $destinationId = trim((string)($_GET['destinationId'] ?? ''));
+        $apiVersion = trim((string)($_GET['apiVersion'] ?? '2024-01')) ?: '2024-01';
+        if ($shop === '') {
+            respond(400, ['success' => false, 'error' => 'shop is required']);
+        }
+        $accessToken = shopifyRequireAccessToken($cfg, $userId, $shop, $destinationId);
+        $resp = shopifyApiRequest($cfg, 'GET', 'https://' . $shop . '/admin/api/' . $apiVersion . '/shop.json', $accessToken);
+        if ($resp['status'] < 200 || $resp['status'] >= 300) {
+            $err = $resp['body']['errors'] ?? ('HTTP ' . $resp['status']);
+            respond(400, ['success' => false, 'error' => 'Shopify shop request failed: ' . (is_string($err) ? $err : json_encode($err))]);
+        }
+        respond(200, ['success' => true, 'shop' => is_array($resp['body']['shop'] ?? null) ? $resp['body']['shop'] : null]);
+    }
+
+    respond(404, ['success' => false, 'error' => 'Shopify route not found']);
 }
 
 respond(404, ['success' => false, 'error' => 'Route not found']);

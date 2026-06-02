@@ -20,6 +20,7 @@
   RewriteRule ^scheduler/(.*)$ blog-gen.php [QSA,L]
   RewriteRule ^updates/(.*)$ blog-gen.php [QSA,L]
   RewriteRule ^db/call$ blog-gen.php [QSA,L]
+  RewriteRule ^shopify/(.*)$ blog-gen.php [QSA,L]
   RewriteRule ^blog-gen/?$ blog-gen.php [QSA,L]
   RewriteRule ^blog-gen/(.*)$ blog-gen.php [QSA,L]
 </IfModule>
